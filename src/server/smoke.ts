@@ -62,9 +62,10 @@ async function smoke() {
       if (!expected.test(JSON.stringify(result)))
         throw new AppError("smoke", `${label} returned unexpected content.`);
       console.log(`${label}: OK`);
+      return result;
     }
     const url = challenge
-      ? "https://zerocaptcha.io/captcha-test/cloudflare-interactive-challenge"
+      ? "https://zerocaptcha.io/captcha-test/cloudflare-managed-challenge"
       : "https://example.com/";
     if (!browserOnly) {
       await call(
@@ -78,17 +79,36 @@ async function smoke() {
       "browser",
       { command: { action: "navigate", url } },
       challenge
-        ? /Cloudflare WAF interactive challenge test page/i
+        ? /Cloudflare WAF managed challenge test page/i
         : /Example Domain/i,
       challenge ? "browser real challenge" : "browser navigate",
     );
-    if (!challenge)
-      await call(
+    if (!challenge) {
+      const snapshot = await call(
         "browser",
         { command: { action: "snapshot" } },
         /- (?:heading|link|paragraph|text|generic)\b/i,
         "browser snapshot",
       );
+      const ref = JSON.stringify(snapshot).match(/\[ref=(s\d+-e\d+)\]/)?.[1];
+      if (!ref)
+        throw new AppError(
+          "smoke",
+          "Browser snapshot returned no element refs.",
+        );
+      await call(
+        "browser",
+        { command: { action: "press", ref, key: "Tab" } },
+        /\[ref=s\d+-e\d+\]/,
+        "browser ref press",
+      );
+      await call(
+        "browser",
+        { command: { action: "screenshot" } },
+        /image\/jpeg/,
+        "browser screenshot",
+      );
+    }
     await call(
       "browser",
       { command: { action: "close" } },

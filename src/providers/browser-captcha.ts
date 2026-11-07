@@ -31,7 +31,8 @@ export function watchCaptcha(cdp: CDPSession, page: Page) {
       failed = solved = false;
     },
     async wait(challenged: () => boolean, signal?: AbortSignal) {
-      const deadline = Date.now() + 24_000;
+      const deadline = Date.now() + 40_000;
+      let sawChallengePage = false;
       // Detection and widget attachment can lag DOMContentLoaded.
       await delay(650, undefined, { signal });
       while (Date.now() < deadline) {
@@ -59,25 +60,27 @@ export function watchCaptcha(cdp: CDPSession, page: Page) {
           )
             throw error;
         }
+        let challengePage = challenged();
+        if (view) {
+          try {
+            pageContent(view.lead, { title: view.title });
+          } catch (error) {
+            if (!(error instanceof AppError)) throw error;
+            challengePage ||= error.code === "challenge";
+          }
+          sawChallengePage ||= challengePage;
+          if (
+            !challengePage &&
+            (!view.widget || solved || view.answered) &&
+            (!pending.size || sawChallengePage || view.answered)
+          )
+            return;
+        }
         if (failed)
           throw new AppError(
             "challenge",
             "Scrapfly reported a CAPTCHA solve failure.",
           );
-        if (
-          view &&
-          !challenged() &&
-          !pending.size &&
-          (!view.widget || solved || view.answered)
-        ) {
-          try {
-            pageContent(view.lead, { title: view.title });
-            return;
-          } catch (error) {
-            if (!(error instanceof AppError) || error.code !== "challenge")
-              return;
-          }
-        }
         await delay(350, undefined, { signal });
       }
       throw new AppError(
