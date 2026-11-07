@@ -1,0 +1,227 @@
+export type PageCheck = {
+  code: string;
+  reason: string;
+  next?: "stronger" | "render";
+  warning?: true;
+};
+
+const link = /!?\[([^\]\n]*)\]\((?:<[^>\n]*>|(?:[^()\n]|\([^()\n]*\))*)\)/g;
+const challengeTitle =
+  /^(?:just a moment|attention required(?:: cloudflare)?|security check|robot check|pardon our interruption|verify (?:that )?you are (?:a )?human|checking your browser)[.!…]*$/i;
+const challengeBody =
+  /verify (?:that )?you are (?:a )?human|enable javascript and cookies to continue|complete the security check|checking your browser|unusual traffic from your|captcha verification|cf-chl-/i;
+const loginPath =
+  /(?:^|\/)(?:login|log-in|signin|sign-in|sign_in|authenticate|auth\/login)(?:\/|$)/i;
+const botPath =
+  /(?:^|\/)(?:captcha|challenge|verify-human|bot-check|cdn-cgi\/challenge-platform)(?:\/|$)/i;
+
+function visible(line: string) {
+  return line
+    .replace(link, "$1")
+    .replace(/https?:\/\/[^\s>]+/g, "")
+    .replace(/^[\s#>*|_-]+/, "")
+    .trim();
+}
+
+function title(markdown: string) {
+  const lead = markdown.slice(0, 3000);
+  return visible(
+    lead.match(/^#\s+(.+)$/m)?.[1] ?? lead.trimStart().split("\n", 1)[0] ?? "",
+  );
+}
+
+export function looksChallenged(markdown: string, heading = title(markdown)) {
+  if (challengeTitle.test(heading.trim())) return true;
+  const text = markdown.split("\n").map(visible).join("\n").trim();
+  return text.length < 3000 && challengeBody.test(text);
+}
+
+export function looksBlocked(
+  markdown: string,
+  status?: number,
+  heading = title(markdown),
+) {
+  return (
+    status === 403 ||
+    status === 429 ||
+    /^(?:access denied|request blocked|forbidden|too many requests)[.!]*$/i.test(
+      heading.trim(),
+    )
+  );
+}
+
+export function checkPage(
+  markdown: string,
+  requested: URL,
+  final: URL,
+  status: number,
+): PageCheck {
+  const lines = markdown
+    .split("\n")
+    .map((line) => {
+      const text = visible(line);
+      const linked = [...line.matchAll(link)].reduce(
+        (sum, match) => sum + (match[1]?.length ?? 0),
+        0,
+      );
+      const menu =
+        /^(?:home|menu|search|navigation|products|about(?: us)?|contact(?: us)?|support|sign in|log in|privacy policy|terms of service|skip to content)$/i.test(
+          text,
+        );
+      return {
+        text,
+        nav: menu || (linked > 0 && linked >= text.length / 2),
+        prose:
+          !menu && linked < text.length / 2 && text.split(/\s+/).length >= 8,
+      };
+    })
+    .filter(({ text }) => text.length);
+  const text = lines.map(({ text }) => text).join("\n");
+  const heading = title(markdown);
+
+  if (
+    [404, 410].includes(status) ||
+    /^(?:404(?: error)?(?:[: –-]+(?:page )?not found)?|(?:page )?not found|page (?:does not|doesn't) exist)[.!]*$/i.test(
+      heading,
+    ) ||
+    (text.length < 600 &&
+      /(?:the )?(?:page you (?:are|were) looking for|requested (?:page|url)) (?:could not be found|was not found|does not exist)/i.test(
+        text,
+      ))
+  )
+    return {
+      code: "not_found",
+      reason: "The site says the page was not found.",
+    };
+  if (
+    (botPath.test(final.pathname) && !botPath.test(requested.pathname)) ||
+    looksChallenged(markdown, heading)
+  )
+    return {
+      code: "challenge",
+      reason: "The site returned an anti-bot challenge.",
+      next: "stronger",
+    };
+  if (
+    status === 401 ||
+    (loginPath.test(final.pathname) &&
+      final.pathname !== requested.pathname &&
+      !loginPath.test(requested.pathname)) ||
+    (text.length < 1500 &&
+      (/^(?:sign in|log in|login|sign in to continue|log in to continue)[.!]*$/i.test(
+        heading,
+      ) ||
+        /\b(?:please |you must )?(?:sign in|log in) to (?:continue|access|view|read)\b/i.test(
+          text,
+        ) ||
+        (/\bpassword\b/i.test(text) && /\b(?:sign in|log in)\b/i.test(text))))
+  )
+    return { code: "sign_in", reason: "The site requires sign-in." };
+  if (looksBlocked(markdown, status, heading))
+    return {
+      code: "blocked",
+      reason: "The target blocked access.",
+      next: "stronger",
+    };
+  if (status < 200 || status >= 300)
+    return {
+      code: "target_http",
+      reason: `The target returned HTTP ${status}.`,
+    };
+  if (
+    /^\/$/.test(final.pathname) &&
+    !/^\/(?:index(?:\.[a-z]+)?|home)?\/?$/i.test(requested.pathname)
+  )
+    return {
+      code: "content_moved",
+      reason: "The deep link redirected to the home page.",
+    };
+  const shell =
+    /enable javascript to (?:run this app|continue|view this (?:page|site))|this (?:app|site) requires javascript/i;
+  const hasProse = lines.some(
+    (line) => line.prose && line.text.replace(shell, "").trim().length >= 100,
+  );
+  if (
+    status === 204 ||
+    !/[\p{L}\p{N}]/u.test(text) ||
+    (text.length < 75 &&
+      !lines.some(
+        ({ text, nav }) =>
+          !nav && (/[.!?]$|@|\d/.test(text) || text.split(/\s+/).length >= 4),
+      )) ||
+    (text.length < 3000 && !hasProse && shell.test(text)) ||
+    /^(?:loading|please wait|loading content)[ .…!]*$/i.test(text)
+  )
+    return {
+      code: "empty_page",
+      reason: "The page is empty or needs JavaScript.",
+      next: "render",
+    };
+  if (
+    (text.length < 5000 &&
+      /\bsubscribe to (?:continue reading|read the full (?:story|article))\b/i.test(
+        text,
+      )) ||
+    /^.{0,45}\b(?:subscribe|subscription|subscribers only|purchase access)\b.{0,80}(?:continue reading|read (?:the|this|full)|full (?:story|article)|access this article)|^this (?:article|story) is (?:for|available to) subscribers/im.test(
+      text,
+    )
+  )
+    return {
+      code: "paywall",
+      reason: "Only the free portion of the page is available.",
+      warning: true,
+    };
+
+  const prose = lines.filter((line) => line.prose && !line.nav);
+  const proseLength = prose.reduce((n, line) => n + line.text.length, 0);
+  if (
+    text.length < 3000 &&
+    prose.length <= 4 &&
+    /(?:accept|reject|manage|allow|use) (?:all |optional |your )?cookies|cookie (?:preferences|consent)/i.test(
+      text,
+    ) &&
+    prose.every((line) =>
+      /cookie|privacy|consent|personal data|your device|tracking/i.test(
+        line.text,
+      ),
+    )
+  )
+    return {
+      code: "consent",
+      reason: "Only a consent notice was returned.",
+      next: "stronger",
+    };
+  const firstProse = lines.findIndex(
+    (line) => line.prose && !line.nav && line.text.length >= 100,
+  );
+  const lead = firstProse < 0 ? lines : lines.slice(0, firstProse);
+  const leadLength = lead.reduce((n, line) => n + line.text.length, 0);
+  const leadNav = lead.reduce(
+    (n, line) => n + (line.nav ? line.text.length : 0),
+    0,
+  );
+  const navLength = lines.reduce(
+    (n, line) => n + (line.nav ? line.text.length : 0),
+    0,
+  );
+  const index = (url: URL) =>
+    url.pathname === "/" ||
+    /(?:^|\/)(?:index|sitemap|categor(?:y|ies)|tags?)(?:[/.]|$)/i.test(
+      url.pathname,
+    );
+  if (
+    !index(requested) &&
+    !index(final) &&
+    ((leadLength >= 1200 && leadNav >= leadLength / 2 && proseLength < 650) ||
+      (text.length >= 80 &&
+        navLength >= text.length * 0.65 &&
+        proseLength < 200))
+  )
+    return {
+      code: "menus_only",
+      reason: "The response is mostly navigation with little page content.",
+      next: "stronger",
+      warning: true,
+    };
+  return { code: "ok", reason: "Readable page content." };
+}

@@ -1,35 +1,29 @@
 import { AppError } from "../server/error.js";
 
-export function pageContent(
-  text: string,
-  { status, title = "" }: { status?: number; title?: string } = {},
-): string {
-  const clean = text
+import { looksBlocked, looksChallenged } from "./page-check.js";
+
+export function cleanPage(text: string): string {
+  return text
     .replace(/\r\n?/g, "\n")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  const beginning = clean.slice(0, 2200);
-  const titleOrLead = `${title}\n${beginning.split("\n").find((line) => line.trim()) ?? ""}`;
-  if (
-    /(?:^|\n)\s*(?:#+\s*)?(?:just a moment|attention required|verify (?:that )?you are (?:a )?human|checking your browser|robot check|security check|pardon our interruption)[.!…]*[ \t]*$/im.test(
-      titleOrLead,
-    ) ||
-    /(?:enable javascript and cookies to continue|complete the security check|verify (?:that )?you are (?:a )?human to continue|cf-chl-|challenges\.cloudflare\.com\/turnstile)/i.test(
-      beginning,
-    )
-  )
+}
+
+export function pageContent(
+  text: string,
+  { status, title = "" }: { status?: number; title?: string } = {},
+): string {
+  const clean = cleanPage(text);
+  if (looksChallenged(clean) || (title && looksChallenged(clean, title)))
     throw new AppError(
       "challenge",
       "Anti-bot challenge remains. Try the site’s API, CLI or local browser.",
     );
   if (
     status === 401 ||
-    status === 403 ||
-    status === 429 ||
-    /(?:^|\n)\s*(?:#+\s*)?(?:access denied|request blocked|forbidden|too many requests)[.!…]*[ \t]*$/im.test(
-      titleOrLead,
-    )
+    looksBlocked(clean, status) ||
+    (title && looksBlocked(clean, status, title))
   )
     throw new AppError(
       "blocked",
