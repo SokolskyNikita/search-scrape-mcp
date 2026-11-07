@@ -1,92 +1,76 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { CDPSession, Page } from "playwright-core";
+import { defaults } from "../config/tuning.js";
 import { AppError } from "../server/error.js";
-import { pageContent } from "../tools/page-content.js";
+import {
+  CHALLENGE_TEXT_CHARS,
+  isChallengeUrl,
+  looksChallenged,
+} from "../tools/page-check.js";
 
-export function watchCaptcha(cdp: CDPSession, page: Page) {
-  const pending = new Set<string>();
+const pollMs = 350;
+
+export function watchCaptcha(
+  cdp: CDPSession,
+  page: Page,
+  waitMs = defaults.captchaWaitMs,
+) {
   let failed = false;
-  let solved = false;
-  cdp.on("event", ({ method, params }) => {
-    const id = (params as { detectionId?: string } | undefined)?.detectionId;
-    if (!id) return;
-    if (
-      method === "Antibot.captchaDetected" ||
-      method === "Antibot.captchaSolvingStarted"
-    )
-      pending.add(id);
-    if (method === "Antibot.captchaSolved") {
-      pending.delete(id);
-      solved = true;
-    }
-    if (method === "Antibot.captchaError") {
-      pending.delete(id);
-      failed = true;
-    }
+  cdp.on("event", ({ method }) => {
+    if (method === "Antibot.captchaError") failed = true;
+    if (method === "Antibot.captchaSolved") failed = false;
   });
 
   return {
     reset() {
-      pending.clear();
-      failed = solved = false;
+      failed = false;
     },
-    async wait(challenged: () => boolean, signal?: AbortSignal) {
-      const deadline = Date.now() + 40_000;
-      let sawChallengePage = false;
-      // Detection and widget attachment can lag DOMContentLoaded.
-      await delay(650, undefined, { signal });
-      while (Date.now() < deadline) {
-        let view;
-        try {
-          view = await page.evaluate(() => ({
-            title: document.title,
-            lead: document.body?.innerText.slice(0, 2200) ?? "",
-            widget: Array.from(document.querySelectorAll("iframe")).some(
-              (frame) =>
-                /challenges\.cloudflare\.com|\/recaptcha\/(?:api2|enterprise)\/|hcaptcha\.com/.test(
-                  frame.src,
-                ) && frame.getBoundingClientRect().height > 0,
-            ),
-            answered: Array.from(
-              document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-                '[name="cf-turnstile-response"], [name="g-recaptcha-response"], [name="h-captcha-response"]',
-              ),
-            ).some((input) => Boolean(input.value)),
-          }));
-        } catch (error) {
-          if (
-            !(error instanceof Error) ||
-            !/execution context|navigation/i.test(error.message)
-          )
-            throw error;
-        }
-        let challengePage = challenged();
-        if (view) {
+    async wait(mitigated: () => boolean, signal?: AbortSignal) {
+      const deadline = performance.now() + waitMs;
+      for (;;) {
+        signal?.throwIfAborted();
+        const url = page.url();
+        if (
+          !mitigated() &&
+          !(URL.canParse(url) && isChallengeUrl(new URL(url)))
+        ) {
           try {
-            pageContent(view.lead, { title: view.title });
+            const view = await page.evaluate(
+              (cap) => ({
+                title: document.title,
+                text: document.body?.innerText.slice(0, cap) ?? "",
+                hasFormFields: !!document.querySelector(
+                  'form :is(textarea, input:not([type]), input[type="text"], input[type="email"], input[type="password"], input[type="tel"])',
+                ),
+              }),
+              CHALLENGE_TEXT_CHARS + 1,
+            );
+            if (
+              !looksChallenged(view.hasFormFields ? "" : view.text, view.title)
+            )
+              return;
           } catch (error) {
-            if (!(error instanceof AppError)) throw error;
-            challengePage ||= error.code === "challenge";
+            if (
+              !(error instanceof Error) ||
+              !/execution context|navigation/i.test(error.message)
+            )
+              throw error;
+            // The challenge can clear by navigating away during the check.
           }
-          sawChallengePage ||= challengePage;
-          if (
-            !challengePage &&
-            (!view.widget || solved || view.answered) &&
-            (!pending.size || sawChallengePage || view.answered)
-          )
-            return;
         }
         if (failed)
           throw new AppError(
             "challenge",
             "Scrapfly reported a CAPTCHA solve failure.",
           );
-        await delay(350, undefined, { signal });
+        const remaining = deadline - performance.now();
+        if (remaining <= 0)
+          throw new AppError(
+            "challenge_timeout",
+            "CAPTCHA did not clear within the browser challenge wait.",
+          );
+        await delay(Math.min(pollMs, remaining), undefined, { signal });
       }
-      throw new AppError(
-        "challenge_timeout",
-        "CAPTCHA did not clear within the browser tool deadline.",
-      );
     },
   };
 }

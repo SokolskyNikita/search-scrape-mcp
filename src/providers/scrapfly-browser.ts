@@ -1,3 +1,8 @@
+import { defaults } from "../config/tuning.js";
+import {
+  MAX_BROWSER_PAGE_CHARS,
+  MAX_BROWSER_IMAGE_BYTES,
+} from "../config/safety-limits.js";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   chromium,
@@ -7,7 +12,7 @@ import {
 import { AppError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
 import { checkPage } from "../tools/page-check.js";
-import { pageContent } from "../tools/page-content.js";
+import { cleanPage, pageContent } from "../tools/page-content.js";
 import { watchCaptcha } from "./browser-captcha.js";
 import { guardNavigations } from "./browser-navigation.js";
 import { scrapflyTransport } from "./scrapfly-browser-transport.js";
@@ -32,7 +37,10 @@ function within<T>(operation: Promise<T>, ms: number): Promise<T> {
   ]).finally(() => controller.abort());
 }
 
-export function scrapflyBrowser(key: string): BrowserProvider {
+export function scrapflyBrowser(
+  key: string,
+  settings = defaults,
+): BrowserProvider {
   return {
     name: "scrapfly",
     async open(signal, target) {
@@ -43,7 +51,10 @@ export function scrapflyBrowser(key: string): BrowserProvider {
         routingUrl.hash = "";
         endpoint.searchParams.set("target_url", routingUrl.href);
       }
-      endpoint.searchParams.set("timeout", "1800");
+      endpoint.searchParams.set(
+        "timeout",
+        String(settings.browserSessionSeconds),
+      );
       endpoint.searchParams.set("auto_close", "true");
       endpoint.searchParams.set("solve_captcha", "true");
 
@@ -83,7 +94,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
             const page = context.pages()[0] ?? (await context.newPage());
             const cdp = await context.newCDPSession(page);
             const navigationError = await guardNavigations(cdp);
-            const captcha = watchCaptcha(cdp, page);
+            const captcha = watchCaptcha(cdp, page, settings.captchaWaitMs);
             await page.routeWebSocket("**/*", async (socket) => {
               try {
                 await validatePublicUrl(socket.url().replace(/^ws/, "http"));
@@ -156,7 +167,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                   "empty_page",
                   "The browser is on a blank page.",
                 );
-              await content();
+              await validatePublicUrl(page.url());
               const tree = (
                 await page.ariaSnapshot({ mode: "ai", timeout: actionTimeout })
               )
@@ -180,29 +191,29 @@ export function scrapflyBrowser(key: string): BrowserProvider {
               return snapshot;
             }
 
-            async function content(): Promise<string> {
-              await validatePublicUrl(page.url());
+            async function content() {
+              const location = page.url();
+              const url = await validatePublicUrl(location);
               const title = await page.title();
               const body = await page
                 .locator("body")
                 .evaluate(
                   (element, cap) =>
                     (element as HTMLElement).innerText.slice(0, cap + 1),
-                  2_000_000,
+                  MAX_BROWSER_PAGE_CHARS,
                   { timeout: actionTimeout },
                 );
-              if (body.length > 2_000_000)
+              if (body.length > MAX_BROWSER_PAGE_CHARS)
                 throw new AppError(
                   "page_size",
                   "Browser page exceeds 2 million characters.",
                 );
-              const readable = pageContent(body, {
-                title,
-                status: lastStatus,
-              });
-              return pageContent(
-                title ? `# ${title}\n\n${readable}` : readable,
-              );
+              if (page.url() !== location || lastStatus === undefined)
+                throw new AppError(
+                  "browser_navigation",
+                  "The browser page changed while reading its content.",
+                );
+              return { url, status: lastStatus, title, text: cleanPage(body) };
             }
 
             return {
@@ -246,13 +257,13 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                       await delay(action.ms, undefined, { signal: runSignal });
                   }
                   if (action.action === "screenshot") {
-                    await content();
+                    await validatePublicUrl(page.url());
                     const image = await page.screenshot({
                       type: "jpeg",
                       quality: 65,
                       timeout: actionTimeout,
                     });
-                    if (image.byteLength > 1_000_000)
+                    if (image.byteLength > MAX_BROWSER_IMAGE_BYTES)
                       throw new AppError(
                         "image_size",
                         "Viewport screenshot exceeds 1 MB.",
@@ -310,12 +321,17 @@ export function browserScraper(provider: BrowserProvider): ScrapeProvider {
           { action: "navigate", url: target.href },
           signal,
         );
-        if (typeof result !== "string")
-          throw new AppError("internal", "Expected browser page text.");
-        const check = checkPage(result, target, target, 200);
+        if (typeof result === "string" || "type" in result)
+          throw new AppError(
+            "internal",
+            "Expected browser navigation details.",
+          );
+        const { url: final, status, title, text } = result;
+        const markdown = title ? `# ${title}\n\n${text}` : text;
+        const check = checkPage(markdown, target, final, status);
         if (check.code !== "ok" && !check.warning)
           throw new AppError(check.code, check.reason);
-        return { markdown: result, check };
+        return { markdown, check };
       } finally {
         await session.close();
       }

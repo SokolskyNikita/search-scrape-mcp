@@ -1,3 +1,4 @@
+import { defaults } from "../config/tuning.js";
 import { randomUUID } from "node:crypto";
 import {
   lstatSync,
@@ -9,12 +10,13 @@ import {
 import { join } from "node:path";
 import { AppError } from "../server/error.js";
 
-const maxAge = 4 * 60 * 60_000;
-const maxBytes = 64 * 1024 * 1024;
 const spillName = /^page-[a-f0-9-]{36}\.md$/;
 
 export class OutputFiles {
-  constructor(private readonly directory = "/tmp/search-scrape-mcp") {}
+  constructor(
+    private readonly directory = defaults.outputDirectory,
+    private readonly settings = defaults,
+  ) {}
 
   private ensureDirectory() {
     try {
@@ -37,7 +39,7 @@ export class OutputFiles {
   cleanup(reserve = 0) {
     try {
       this.ensureDirectory();
-      const cutoff = Date.now() - maxAge;
+      const cutoff = Date.now() - this.settings.outputMaxAgeMs;
       const kept = [];
       let bytes = 0;
       for (const name of readdirSync(this.directory)) {
@@ -53,7 +55,7 @@ export class OutputFiles {
         }
       }
       for (const file of kept.sort((a, b) => a.modified - b.modified)) {
-        if (bytes + reserve <= maxBytes) break;
+        if (bytes + reserve <= this.settings.outputMaxBytes) break;
         unlinkSync(file.file);
         bytes -= file.bytes;
       }
@@ -69,7 +71,7 @@ export class OutputFiles {
   spill(markdown: string, inlineLimit: number) {
     if (markdown.length <= inlineLimit) return undefined;
     const bytes = Buffer.byteLength(markdown);
-    if (bytes > maxBytes)
+    if (bytes > this.settings.outputMaxBytes)
       throw new AppError("output_size", "Output exceeds the file storage cap.");
     this.cleanup(bytes);
 
@@ -89,7 +91,7 @@ export class OutputFiles {
     for (const character of markdown) {
       characters++;
       if (character === "\n") lines++;
-      if (characters <= 600) preview += character;
+      if (characters <= this.settings.outputPreviewChars) preview += character;
     }
     return {
       preview: preview.trimEnd(),

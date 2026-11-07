@@ -12,45 +12,55 @@ import { registerSearch } from "../tools/search.js";
 import { createMcpHttp } from "./http.js";
 
 export function createApp(config: Config) {
-  const search = { serper: serper(config.serperKey) };
+  const search = { serper: serper(config.serperKey, config) };
   const browser = config.scrapflyKey
-    ? { scrapfly: scrapflyBrowser(config.scrapflyKey) }
+    ? { scrapfly: scrapflyBrowser(config.scrapflyKey, config) }
     : undefined;
   const scrape =
     config.scrapflyKey && browser
       ? {
-          scrapfly: scrapflyScrape(config.scrapflyKey),
+          scrapfly: scrapflyScrape(config.scrapflyKey, config),
           "scrapfly-browser": browserScraper(browser.scrapfly),
         }
       : undefined;
 
-  const files = new OutputFiles();
+  const files = new OutputFiles(config.outputDirectory, config);
   files.cleanup();
-  const server = createMcpHttp(config.token, (mcp) => {
-    registerSearch(
-      mcp,
-      config.searchProviders.map((name) => search[name]),
-    );
-    if (scrape)
-      registerScrape(
+  const server = createMcpHttp(
+    config.token,
+    (mcp) => {
+      registerSearch(
         mcp,
-        config.scrapeProviders.map((name) => scrape[name]),
-        files,
+        config.searchProviders.map((name) => search[name]),
+        config,
       );
-    if (browser)
-      return registerBrowser(
-        mcp,
-        config.browserProviders.map((name) => browser[name]),
-        files,
-      );
-  });
-  const cleanup = setInterval(() => {
-    try {
-      files.cleanup();
-    } catch {
-      console.error("Could not clean up saved tool outputs.");
-    }
-  }, 15 * 60_000).unref();
+      if (scrape)
+        registerScrape(
+          mcp,
+          config.scrapeProviders.map((name) => scrape[name]),
+          files,
+          config,
+        );
+      if (browser)
+        return registerBrowser(
+          mcp,
+          config.browserProviders.map((name) => browser[name]),
+          files,
+          config,
+        );
+    },
+    config,
+  );
+  const cleanup = setInterval(
+    () => {
+      try {
+        files.cleanup();
+      } catch {
+        console.error("Could not clean up saved tool outputs.");
+      }
+    },
+    Math.min(15 * 60_000, config.outputMaxAgeMs),
+  ).unref();
   server.once("close", () => clearInterval(cleanup));
   return server;
 }

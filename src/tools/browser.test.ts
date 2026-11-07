@@ -11,6 +11,7 @@ import { OutputFiles } from "./output-files.js";
 import { registerBrowser } from "./browser.js";
 
 test("browser state and cleanup are isolated by MCP session", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const dir = mkdtempSync(join(tmpdir(), "browser-tool-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const files = new OutputFiles(join(dir, "spills"));
@@ -81,6 +82,10 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
         index === 0 ? page : snapshot,
       );
     }
+    t.mock.timers.tick(149_999);
+    assert.deepEqual(closed, [1]);
+    t.mock.timers.tick(1);
+    assert.deepEqual(closed, [1, 2]);
   } finally {
     await Promise.all([a.close(), b.close()]);
   }

@@ -1,3 +1,4 @@
+import { MAX_PROVIDER_RESPONSE_BYTES } from "../config/safety-limits.js";
 import type { ConnectOverCDPTransport } from "playwright-core";
 import WebSocket from "ws";
 import { AppError } from "../server/error.js";
@@ -8,7 +9,7 @@ export async function scrapflyTransport(
   signal?.throwIfAborted();
   const socket = new WebSocket(endpoint, {
     handshakeTimeout: 15_000,
-    maxPayload: 8_000_000,
+    maxPayload: MAX_PROVIDER_RESPONSE_BYTES,
     perMessageDeflate: false,
   });
   const transport = cdpTransport(socket);
