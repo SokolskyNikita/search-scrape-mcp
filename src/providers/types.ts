@@ -26,7 +26,10 @@ export type BrowserAction =
   | { action: "close" };
 
 export interface BrowserSession {
-  run(action: Exclude<BrowserAction, { action: "close" }>): Promise<string>;
+  run(
+    action: Exclude<BrowserAction, { action: "close" }>,
+    fullPage?: boolean,
+  ): Promise<string>;
   close(): Promise<void>;
 }
 

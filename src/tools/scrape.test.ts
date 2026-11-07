@@ -9,7 +9,7 @@ import { registerScrape } from "./scrape.js";
 test("scrape tools use fallback, bound content, and preserve batch order", async (t) => {
   const mcp = new McpServer({ name: "scrape-test", version: "1.0.0" });
   const seen: string[] = [];
-  const content = "Public page content ".repeat(1_000).trim();
+  const content = "Public page content ".repeat(4_000).trim();
   registerScrape(mcp, [
     {
       scrape: async (url) => {
@@ -36,12 +36,19 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
     name: "scrape",
     arguments: { url: first },
   });
-  assert.deepEqual(single.content, [
-    {
-      type: "text",
-      text: content.slice(0, 11_985).trimEnd() + "\n\n[truncated]",
-    },
-  ]);
+  assert(Array.isArray(single.content));
+  const chunk = JSON.parse(single.content[0].text);
+  assert.equal(chunk.markdown, content.slice(0, 48_000));
+  const more = await client.callTool({
+    name: "scrape_more",
+    arguments: { pageId: chunk.pageId, offset: chunk.nextOffset },
+  });
+  assert(Array.isArray(more.content));
+  assert.equal(
+    chunk.markdown + JSON.parse(more.content[0].text).markdown,
+    content,
+  );
+  assert.deepEqual(seen, [first]);
 
   const mixed = await client.callTool({
     name: "scrape_batch",
@@ -55,11 +62,8 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
     result.map((item: { index: number }) => item.index),
     [0, 1, 2],
   );
-  assert.equal(
-    result[0].result,
-    content.slice(0, 3_985).trimEnd() + "\n\n[truncated]",
-  );
-  assert.equal(result[2].result, result[0].result);
+  assert.equal(result[0].result.markdown, content.slice(0, 20_000));
+  assert.equal(result[2].result.markdown, result[0].result.markdown);
   assert.match(result[1].error.code, /url|target/);
   assert.deepEqual(seen, [first, second, first]);
 });

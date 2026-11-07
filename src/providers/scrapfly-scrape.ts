@@ -78,6 +78,7 @@ export function scrapflyScrape(key: string): ScrapeProvider {
       }
       const content = pageContent(result.content ?? "", {
         status: result.status_code,
+        limit: Infinity,
       });
       if (!result.success) {
         throw new AppError(

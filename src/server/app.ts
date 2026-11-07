@@ -6,6 +6,7 @@ import {
 import { scrapflyScrape } from "../providers/scrapfly-scrape.js";
 import { serper } from "../providers/serper.js";
 import { registerBrowser } from "../tools/browser.js";
+import { PageCache } from "../tools/page-cache.js";
 import { registerScrape } from "../tools/scrape.js";
 import { registerSearch } from "../tools/search.js";
 import { createMcpHttp } from "./http.js";
@@ -23,6 +24,7 @@ export function createApp(config: Config) {
         }
       : undefined;
 
+  const cache = new PageCache();
   return createMcpHttp(config.token, (mcp) => {
     registerSearch(
       mcp,
@@ -32,6 +34,7 @@ export function createApp(config: Config) {
       registerScrape(
         mcp,
         config.scrapeProviders.map((name) => scrape[name]),
+        cache,
       );
     if (browser)
       return registerBrowser(

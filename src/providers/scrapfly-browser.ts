@@ -126,29 +126,35 @@ export function scrapflyBrowser(key: string): BrowserProvider {
               return pageContent(tree);
             }
 
-            async function content(): Promise<string> {
+            async function content(fullPage = false): Promise<string> {
               await validatePublicUrl(page.url());
               const title = (await page.title()).slice(0, 512);
               const body = await page
                 .locator("body")
                 .evaluate(
-                  (element) =>
-                    (element as HTMLElement).innerText.slice(0, 16_000),
-                  undefined,
+                  (element, cap) =>
+                    (element as HTMLElement).innerText.slice(0, cap + 1),
+                  fullPage ? 2_000_000 : 16_000,
                   { timeout: actionTimeout },
+                );
+              if (fullPage && body.length > 2_000_000)
+                throw new AppError(
+                  "page_size",
+                  "Browser page exceeds 2 million characters.",
                 );
               const readable = pageContent(body, {
                 title,
                 status: lastStatus,
-                limit: 16_000,
+                limit: fullPage ? Infinity : 16_000,
               });
               return pageContent(
                 title ? `# ${title}\n\n${readable}` : readable,
+                { limit: fullPage ? Infinity : 12_000 },
               );
             }
 
             return {
-              async run(action) {
+              async run(action, fullPage) {
                 try {
                   if (isClosed()) throw closedError();
                   if (action.action === "navigate") {
@@ -157,7 +163,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                     await page.goto(target.href, {
                       waitUntil: "domcontentloaded",
                     });
-                    return await within(content(), actionTimeout);
+                    return await within(content(fullPage), actionTimeout);
                   }
                   if (action.action === "click")
                     await page.locator(action.selector).click();
@@ -200,7 +206,10 @@ export function browserScraper(provider: BrowserProvider): ScrapeProvider {
       const target = await validatePublicUrl(url);
       const session = await provider.open();
       try {
-        return await session.run({ action: "navigate", url: target.href });
+        return await session.run(
+          { action: "navigate", url: target.href },
+          true,
+        );
       } finally {
         await session.close();
       }
