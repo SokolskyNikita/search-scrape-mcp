@@ -118,7 +118,7 @@ and evicts the oldest files as needed to keep saved output under 64 MiB.
 
 Batches run up to two items concurrently and serialize items for the same
 hostname. They preserve result order. Item failures
-include their original indices. Calls have a 54-second overall deadline.
+include their original indices. Calls default to a 54-second overall deadline.
 A deadline can interrupt a batch before all items have results.
 
 For browser actions, use a ref from the latest snapshot, for example
@@ -126,34 +126,79 @@ For browser actions, use a ref from the latest snapshot, for example
 selectors still work via `selector`. Scroll takes signed `pixels`.
 Wait takes `ms` (up to 10,000) and optionally a selector to wait for.
 Screenshot returns a viewport JPEG as MCP image content. Navigation and back
-wait for provider CAPTCHA events or a clearing challenge page, bounded by
-40 seconds and the overall tool deadline. Browser lifetime is up to 30 minutes.
-After browser expiry, send a new navigate command to open a fresh browser.
+wait for CAPTCHA clearance only when the page looks like a challenge. The wait
+defaults to 40 seconds within the overall tool deadline. Scrapfly's
+`solve_captcha` can still solve and bill for widgets on ordinary forms.
+Use `close` when done to stop session charges. By default, the server closes
+an idle browser after 2 minutes 30 seconds and Scrapfly caps a session at
+30 minutes. After browser expiry, navigate again to open a fresh browser.
 
 ## Settings, cost and logs
 
 The default settings file is `~/.config/search-scrape-mcp/config.json`.
 Use `MCP_CONFIG` and `MCP_KEYS_FILE` for absolute path overrides. The settings
-file accepts `port` (default 8765), `token`, and ordered arrays
-`searchProviders` (default `["serper"]`), `scrapeProviders` (default
-`["scrapfly"]`), and `browserProviders` (default `["scrapfly"]`).
-Omitting `SCRAPFLY_API_KEY` leaves search enabled.
+file requires the private bearer `token`. Omitted settings use the defaults
+below. Omitting `SCRAPFLY_API_KEY` leaves search enabled.
+Run `npm run config` to print the effective settings with the token omitted.
+This command reads only the settings file. Run `npm run config:docs` after
+changing the schema. The test command checks that the table matches.
+
+<!-- settings:start -->
+
+<!-- prettier-ignore -->
+| Setting | Default | Description |
+| --- | --- | --- |
+| `port` | `8765` | Local MCP HTTP port. |
+| `toolDeadlineSeconds` | `54` | Overall tool deadline in seconds. The relay allows three additional seconds. |
+| `serperBackupDelayMs` | `4500` | Delay before hedging a slow Serper request. Transient failures can trigger an earlier backup. |
+| `serperTimeoutMs` | `12000` | Shared Serper primary and backup budget in milliseconds, within the tool deadline. |
+| `searchGl` | `"us"` | Default Serper country code. |
+| `searchHl` | `"en"` | Default Serper language code. |
+| `scrapflyDatacenterCost` | `5` | Datacenter request cost budget in credits. |
+| `scrapflyUnblockerCost` | `20` | Unblocker request cost budget in credits. |
+| `scrapflyRenderCost` | `40` | Rendering request cost budget in credits. |
+| `scrapflyDatacenterPool` | `"public_datacenter_pool"` | Proxy pool sent on the datacenter rung. |
+| `scrapflyUnblockerPool` | `"public_datacenter_pool"` | Initial proxy pool sent on the Unblocker rung. |
+| `scrapflyRenderPool` | `"public_datacenter_pool"` | Initial proxy pool sent on the rendering rung. |
+| `scrapflyRenderingWaitMs` | `1000` | Scrapfly rendering wait in milliseconds. |
+| `captchaWaitMs` | `40000` | Maximum CAPTCHA challenge wait in milliseconds, within the tool deadline. |
+| `browserSessionSeconds` | `1800` | Maximum remote browser session length in seconds. |
+| `browserIdleMs` | `150000` | Close a browser after this many idle milliseconds. |
+| `mcpSessionExpiryMs` | `7200000` | Expire idle MCP sessions after this many milliseconds. |
+| `mcpSessionLimit` | `128` | Maximum number of MCP sessions. |
+| `scrapeInlineChars` | `48000` | Inline character limit for a single scrape. |
+| `scrapeBatchInlineChars` | `20000` | Inline character limit per batch scrape. |
+| `browserInlineChars` | `12000` | Inline character limit for browser text output. |
+| `outputPreviewChars` | `600` | Preview character limit for saved outputs. |
+| `outputDirectory` | `"/tmp/search-scrape-mcp"` | Absolute local spill directory. It must be private and owned by the server user. |
+| `outputMaxAgeMs` | `14400000` | Saved output retention in milliseconds. |
+| `outputMaxBytes` | `67108864` | Total saved output size cap in bytes. |
+| `siteMemoryMs` | `14400000` | How long a hostname's successful rung or protection is remembered in milliseconds. |
+| `siteMemorySize` | `256` | Maximum remembered hostnames. Zero disables memory. |
+| `statsLogMaxBytes` | `2097152` | Rotate the JSONL stats file at this size in bytes. |
+| `searchProviders` | `["serper"]` | Search provider order. |
+| `scrapeProviders` | `["scrapfly"]` | Scrape provider order. |
+| `browserProviders` | `["scrapfly"]` | Interactive browser provider order. |
+
+<!-- settings:end -->
 
 Search defaults to US English. Both search tools accept a country code (`gl`),
-language code (`hl`), geographic `location`, result `page` (starting at 1),
+language code (`hl`), geographic `location`, result `page` (1 through 10),
 and a boolean `autocorrect`. Use either `recency` (`day`, `week`, `month`, or
 `year`) or a Google time filter such as `tbs: "qdr:h"`. You can also specify
 `site` and up to five `exclude_domains`. Hits include dates when Serper supplies
 them. A query starts at most one hedge after a transient
-failure or 900 ms without an answer. Both requests may count against quota.
+failure or 4.5 seconds without an answer by default. Both requests may count
+against quota.
 
 Scrapfly starts with datacenter and escalates to the Unblocker when a page is
 blocked or challenged. Empty pages and JavaScript shells can jump straight
-to the render rung, which adds a one-second render wait. The request cap is
-30 credits. This account's gateway rejected the current named `auto` and
-`unblocker` pools during testing, so the implementation uses
-`public_datacenter_pool` and enables the compatible `unblocker=true` toggle
-on stronger rungs. [Scrapfly proxy pool migration guide](https://scrapfly.io/new-pricing#legacy-spellings)
+to the render rung, which adds a one-second render wait by default. The default
+request cost budgets are 5, 20, and 40 credits for datacenter, Unblocker, and
+render. A request-budget rejection advances to the next rung if available.
+This account's gateway rejected the newer `auto` and `unblocker` pool names
+during testing. All three pools default to `public_datacenter_pool`, with
+`unblocker=true` on the two stronger rungs. [Scrapfly proxy pool migration guide](https://scrapfly.io/new-pricing#legacy-spellings)
 
 Results include a page check and the rungs tried. A warning preserves usable
 content such as a paywall teaser or persistent menus. A failure gives a reason
@@ -162,16 +207,27 @@ and, when useful, a hint for an untried stronger rung. Set `start_rung` to
 remembers what worked per hostname for four hours, up to 256 hostnames.
 A failed remembered rung is cleared. Sites seen blocking datacenter can
 skip it on later calls. Provider outages get at most one retry per scrape,
-within the tool deadline. Key and credit rejections stop immediately.
+when the remaining tool time covers the backoff and a full attempt. The
+scrape ladder reserves three seconds for completion or fallback, then splits
+the rest into 22%, 32%, and 46% for datacenter, Unblocker, and render. The same
+clipped per-request timeout goes to Scrapfly and the local HTTP request.
+Key and account credit rejections stop immediately.
 
 The browser can cost extra. To opt in to browser-backed scraping, set
 `"scrapeProviders": ["scrapfly", "scrapfly-browser"]` in settings.
 
 Tool logs include timestamp, name, provider, duration, outcome, error code
-and attempt count. Separate `provider_attempt` records include each Scrapfly
-rung or Serper request, including hedges. Credits are raw reported units or
-`null` when unavailable. The LaunchAgent writes `tools.jsonl` and rotates at
-2 MiB, retaining one previous file. Arguments and fetched content are
+and attempt count. Batch items log their own outcomes with `itemIndex`.
+The aggregate batch record describes whether the call returned a result.
+Separate `provider_attempt` records include each Scrapfly rung or Serper
+request. Count Serper `hedge` rows against `primary` rows to measure backup
+frequency. The `hedgeTrigger` field distinguishes delay from failure.
+For a local estimate of blocking on no-Unblocker attempts, count
+`datacenterBlocked: true` among datacenter records. This is the server's
+page classification. Use the rate to monitor proximity to your account's
+free-request threshold.
+Credits are raw reported units or `null` when unavailable. The LaunchAgent
+writes `tools.jsonl` and rotates at 2 MiB by default, retaining one previous file. Arguments and fetched content are
 excluded. Startup and diagnostic messages go to separate stdout and stderr
 files.
 
@@ -181,7 +237,8 @@ files.
   Origin, and requires the bearer token on every request. Other processes that
   can read your private settings or client environment can obtain the token.
   [MCP transport security guidance](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
-- The server supports 128 MCP sessions and expires them after two hours idle.
+- By default the server supports 128 MCP sessions and expires them after two
+  hours idle.
   Expired session IDs return HTTP 404. Reconnect the MCP server in the client or
   reopen the conversation if automatic reconnection fails. Browser state has
   its own 30-minute cap.
