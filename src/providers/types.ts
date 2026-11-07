@@ -77,5 +77,5 @@ export interface BrowserSession {
 
 export interface BrowserProvider {
   readonly name?: string;
-  open(signal?: AbortSignal): Promise<BrowserSession>;
+  open(signal?: AbortSignal, target?: URL): Promise<BrowserSession>;
 }

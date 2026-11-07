@@ -110,14 +110,16 @@ export function registerBrowser(
               "Navigate to a URL to open the browser.",
             );
           }
-          if (!browser && command.action === "navigate")
-            await validatePublicUrl(command.url);
+          const target =
+            !browser && command.action === "navigate"
+              ? await validatePublicUrl(command.url)
+              : undefined;
           if (browser) attempt(browserProvider);
           else
             browser = await fallback(
               providers,
               async (provider) => {
-                const opened = await provider.open(signal);
+                const opened = await provider.open(signal, target);
                 browserProvider = provider.name;
                 return opened;
               },

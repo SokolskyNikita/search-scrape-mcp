@@ -5,6 +5,7 @@ export async function providerResponse(
   url: URL,
   init: RequestInit = {},
   onHeaders?: (response: Response) => void,
+  format: "json" | "text" = "json",
 ) {
   try {
     const timeout = AbortSignal.timeout(32_000);
@@ -40,8 +41,10 @@ export async function providerResponse(
       }
       body += decoder.decode(value, { stream: true });
     }
+    body += decoder.decode();
+    if (format === "text") return { response, body };
     try {
-      return { response, body: JSON.parse(body + decoder.decode()) as unknown };
+      return { response, body: JSON.parse(body) as unknown };
     } catch {
       if (!response.ok) return { response, body: null };
       throw new AppError(

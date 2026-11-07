@@ -19,7 +19,8 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
   let opened = 0;
   const closed: number[] = [];
   const provider: BrowserProvider = {
-    async open() {
+    async open(_signal, target) {
+      assert.equal(target?.href, "https://1.1.1.1/");
       const id = ++opened;
       return {
         async run(action) {
