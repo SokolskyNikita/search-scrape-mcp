@@ -5,3 +5,5 @@ config.json
 *.log
 /env
 /references/
+
+/benchmarks/extraction/.local/
