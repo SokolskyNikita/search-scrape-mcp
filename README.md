@@ -116,7 +116,8 @@ needed. The folder uses mode 700 and files use mode 600. The server refuses a
 symlink or a folder it does not own. It deletes saved output after four hours
 and evicts the oldest files as needed to keep saved output under 64 MiB.
 
-Batches run two items concurrently and preserve result order. Item failures
+Batches run up to two items concurrently and serialize items for the same
+hostname. They preserve result order. Item failures
 include their original indices. Calls have a 54-second overall deadline.
 A deadline can interrupt a batch before all items have results.
 
@@ -138,17 +139,38 @@ file accepts `port` (default 8765), `token`, and ordered arrays
 `["scrapfly"]`), and `browserProviders` (default `["scrapfly"]`).
 Omitting `SCRAPFLY_API_KEY` leaves search enabled.
 
-The Scrape API uses a datacenter proxy pool and a 30-credit cost budget.
+Search uses US English and accepts optional `recency` (`day`, `week`, `month`
+or `year`), `site`, and up to five `exclude_domains`. Hits include dates when
+Serper supplies them. A query starts at most one hedge after a transient
+failure or 900 ms without an answer. Both requests may count against quota.
+
+Scrapfly starts with datacenter and escalates to the Unblocker when a page is
+blocked or challenged. Empty pages and JavaScript shells can jump straight
+to the render rung, which adds a one-second render wait. The request cap is
+30 credits. This account's gateway rejected the current named `auto` and
+`unblocker` pools during testing, so the implementation uses
+`public_datacenter_pool` and enables the compatible `unblocker=true` toggle
+on stronger rungs. [Scrapfly proxy pool migration guide](https://scrapfly.io/new-pricing#legacy-spellings)
+
+Results include a page check and the rungs tried. A warning preserves usable
+content such as a paywall teaser or persistent menus. A failure gives a reason
+and, when useful, a hint for an untried stronger rung. Set `start_rung` to
+`datacenter`, `unblocker`, or `render` on a scrape or batch. The server
+remembers what worked per hostname for four hours, up to 256 hostnames.
+A failed remembered rung is cleared. Sites seen blocking datacenter can
+skip it on later calls. Provider outages get at most one retry per scrape,
+within the tool deadline. Key and credit rejections stop immediately.
+
 The browser can cost extra. To opt in to browser-backed scraping, set
 `"scrapeProviders": ["scrapfly", "scrapfly-browser"]` in settings.
-Serper starts at most one hedge per query, after a transient failure or
-900 ms without an answer. Both requests may count against your quota.
 
-Each tool log line contains its timestamp, name, provider, duration, outcome,
-error code and attempt count. The LaunchAgent writes `tools.jsonl` and rotates
-at 2 MiB, retaining one previous file. Arguments and fetched content are
-excluded. Launch startup and diagnostic messages go to separate stdout and
-stderr files.
+Tool logs include timestamp, name, provider, duration, outcome, error code
+and attempt count. Separate `provider_attempt` records include each Scrapfly
+rung or Serper request, including hedges. Credits are raw reported units or
+`null` when unavailable. The LaunchAgent writes `tools.jsonl` and rotates at
+2 MiB, retaining one previous file. Arguments and fetched content are
+excluded. Startup and diagnostic messages go to separate stdout and stderr
+files.
 
 ## Security and sessions
 
