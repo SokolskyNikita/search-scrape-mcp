@@ -105,12 +105,14 @@ export function checkPage(
     .filter(({ text }) => text.length);
   const text = lines.map(({ text }) => text).join("\n");
   const heading = title(markdown);
+  const opening = lines[0]?.text ?? "";
+  const missingTitle =
+    /^(?:404(?: error)?(?:[: –-]+(?:page )?not found)?|(?:page )?not found|page (?:does not|doesn't) exist|página não encontrada|no fue posible encontrar página|ページが見つかりません|ไม่พบหน้านี้)(?:[.!]*|\s*[|–—-]\s*[^|]+)$/i;
 
   if (
     [404, 410].includes(status) ||
-    /^(?:404(?: error)?(?:[: –-]+(?:page )?not found)?|(?:page )?not found|page (?:does not|doesn't) exist)[.!]*$/i.test(
-      heading,
-    ) ||
+    missingTitle.test(heading) ||
+    missingTitle.test(opening) ||
     (text.length < NOT_FOUND_TEXT_CHARS &&
       /(?:the )?(?:page you (?:are|were) looking for|requested (?:page|url)) (?:could not be found|was not found|does not exist)/i.test(
         text,
@@ -138,6 +140,8 @@ export function checkPage(
       (/^(?:sign in|log in|login|sign in to continue|log in to continue)[.!]*$/i.test(
         heading,
       ) ||
+        (loginPath.test(final.pathname) &&
+          /^(?:sign in|log in) to\b/i.test(heading)) ||
         /\b(?:please |you must )?(?:sign in|log in) to (?:continue|access|view|read)\b/i.test(
           text,
         )))
@@ -190,13 +194,14 @@ export function checkPage(
       next: "render",
     };
   if (
-    text.length < PAYWALL_TEXT_CHARS &&
-    (/\bsubscribe to (?:continue reading|read the full (?:story|article))\b/i.test(
-      text,
-    ) ||
-      /^.{0,45}\b(?:subscribe|subscription|subscribers only|purchase access)\b.{0,80}(?:continue reading|read (?:the|this|full)|full (?:story|article)|access this article)|^this (?:article|story) is (?:for|available to) subscribers/im.test(
+    /^member[- ]only story[.!]?$/im.test(text.slice(0, TITLE_SCAN_CHARS)) ||
+    (text.length < PAYWALL_TEXT_CHARS &&
+      (/\bsubscribe to (?:continue reading|read the full (?:story|article))\b/i.test(
         text,
-      ))
+      ) ||
+        /^.{0,45}\b(?:subscribe|subscription|subscribers only|purchase access)\b.{0,80}(?:continue reading|read (?:the|this|full)|full (?:story|article)|access this article)|^this (?:article|story) is (?:for|available to) subscribers/im.test(
+          text,
+        )))
   )
     return {
       code: "paywall",
@@ -207,16 +212,20 @@ export function checkPage(
   const prose = lines.filter((line) => line.prose && !line.nav);
   const proseLength = prose.reduce((n, line) => n + line.text.length, 0);
   if (
-    text.length < CONSENT_TEXT_CHARS &&
-    prose.length <= CONSENT_MAX_PROSE_LINES &&
-    /(?:accept|reject|manage|allow|use) (?:all |optional |your )?cookies|cookie (?:preferences|consent)/i.test(
-      text,
-    ) &&
-    prose.every((line) =>
-      /cookie|privacy|consent|personal data|your device|tracking/i.test(
-        line.text,
-      ),
-    )
+    (/^before you continue(?: to .+)?$/i.test(opening) &&
+      /\baccept all\b/i.test(text) &&
+      /\breject all\b/i.test(text) &&
+      /\bcookies and data\b/i.test(text)) ||
+    (text.length < CONSENT_TEXT_CHARS &&
+      prose.length <= CONSENT_MAX_PROSE_LINES &&
+      /(?:accept|reject|manage|allow|use) (?:all |optional |your )?cookies|cookie (?:preferences|consent)/i.test(
+        text,
+      ) &&
+      prose.every((line) =>
+        /cookie|privacy|consent|personal data|your device|tracking/i.test(
+          line.text,
+        ),
+      ))
   )
     return {
       code: "consent",

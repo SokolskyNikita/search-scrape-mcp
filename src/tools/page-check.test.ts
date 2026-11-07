@@ -118,3 +118,52 @@ test("only redirects to the same site's home page count as moved content", () =>
     "ok",
   );
 });
+
+test("branded soft 404 and login titles classify the document", () => {
+  const missing = new URL("https://www.spotify.com/in-en/missing/");
+  assert.equal(
+    checkPage(
+      "Page not found - Spotify\n\n# Error code 404\n\nTry going back.",
+      missing,
+      missing,
+      200,
+    ).code,
+    "not_found",
+  );
+  for (const heading of [
+    "Página não encontrada — Spotify",
+    "ページが見つかりません-Spotify",
+    "ไม่พบหน้านี้ - Spotify",
+    "No fue posible encontrar página - Spotify",
+  ])
+    assert.equal(
+      checkPage(`${heading}\n\n# Try going back`, missing, missing, 200).code,
+      "not_found",
+    );
+  const login = new URL("https://github.com/login");
+  assert.equal(
+    checkPage(
+      "Sign in to GitHub · GitHub\n\n# Sign in to GitHub\n\nUsername and password.",
+      login,
+      login,
+      200,
+    ).code,
+    "sign_in",
+  );
+});
+
+test("explicit consent and membership screens survive lengthy site chrome", () => {
+  const url = new URL("https://example.com/article");
+  const chrome = "Navigation label and surrounding page chrome.\n".repeat(130);
+  const consent = `Before you continue to Example Search\n\n${chrome}\nIf you choose to “Accept all,” we will use cookies and data. If you choose to “Reject all,” we will skip those purposes.`;
+  assert.equal(checkPage(consent, url, url, 200).code, "consent");
+  assert.equal(
+    checkPage(
+      `Member-only story\n\n# Article preview\n\n${chrome}`,
+      url,
+      url,
+      200,
+    ).code,
+    "paywall",
+  );
+});
