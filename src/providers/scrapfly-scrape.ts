@@ -27,6 +27,7 @@ const envelope = z.object({
   result: z
     .object({
       content: z.string().nullish(),
+      format: z.string().nullish(),
       status_code: z.number().int().min(100).max(599).nullish(),
       success: z.boolean().optional(),
       url: z.string().nullish(),
@@ -67,6 +68,37 @@ function providerError(status: number, code: string) {
     return new AppError("provider_rate", "Scrapfly is rate-limiting requests.");
 }
 
+async function downloadText(
+  content: string,
+  endpoint: URL,
+  key: string,
+  signal: AbortSignal,
+) {
+  const url = URL.canParse(content) ? new URL(content) : undefined;
+  if (
+    !url ||
+    url.protocol !== "https:" ||
+    url.origin !== endpoint.origin ||
+    url.username ||
+    url.password
+  )
+    throw new AppError("provider_response", "Invalid Scrapfly content URL.");
+  url.searchParams.set("key", key);
+  const { response, body } = await providerResponse(
+    "Scrapfly",
+    url,
+    { signal },
+    undefined,
+    "text",
+  );
+  if (!response.ok || typeof body !== "string")
+    throw new AppError(
+      "provider_response",
+      "Could not download Scrapfly text content.",
+    );
+  return body;
+}
+
 async function requestPage(
   key: string,
   target: URL,
@@ -95,13 +127,17 @@ async function requestPage(
   let retryMs: number | undefined;
   let retryable = true;
   let headerFailure: AppError | undefined;
+  const requestSignal = AbortSignal.any([
+    signal,
+    AbortSignal.timeout(timeouts[rung]),
+  ]);
   try {
     const { response, body } = await providerResponse(
       "Scrapfly",
       endpoint,
       {
         headers: { Accept: "application/json" },
-        signal: AbortSignal.any([signal, AbortSignal.timeout(timeouts[rung])]),
+        signal: requestSignal,
       },
       (headers) => {
         headerFailure = providerError(
@@ -130,6 +166,9 @@ async function requestPage(
       "";
     const failure = providerError(response.status, code);
     if (failure) throw failure;
+
+    if (code === "ERR::ASP::TIMEOUT" || code === "ERR::ASP::CAPTCHA_TIMEOUT")
+      throw new AppError("provider_down", "Scrapfly Unblocker timed out.");
 
     if (
       code.startsWith("ERR::ASP::") ||
@@ -184,7 +223,16 @@ async function requestPage(
         .filter((hop) => hop !== target.href && hop !== final.href)
         .map(validatePublicUrl),
     );
-    const markdown = cleanPage(result.content ?? "");
+    if (result.format === "blob" || result.format === "binary")
+      throw new AppError(
+        "provider_response",
+        "Scrapfly returned binary content for a text scrape.",
+      );
+    const content =
+      result.format === "clob"
+        ? await downloadText(result.content ?? "", endpoint, key, requestSignal)
+        : (result.content ?? "");
+    const markdown = cleanPage(content);
     const check = checkPage(markdown, target, final, result.status_code);
     errorCode = check.code === "ok" || check.warning ? null : check.code;
     if (check.code === "ok" && result.success === false)

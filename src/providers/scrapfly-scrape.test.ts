@@ -12,6 +12,60 @@ const success = (content = body, url = target, status = 200) => ({
 });
 const options = (): ScrapeOptions => ({ tried: [] });
 
+test("Scrapfly retrieves offloaded text without forwarding credentials to another origin", async (t) => {
+  let format = "clob";
+  let content = "https://api.scrapfly.io/object?ref=example";
+  let downloads = 0;
+  t.mock.method(globalThis, "fetch", async (url: URL, init: RequestInit) => {
+    if (url.pathname === "/scrape")
+      return Response.json({
+        result: { ...success(content).result, format },
+      });
+    downloads++;
+    assert.equal(url.href, content + "&key=fake-key");
+    assert.equal(init.redirect, "error");
+    return new Response(body, { headers: { "Content-Type": "text/plain" } });
+  });
+  const provider = scrapflyScrape("fake-key");
+  const result = await provider.scrape(target);
+  assert.equal(result.markdown, "# An article\n\nPublic content.");
+  content = "https://example.com/object";
+  await assert.rejects(provider.scrape(target), { code: "provider_response" });
+  format = "blob";
+  await assert.rejects(provider.scrape(target), { code: "provider_response" });
+  assert.equal(downloads, 1);
+});
+
+test("Scrapfly treats retryable Unblocker timeouts as transient failures", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (url: URL) => {
+    assert.equal(url.searchParams.get("unblocker"), "true");
+    assert.equal(url.searchParams.has("render_js"), false);
+    calls++;
+    return Response.json(
+      {},
+      {
+        status: 422,
+        headers: {
+          "X-Scrapfly-Reject-Code": "ERR::ASP::TIMEOUT",
+          "X-Scrapfly-Reject-Retryable": "true",
+          "Retry-After": "0",
+        },
+      },
+    );
+  });
+  const tried: string[] = [];
+  await assert.rejects(
+    scrapflyScrape("fake-key").scrape(target, undefined, {
+      start: "unblocker",
+      tried,
+    }),
+    { code: "provider_down" },
+  );
+  assert.deepEqual(tried, ["unblocker", "unblocker"]);
+  assert.equal(calls, 2);
+});
+
 test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async (t) => {
   const observed: string[] = [];
   let mode = "block";

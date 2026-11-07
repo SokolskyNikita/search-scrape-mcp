@@ -35,9 +35,14 @@ function within<T>(operation: Promise<T>, ms: number): Promise<T> {
 export function scrapflyBrowser(key: string): BrowserProvider {
   return {
     name: "scrapfly",
-    async open(signal) {
+    async open(signal, target) {
       const endpoint = new URL("wss://browser.scrapfly.io");
-      endpoint.searchParams.set("key", key);
+      endpoint.searchParams.set("api_key", key);
+      if (target) {
+        const routingUrl = new URL(target);
+        routingUrl.hash = "";
+        endpoint.searchParams.set("target_url", routingUrl.href);
+      }
       endpoint.searchParams.set("timeout", "1800");
       endpoint.searchParams.set("auto_close", "true");
       endpoint.searchParams.set("solve_captcha", "true");
@@ -299,7 +304,7 @@ export function browserScraper(provider: BrowserProvider): ScrapeProvider {
     async scrape(url, signal, options) {
       options?.tried.push("browser");
       const target = await validatePublicUrl(url);
-      const session = await provider.open(signal);
+      const session = await provider.open(signal, target);
       try {
         const result = await session.run(
           { action: "navigate", url: target.href },
