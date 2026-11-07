@@ -22,10 +22,22 @@ export const tuningSchema = z.object({
     30,
     "Server-wide Scrapfly scrape request rate, including retries and escalation.",
   ),
+  serperBurstCapacity: integer(
+    1,
+    1_000,
+    20,
+    "Maximum accumulated Serper request tokens.",
+  ),
+  scrapflyBurstCapacity: integer(
+    1,
+    1_000,
+    10,
+    "Maximum accumulated Scrapfly scrape request tokens.",
+  ),
   localLimitWaitMs: integer(
     0,
+    55_000,
     10_000,
-    2_500,
     "Maximum wait for a provider or hostname permit, within the call deadline.",
   ),
   siteConcurrency: integer(

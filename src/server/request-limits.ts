@@ -5,13 +5,36 @@ import { writeLimitEvent } from "./stats.js";
 
 type LimitCode = "local_site_limit" | "local_rate_limit";
 type Provider = "serper" | "scrapfly";
+type Bucket = {
+  capacity: number;
+  refillPerMs: number;
+  tokens: number;
+  updated: number;
+};
 type Site = { active: number; next: number; cleanup?: NodeJS.Timeout };
 
 export class RequestLimits {
-  private readonly next = { serper: 0, scrapfly: 0 };
+  private readonly buckets: Record<Provider, Bucket>;
   private readonly sites = new Map<string, Site>();
 
-  constructor(private readonly settings: Tuning) {}
+  constructor(private readonly settings: Tuning) {
+    const bucket = (capacity: number, requestsPerMinute: number): Bucket => ({
+      capacity,
+      refillPerMs: requestsPerMinute / 60_000,
+      tokens: capacity,
+      updated: performance.now(),
+    });
+    this.buckets = {
+      serper: bucket(
+        settings.serperBurstCapacity,
+        settings.serperRequestsPerMinute,
+      ),
+      scrapfly: bucket(
+        settings.scrapflyBurstCapacity,
+        settings.scrapflyRequestsPerMinute,
+      ),
+    };
+  }
 
   async acquire(
     signal: AbortSignal,
@@ -24,26 +47,29 @@ export class RequestLimits {
       deadline,
       performance.now() + this.settings.localLimitWaitMs,
     );
+    const bucket = provider ? this.buckets[provider] : undefined;
     const events = new Set<string>();
     let lastCode: LimitCode = "local_rate_limit";
     for (;;) {
       signal.throwIfAborted();
       const now = performance.now();
       const site = host ? this.sites.get(host) : undefined;
-      const providerWait = provider ? this.next[provider] - now : 0;
+      let providerWait = 0;
+      if (bucket) {
+        bucket.tokens = Math.min(
+          bucket.capacity,
+          bucket.tokens + (now - bucket.updated) * bucket.refillPerMs,
+        );
+        bucket.updated = now;
+        providerWait = Math.max(0, (1 - bucket.tokens) / bucket.refillPerMs);
+      }
       const siteWait = Math.max(
         site ? site.next - now : 0,
         site && site.active >= this.settings.siteConcurrency ? 100 : 0,
       );
       const wait = Math.ceil(Math.max(providerWait, siteWait));
       if (wait <= 0 && (now <= stop || events.size === 0)) {
-        if (provider) {
-          const rate =
-            provider === "serper"
-              ? this.settings.serperRequestsPerMinute
-              : this.settings.scrapflyRequestsPerMinute;
-          this.next[provider] = now + 60_000 / rate;
-        }
+        if (bucket) bucket.tokens--;
         if (!host) return () => {};
         const entry = site ?? { active: 0, next: 0 };
         clearTimeout(entry.cleanup);

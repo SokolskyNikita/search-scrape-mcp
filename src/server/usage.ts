@@ -32,7 +32,10 @@ const stateSchema = z.object({
       serperSearches: count,
     }),
   ),
-  leases: z.record(z.string(), z.object({ start: count, end: count })),
+  leases: z.record(
+    z.string(),
+    z.object({ start: count, end: count, runId: z.string().optional() }),
+  ),
 });
 type State = z.infer<typeof stateSchema>;
 const emptyDay = () => ({
@@ -90,12 +93,23 @@ export type BrowserLease = {
   release: () => void;
 };
 
+const processRunId = randomUUID();
+
 export class Usage {
   constructor(
     private readonly settings: Tuning,
     private readonly file = usageFile(),
     private readonly now = Date.now,
-  ) {}
+    private readonly runId: string = processRunId,
+  ) {
+    const startup = this.now();
+    const state = readState(this.file);
+    const stale = Object.entries(state.leases).filter(
+      ([, lease]) => lease.runId !== this.runId,
+    );
+    for (const [id] of stale) this.finish(state, id, startup);
+    if (stale.length) this.save(state);
+  }
 
   private save(state: State) {
     const tmp = this.file + "." + randomUUID();
@@ -199,7 +213,11 @@ export class Usage {
       );
 
     const id = randomUUID();
-    state.leases[id] = { start: now, end: now + seconds * 1_000 };
+    state.leases[id] = {
+      start: now,
+      end: now + seconds * 1_000,
+      runId: this.runId,
+    };
     this.save(state);
     if (seconds < this.settings.browserSessionSeconds)
       writeLimitEvent(

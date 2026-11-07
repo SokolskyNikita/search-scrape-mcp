@@ -153,7 +153,9 @@ changing the schema. The test command checks that the table matches.
 | `port` | `8765` | Local MCP HTTP port. |
 | `serperRequestsPerMinute` | `60` | Server-wide Serper request rate, including hedges. |
 | `scrapflyRequestsPerMinute` | `30` | Server-wide Scrapfly scrape request rate, including retries and escalation. |
-| `localLimitWaitMs` | `2500` | Maximum wait for a provider or hostname permit, within the call deadline. |
+| `serperBurstCapacity` | `20` | Maximum accumulated Serper request tokens. |
+| `scrapflyBurstCapacity` | `10` | Maximum accumulated Scrapfly scrape request tokens. |
+| `localLimitWaitMs` | `10000` | Maximum wait for a provider or hostname permit, within the call deadline. |
 | `siteConcurrency` | `4` | Maximum simultaneous requests per target hostname. |
 | `siteGapMs` | `1000` | Minimum time between request starts for the same target hostname. |
 | `browserConcurrency` | `4` | Maximum simultaneous Cloud Browser sessions, including scrape fallback. |
@@ -195,19 +197,21 @@ changing the schema. The test command checks that the table matches.
 <!-- settings:end -->
 
 The provider limits and hostname pacing apply across MCP sessions and batch
-items. Serper requests, including hedges, start at least one second apart by
-default. Scrapfly scrape API attempts, including retries and escalation, start
-at least two seconds apart. A hostname has four in-flight slots and at least
-one second between request starts. That pacing covers the submitted scrape
-hostname and HTTP requests intercepted from the managed browser page. Traffic
+items. Serper refills at 60 requests per minute with up to 20 tokens for
+bursts. The Scrapfly Scrape API refills at 30 per minute with up to 10 tokens.
+Hedges, retries, and escalation each use a token. The limiter waits up to
+10 seconds when the call deadline leaves time to run the request. A hostname
+has four in-flight slots and at least one second between request starts. That
+pacing covers the submitted scrape hostname and main-frame browser
+navigations. Browser subresources load at the browser's normal pace. Traffic
 inside the remote provider, such as redirects followed within a Scrapfly
 scrape, is outside the local scheduler. Requests that cannot get a permit
 within the wait budget return a local limit code and a UTC retry time.
 
 The browser cap covers interactive sessions and browser scrape fallback.
 Opening a browser reserves its possible lifetime before connecting. Closing
-it releases unused time. If the server exits abruptly, the reservation stays
-in effect through its expiry. Browser usage resets at midnight UTC. The
+it releases unused time. After a restart, the server settles reservations from the previous run at
+startup time or their scheduled expiry, whichever came first. Browser usage resets at midnight UTC. The
 private state file at `~/.local/state/search-scrape-mcp/usage.json` also holds
 daily Serper request counts and known Scrapfly scrape API charges. Run
 `npm run config` to see those totals alongside browser session-minutes and

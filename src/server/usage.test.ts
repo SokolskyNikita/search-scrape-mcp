@@ -10,7 +10,7 @@ import {
 } from "../providers/scrapfly-browser.js";
 import { todayUsage, Usage, type BrowserLease } from "./usage.js";
 
-test("browser preflight checks both caps before connecting, and usage survives a restart", async (t) => {
+test("browser preflight checks both caps before connecting", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "search-scrape-usage-"));
   t.after(() => rmSync(dir, { recursive: true }));
   const file = join(dir, "usage.json");
@@ -81,7 +81,7 @@ test("browser usage splits at midnight and an unsettled lease expires conservati
   const usage = new Usage(settings, file, () => now);
   await usage.open(async (lease) => assert.equal(lease.seconds, 60));
   now += 70_000;
-  const restarted = new Usage(settings, file, () => now);
+  const restarted = new Usage(settings, file, () => now, "next-run");
   assert.equal(todayUsage(file, now).browserSessionMinutes, 40 / 60);
   await assert.rejects(
     restarted.open(async () => assert.fail("Must reject")),
@@ -89,4 +89,25 @@ test("browser usage splits at midnight and an unsettled lease expires conservati
       code: "local_browser_daily_limit",
     },
   );
+});
+
+test("startup settles stale reservations at startup and immediately frees the slot", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "search-scrape-usage-"));
+  t.after(() => rmSync(dir, { recursive: true }));
+  const file = join(dir, "usage.json");
+  const settings = {
+    ...defaults,
+    browserDailyMinutes: 1,
+    browserConcurrency: 1,
+  };
+  let now = Date.parse("2026-11-07T12:00:00Z");
+  const usage = new Usage(settings, file, () => now);
+  await usage.open(async (lease) => assert.equal(lease.seconds, 60));
+  now += 10_000;
+  const restarted = new Usage(settings, file, () => now, "next-run");
+  const second = await restarted.open(async (lease) => lease);
+  assert.equal(second.seconds, 50);
+  now += 5_000;
+  second.release();
+  assert.equal(todayUsage(file, now).browserSessionMinutes, 15 / 60);
 });

@@ -343,7 +343,12 @@ test("each Scrapfly rung must obtain its own provider permit", async (t) => {
   const request = t.mock.method(globalThis, "fetch", async () =>
     Response.json(success("# Access denied", target, 403)),
   );
-  const settings = { ...defaults, localLimitWaitMs: 0, siteGapMs: 0 };
+  const settings = {
+    ...defaults,
+    localLimitWaitMs: 0,
+    siteGapMs: 0,
+    scrapflyBurstCapacity: 1,
+  };
   const provider = scrapflyScrape(
     "fake-key",
     settings,

@@ -55,15 +55,22 @@ export function serper(
       retry,
       deadline = Infinity,
     ) {
-      deadline = Math.min(
+      const outer = signal ?? new AbortController().signal;
+      await limits?.acquire(
+        outer,
+        deadline - settings.serperTimeoutMs,
+        "serper",
+      );
+      outer.throwIfAborted();
+      const controller = new AbortController();
+      const requestDeadline = Math.min(
         deadline,
         performance.now() + settings.serperTimeoutMs,
       );
-      const controller = new AbortController();
       const requestSignal = AbortSignal.any([
         controller.signal,
         AbortSignal.timeout(settings.serperTimeoutMs),
-        ...(signal ? [signal] : []),
+        outer,
       ]);
       const queryWithOperators = [
         query,
@@ -72,7 +79,17 @@ export function serper(
       ].join(" ");
       const freshness = { day: "d", week: "w", month: "m", year: "y" };
       async function request(hedgeTrigger?: "delay" | "failure") {
-        await limits?.acquire(requestSignal, deadline, "serper");
+        if (hedgeTrigger) {
+          const hedgeBudget = Math.max(
+            0,
+            settings.serperTimeoutMs - settings.serperBackupDelayMs,
+          );
+          await limits?.acquire(
+            requestSignal,
+            requestDeadline - hedgeBudget,
+            "serper",
+          );
+        }
         requestSignal.throwIfAborted();
         if (hedgeTrigger) retry?.();
         usage?.record("serper", null, Date.now());

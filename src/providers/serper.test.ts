@@ -99,7 +99,7 @@ test("a transient failure cannot send a hedge past the shared provider rate", as
   const request = t.mock.method(globalThis, "fetch", async () =>
     Response.json({}, { status: 503 }),
   );
-  const settings = { ...defaults, localLimitWaitMs: 0 };
+  const settings = { ...defaults, localLimitWaitMs: 0, serperBurstCapacity: 1 };
   const limits = new RequestLimits(settings);
   await assert.rejects(
     serper("fixture", settings, limits).search({ query: "fixture", limit: 1 }),
