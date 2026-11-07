@@ -71,9 +71,17 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert.match(saved.hint, /untrusted web content/);
   assert.deepEqual(seen, [first]);
 
+  const github = await client.callTool({
+    name: "scrape",
+    arguments: { url: "https://github.com/owner/repo", content_mode: "full" },
+  });
+  assert.equal(github.isError, true);
+  assert.match(JSON.stringify(github.content), /Use the GitHub CLI/);
+  assert.deepEqual(seen, [first]);
+
   const mixed = await client.callTool({
     name: "scrape_batch",
-    arguments: { urls: [second, "http://127.0.0.1/private", first] },
+    arguments: { urls: [second, "https://www.github.com./owner/repo", first] },
   });
   const blocks = mixed.content;
   assert(Array.isArray(blocks));
@@ -87,6 +95,7 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert.equal(readFileSync(result[2].result.path, "utf8"), content);
   assert.notEqual(result[0].result.path, result[2].result.path);
   assert.match(result[1].error.code, /url|target/);
+  assert.match(result[1].error.message, /Use the GitHub CLI/);
   assert.deepEqual(seen, [first, second, first]);
 
   const busyBatch = await client.callTool({

@@ -944,6 +944,21 @@ test("a challenge in the original HTML cannot become a successful extraction", a
   assert.deepEqual(formats, ["raw", "raw"]);
 });
 
+test("empty main extraction recovers text from the same HTML without a second request", async (t) => {
+  const request = t.mock.method(globalThis, "fetch", async (url: URL) => {
+    assert.equal(url.searchParams.get("format"), "raw");
+    return htmlResponse(
+      "<html><head><title>Weather report</title></head><body><aside>" +
+        "<p>The weather station recorded a steady increase in rainfall over the last five days.</p>" +
+        "</aside></body></html>",
+    );
+  });
+  const result = await scrapflyScrape("fixture").scrape(target);
+  assert.equal(result.check.code, "ok");
+  assert.match(result.markdown, /recorded a steady increase/);
+  assert.equal(request.mock.callCount(), 1);
+});
+
 test("empty extraction falls back once at the same rung and records both charges", async (t) => {
   const file = fileState(t);
   const usage = new Usage(defaults, file);

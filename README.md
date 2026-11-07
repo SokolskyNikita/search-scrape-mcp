@@ -117,15 +117,20 @@ pagination and `autocorrect` to control spelling correction. Serper may ignore
 
 ### Scrape
 
+Use the GitHub CLI (`gh`) directly to open or read `github.com` URLs.
+Web search still supports GitHub queries and results.
+
 Both scrape tools default to `content_mode: "main"`. Defuddle extracts the
 main text from Scrapfly HTML and retains links within that content. Set
 `content_mode: "full"` for Scrapfly’s whole-page Markdown without images,
 including replies, listings, and details the extractor may omit. The mode
 applies to the entire batch and is part of the cache key.
 
-If extraction fails on an otherwise readable page, the server can make one
-additional whole-page request at the same rung, subject to time and cost limits.
-The fallback carries a warning and bypasses caching. To enable Cloud Browser
+If extraction yields an empty page or mostly navigation, the server can retry
+locally with less aggressive filtering on the same HTML. If Defuddle still
+produces no usable text, the server can make one additional whole-page request
+at the same rung, subject to time and cost limits. The whole-page fallback
+carries a warning and bypasses caching. To enable Cloud Browser
 as a secondary scrape provider, set
 `"scrapeProviders": ["scrapfly", "scrapfly-browser"]`. It returns page text
 in main mode. Full mode requires the Scrapfly Scrape API.

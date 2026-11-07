@@ -45,10 +45,16 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
   let searches = 0;
   let scrapes = 0;
   const searchProvider = {
-    async search({ query }: { query: string }) {
+    async search({ query, site }: { query: string; site?: string }) {
       searches++;
       if (query === "fail")
         throw new AppError("provider_down", "Fixture error.");
+      if (query === "github fixture") {
+        assert.equal(site, "github.com");
+        return [
+          { title: "Fixture repo", url: "https://github.com/owner/repo" },
+        ];
+      }
       return [{ title: String(searches), url: "https://example.com" }];
     },
   };
@@ -117,6 +123,11 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
     assert.equal(failed[0].error.code, "provider_down");
   }
   assert.equal(searches, 5);
+  const [github] = await first("search", {
+    query: "github fixture",
+    site: "github.com",
+  });
+  assert.equal(github[0].url, "https://github.com/owner/repo");
 
   const url = "https://1.1.1.1/page";
   await first("scrape", { url });

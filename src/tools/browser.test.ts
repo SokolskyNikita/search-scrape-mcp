@@ -60,6 +60,13 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
       true,
     );
     assert.equal(opened, 0);
+    const github = await a.call({
+      action: "navigate",
+      url: "https://github.com/owner/repo",
+    });
+    assert.equal(github.isError, true);
+    assert.match(JSON.stringify(github.content), /Use the GitHub CLI/);
+    assert.equal(opened, 0);
     const command = { action: "navigate", url: "https://1.1.1.1/" } as const;
     assert.deepEqual((await a.call(command)).content, [
       { type: "text", text: "Browser 1" },

@@ -37,6 +37,8 @@ export async function validatePublicUrl(value: string): Promise<URL> {
   if (url.port) throw forbidden("Use the standard port for the URL scheme.");
 
   const host = url.hostname.replace(/^\[|\]$|\.$/g, "");
+  if (host === "github.com" || host === "www.github.com")
+    throw forbidden("Use the GitHub CLI (`gh`) directly for github.com URLs.");
   if (ipaddr.isValid(host)) {
     if (!publicIp(host))
       throw forbidden("The URL points to a private or reserved IP address.");

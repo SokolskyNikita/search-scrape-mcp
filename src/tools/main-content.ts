@@ -101,15 +101,25 @@ export async function mainContent(
   // Defuddle's partial selector filtering can remove all of those bylines.
   const hasMultipleBylines =
     (body?.querySelectorAll('[itemprop~="author"]').length ?? 0) > 1;
-  const extract = (standardize: boolean) => {
+  const extract = (standardize: boolean, broad = false) => {
     const copy = document.cloneNode(true) as Document;
     for (const picture of copy.querySelectorAll("picture")) picture.remove();
+    if (broad) {
+      for (const node of copy.querySelectorAll("script, style, template"))
+        node.remove();
+    }
     return Defuddle(copy, final.href, {
       markdown: true,
       removeImages: true,
       includeReplies: "extractors",
       standardize,
-      removePartialSelectors: !hasMultipleBylines,
+      removePartialSelectors: !broad && !hasMultipleBylines,
+      ...(broad && {
+        contentSelector: "body",
+        removeExactSelectors: false,
+        removeLowScoring: false,
+        removeContentPatterns: false,
+      }),
       useAsync: false,
       fetch: async () => {
         throw new Error("Network access is disabled during extraction.");
@@ -144,12 +154,39 @@ export async function mainContent(
       "extraction_failed",
       "Defuddle dropped most links from the main area.",
     );
-  const proseWords = words(markdown.replace(markdownLink, ""));
+  function unusable(content: string) {
+    const prose = content.replace(markdownLink, "");
+    const proseWords = words(prose);
+    return (
+      !words(content) ||
+      (proseWords === 0 && content !== prose) ||
+      (proseWords <= 5 && proseWords * 3 < words(text))
+    );
+  }
+  const extractedPageCheck = (content: string) =>
+    checkPage(content, target, final, status, contentType);
+  let extractedCheck = extractedPageCheck(markdown);
   if (
-    !words(markdown) ||
-    (proseWords === 0 && markdown !== markdown.replace(markdownLink, "")) ||
-    (proseWords <= 5 && proseWords * 3 < words(text))
+    (original.code === "ok" || original.code === "empty_page") &&
+    text.trim() &&
+    (unusable(markdown) ||
+      extractedCheck.code === "empty_page" ||
+      extractedCheck.code === "menus_only")
   ) {
+    try {
+      const extracted = await extract(true, true);
+      const retry = cleanPage(extracted.content);
+      const retryCheck = extractedPageCheck(retry);
+      if (retryCheck.code === "ok" && !unusable(retry) && !lostLinks(retry)) {
+        markdown = retry;
+        extractedTitle = oneLine(extracted.title || title);
+        extractedCheck = retryCheck;
+      }
+    } catch {
+      // Keep the primary result and its existing fallback behavior.
+    }
+  }
+  if (unusable(markdown)) {
     throw new AppError(
       "extraction_failed",
       "Defuddle found no usable main content.",
@@ -157,13 +194,6 @@ export async function mainContent(
   }
 
   // Access and interstitial decisions come only from the original page.
-  const extractedCheck = checkPage(
-    markdown,
-    target,
-    final,
-    status,
-    contentType,
-  );
   const check =
     original.warning && original.code !== "menus_only"
       ? original
