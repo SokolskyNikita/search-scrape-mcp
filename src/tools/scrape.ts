@@ -20,8 +20,14 @@ const startRung = z
   .optional()
   .describe("Start at this rung or higher if the hostname already needs it.");
 const fileLimits =
-  "Files are checked before downloading and limited to 5 MB on datacenter. Scrapfly cost_budget does not cover file downloads.";
+  "Files are checked before downloading and limited to 5 MB on datacenter. Scrapfly may charge above the requested cost_budget.";
 const freshInput = z.boolean().optional().describe("Bypass the local cache.");
+const allowHigherCostInput = z
+  .boolean()
+  .optional()
+  .describe(
+    "Allow Scrapfly requests to hosts flagged for higher charges in this call.",
+  );
 const urlInput = z.string().trim().min(1).max(MAX_URL_CHARS);
 
 export function registerScrape(
@@ -39,6 +45,7 @@ export function registerScrape(
     deadline: number,
     start?: ScrapeRung,
     fresh?: boolean,
+    allowHigherCost?: boolean,
   ) {
     const tried: string[] = [];
     try {
@@ -51,7 +58,12 @@ export function registerScrape(
         (await fallback(
           providers,
           (provider) =>
-            provider.scrape(target.href, signal, { start, tried, deadline }),
+            provider.scrape(target.href, signal, {
+              start,
+              tried,
+              deadline,
+              allowHigherCost,
+            }),
           attempt,
           signal,
         ));
@@ -98,10 +110,11 @@ export function registerScrape(
         url: urlInput,
         start_rung: startRung,
         fresh: freshInput,
+        allow_higher_cost: allowHigherCostInput,
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ url, start_rung, fresh }) =>
+    ({ url, start_rung, fresh, allow_higher_cost }) =>
       toolResult(
         "scrape",
         (attempt, signal, deadline) =>
@@ -113,6 +126,7 @@ export function registerScrape(
             deadline,
             start_rung,
             fresh,
+            allow_higher_cost,
           ),
         settings,
       ),
@@ -125,10 +139,11 @@ export function registerScrape(
         urls: z.array(urlInput).min(1).max(3),
         start_rung: startRung,
         fresh: freshInput,
+        allow_higher_cost: allowHigherCostInput,
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ urls, start_rung, fresh }) =>
+    ({ urls, start_rung, fresh, allow_higher_cost }) =>
       toolResult(
         "scrape_batch",
         (attempt, signal, deadline) =>
@@ -143,6 +158,7 @@ export function registerScrape(
                 deadline,
                 start_rung,
                 fresh,
+                allow_higher_cost,
               ),
             (url) =>
               URL.canParse(url)

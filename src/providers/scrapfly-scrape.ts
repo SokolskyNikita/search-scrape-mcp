@@ -34,6 +34,38 @@ import {
 } from "./types.js";
 
 const cost = z.number().finite().nonnegative();
+const poolName = z.string().regex(/^[a-z0-9_-]{1,128}$/i);
+const costBreakdown = z.object({
+  total: cost.optional().catch(undefined),
+  details: z
+    .array(
+      z.object({
+        amount: cost,
+        code: z.string().regex(/^[a-z0-9_:-]{1,128}$/i),
+        description: z.string().max(256).optional(),
+      }),
+    )
+    .max(100)
+    .optional()
+    .catch(undefined),
+});
+const billing = z.object({
+  context: z
+    .object({
+      cost: z.union([cost, costBreakdown]).nullish().catch(undefined),
+      proxy: z
+        .union([
+          poolName,
+          z.object({
+            pool: poolName.optional(),
+          }),
+        ])
+        .nullish()
+        .catch(undefined),
+      proxy_pool: poolName.nullish().catch(undefined),
+    })
+    .nullish(),
+});
 const envelope = z.object({
   context: z
     .object({
@@ -46,7 +78,6 @@ const envelope = z.object({
         )
         .max(20)
         .optional(),
-      cost: z.union([cost, z.object({ total: cost })]).optional(),
     })
     .nullish(),
   result: z
@@ -68,12 +99,28 @@ const envelope = z.object({
   code: z.string().optional(),
 });
 const blocked = new Set(["blocked", "challenge"]);
+const poolUnavailable = "ERR::PROXY::POOL_NOT_AVAILABLE_FOR_TARGET";
+const residentialBaseCredits = 25;
+
+function creditHeader(response: Response, name: string) {
+  const value = response.headers.get(name);
+  if (!value?.trim()) return null;
+  return cost.safeParse(Number(value)).data ?? null;
+}
+
+function busy(retryAt: number) {
+  const seconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+  return new AppError(
+    "provider_rate",
+    `Scrapfly is busy. Retry after ${seconds} s.`,
+  );
+}
 
 function retryDelay(response: Response): number | undefined {
   const value =
     response.headers.get("Retry-After") ??
     response.headers.get("X-Scrapfly-Retry-After");
-  if (value === null) return undefined;
+  if (!value?.trim()) return undefined;
   const seconds = Number(value);
   const ms = Number.isFinite(seconds)
     ? seconds * 1000
@@ -82,6 +129,11 @@ function retryDelay(response: Response): number | undefined {
 }
 
 function providerError(status: number, code: string) {
+  if (code === poolUnavailable)
+    return new AppError(
+      "provider_proxy_pool",
+      `Scrapfly rejected the proxy pool for this host (${code}). Scrapfly may require residential access, which starts at ${residentialBaseCredits} credits.`,
+    );
   if (code === "ERR::SCRAPE::DOMAIN_NOT_ALLOWED")
     return new AppError(
       "unsafe_url",
@@ -102,8 +154,6 @@ function providerError(status: number, code: string) {
       "provider_credit",
       "Scrapfly rejected the request for insufficient credit or account quota.",
     );
-  if (status === 429)
-    return new AppError("provider_rate", "Scrapfly is rate-limiting requests.");
 }
 
 function header(
@@ -121,6 +171,10 @@ async function downloadContent(
   endpoint: URL,
   key: string,
   signal: AbortSignal,
+  settings: Tuning,
+  usage: Usage | undefined,
+  checkBackoff: () => void,
+  rateLimited: (ms: number) => number,
 ) {
   const url = URL.canParse(content) ? new URL(content) : undefined;
   if (
@@ -132,19 +186,57 @@ async function downloadContent(
   )
     throw new AppError("provider_response", "Invalid Scrapfly content URL.");
   url.searchParams.set("key", key);
-  const { response, body } = await providerResponse(
-    "Scrapfly",
-    url,
-    { signal },
-    undefined,
-    "text",
-  );
-  if (!response.ok || typeof body !== "string")
-    throw new AppError(
-      "provider_response",
-      "Could not download Scrapfly content.",
+  checkBackoff();
+  const startedAt = Date.now();
+  const start = performance.now();
+  let credits: number | null = null;
+  let remainingCredits: number | null = null;
+  let providerStatus: number | undefined;
+  let errorCode: string | null = null;
+  try {
+    const { response, body } = await providerResponse(
+      "Scrapfly",
+      url,
+      { signal },
+      (headers) => {
+        providerStatus = headers.status;
+        credits = creditHeader(headers, "X-Scrapfly-Api-Cost");
+        remainingCredits = creditHeader(
+          headers,
+          "X-Scrapfly-Remaining-Api-Credit",
+        );
+        if (headers.status === 429)
+          throw busy(rateLimited(retryDelay(headers) ?? 1000));
+      },
+      "text",
     );
-  return body;
+    if (!response.ok || typeof body !== "string")
+      throw new AppError(
+        "provider_response",
+        "Could not download Scrapfly content.",
+      );
+    return body;
+  } catch (error) {
+    errorCode = safeError(error).code;
+    throw error;
+  } finally {
+    usage?.record("scrapfly", credits, startedAt);
+    writeProviderAttempt(
+      {
+        provider: "scrapfly",
+        rung: "clob",
+        credits,
+        remainingCredits,
+        requestedProxyPool: null,
+        proxyPool: null,
+        costBreakdown: null,
+        providerStatus,
+        durationMs: Math.round(performance.now() - start),
+        errorCode,
+      },
+      settings,
+    );
+  }
 }
 
 async function requestPage(
@@ -156,6 +248,8 @@ async function requestPage(
   signal: AbortSignal,
   usage: Usage | undefined,
   fileHosts: FileHosts,
+  checkBackoff: () => void,
+  rateLimited: (ms: number) => number,
   operation?: "head" | FileHeaders,
 ): Promise<
   ScrapeResult | { head: FileHeaders } | { error: AppError; retryMs?: number }
@@ -175,10 +269,11 @@ async function requestPage(
       render: [settings.scrapflyRenderPool, settings.scrapflyRenderCost],
     } as const
   )[rung];
+  const requestedProxyPool = operation ? datacenterFilePool : pool;
   endpoint.search = new URLSearchParams({
     key,
     url: target.href,
-    proxy_pool: operation ? datacenterFilePool : pool,
+    proxy_pool: requestedProxyPool,
     cost_budget: String(budget),
     timeout: String(timeout),
     retry: "false",
@@ -196,6 +291,9 @@ async function requestPage(
   }
   const start = performance.now();
   let credits: number | null = null;
+  let remainingCredits: number | null = null;
+  let proxyPool: string | null = null;
+  let breakdown: z.infer<typeof costBreakdown> | number | null = null;
   let errorCode: string | null = null;
   let providerStatus: number | undefined;
   let providerCode: string | undefined;
@@ -205,6 +303,7 @@ async function requestPage(
       ? `Scrapfly reported ${credits} credits for this attempt, above the ${budget}-credit rung budget.`
       : undefined;
   let retryMs: number | undefined;
+  let retryAt: number | undefined;
   let retryable = true;
   let headerFailure: AppError | undefined;
   const localTimeout = AbortSignal.timeout(timeout);
@@ -224,10 +323,16 @@ async function requestPage(
         if (/^ERR(?:::[A-Z0-9_]{1,64}){1,4}$/.test(rejectCode))
           providerCode = rejectCode;
         headerFailure = providerError(headers.status, rejectCode);
-        const rawCost = headers.headers.get("X-Scrapfly-Api-Cost");
-        if (rawCost !== null && cost.safeParse(Number(rawCost)).success)
-          credits = Number(rawCost);
+        credits = creditHeader(headers, "X-Scrapfly-Api-Cost");
+        remainingCredits = creditHeader(
+          headers,
+          "X-Scrapfly-Remaining-Api-Credit",
+        );
         retryMs = retryDelay(headers);
+        if (headers.status === 429) {
+          retryAt = rateLimited(retryMs ?? 1000);
+          headerFailure ??= busy(retryAt);
+        }
         retryable =
           headers.headers.get("X-Scrapfly-Reject-Retryable")?.toLowerCase() !==
           "false";
@@ -235,7 +340,14 @@ async function requestPage(
     );
     const parsed = envelope.safeParse(body);
     const data = parsed.success ? parsed.data : undefined;
-    const charged = data?.context?.cost;
+    const context = billing.safeParse(body).data?.context;
+    const charged = context?.cost;
+    breakdown = charged ?? null;
+    const proxy = context?.proxy;
+    proxyPool =
+      (typeof proxy === "string" ? proxy : proxy?.pool) ??
+      context?.proxy_pool ??
+      null;
     credits =
       typeof charged === "number" ? charged : (charged?.total ?? credits);
     const result = data?.result;
@@ -306,7 +418,9 @@ async function requestPage(
         await validatePublicUrl(redirected.href);
       }
     }
-    const failure = providerError(response.status, code);
+    const failure =
+      providerError(response.status, code) ??
+      (retryAt === undefined ? undefined : busy(retryAt));
     if (failure) throw failure;
 
     if (operation === "head") {
@@ -431,7 +545,16 @@ async function requestPage(
     }
     let content = result.content ?? "";
     if (format === "clob" && !operation)
-      content = await downloadContent(content, endpoint, key, requestSignal);
+      content = await downloadContent(
+        content,
+        endpoint,
+        key,
+        requestSignal,
+        settings,
+        usage,
+        checkBackoff,
+        rateLimited,
+      );
     const markdown = cleanPage(content);
     const check = checkPage(
       markdown,
@@ -473,7 +596,13 @@ async function requestPage(
     const warning = costWarning();
     const reported =
       warning &&
-      !["unsafe_url", "file_refused", "binary_download"].includes(mapped.code)
+      ![
+        "unsafe_url",
+        "file_refused",
+        "binary_download",
+        "provider_proxy_pool",
+        "provider_rate",
+      ].includes(mapped.code)
         ? new AppError("provider_cost_overrun", `${warning} ${mapped.message}`)
         : mapped;
     errorCode = reported.code;
@@ -482,18 +611,34 @@ async function requestPage(
       retryMs:
         !warning &&
         retryable &&
-        (["provider_down", "provider_timeout"].includes(mapped.code) ||
-          (mapped.code === "provider_rate" && retryMs !== undefined))
+        ["provider_down", "provider_timeout"].includes(mapped.code)
           ? (retryMs ?? 500)
           : undefined,
     };
   } finally {
+    const host = normalizeFileHost(target.hostname);
+    const warning = costWarning();
+    if (warning && credits !== null) {
+      fileHosts.remember(host, {
+        expectedCredits: credits,
+        reason: `${warning}${proxyPool ? ` Reported proxy pool: ${proxyPool}.` : ""}`,
+      });
+    } else if (providerCode === poolUnavailable) {
+      fileHosts.remember(host, {
+        expectedCredits: residentialBaseCredits,
+        reason: `Scrapfly rejected ${requestedProxyPool} for this host (${poolUnavailable}). Estimated residential base price.`,
+      });
+    }
     usage?.record("scrapfly", credits, startedAt);
     writeProviderAttempt(
       {
         provider: "scrapfly",
         rung: operation === "head" ? "datacenter_head" : rung,
         credits,
+        remainingCredits,
+        requestedProxyPool,
+        proxyPool,
+        costBreakdown: breakdown,
         costBudget: budget,
         providerStatus,
         providerCode,
@@ -515,6 +660,13 @@ export function scrapflyScrape(
   usage?: Usage,
   fileHosts = new FileHosts(settings.scrapflyFileHosts),
 ): ScrapeProvider {
+  // The app shares this provider across all MCP sessions.
+  let busyUntil = 0;
+  function checkBackoff() {
+    if (Date.now() < busyUntil) throw busy(busyUntil);
+  }
+  const rateLimited = (ms: number) =>
+    (busyUntil = Math.max(busyUntil, Date.now() + ms));
   const hosts = new Map<string, { rung: number; expires: number }>();
   function remember(host: string, rung: number) {
     hosts.delete(host);
@@ -534,11 +686,24 @@ export function scrapflyScrape(
       const target = await validatePublicUrl(url);
       target.hash = "";
       const host = normalizeFileHost(target.hostname);
+      function checkCost() {
+        const { hosts, costs } = fileHosts.read();
+        const notice = costs.get(host);
+        if (notice && !options.allowHigherCost)
+          throw new AppError(
+            "provider_cost_opt_in_required",
+            `Scrapfly expects ${notice.expectedCredits} credits for this host. ${notice.reason} Set allow_higher_cost: true to accept the higher price.`,
+            { expectedCredits: notice.expectedCredits },
+          );
+        return hosts.has(host);
+      }
+      const knownFile = checkCost();
       let file: FileHeaders | undefined;
       async function attempt(
         rung: ScrapeRung,
         operation?: "head" | FileHeaders,
       ) {
+        checkBackoff();
         const timeout = scrapflyTimeoutMs[rung];
         const release = await limits?.acquire(
           signal,
@@ -548,6 +713,8 @@ export function scrapflyScrape(
         );
         try {
           signal.throwIfAborted();
+          checkBackoff();
+          checkCost();
           options.tried.push(operation === "head" ? "datacenter_head" : rung);
           return await requestPage(
             key,
@@ -558,6 +725,8 @@ export function scrapflyScrape(
             signal,
             usage,
             fileHosts,
+            checkBackoff,
+            rateLimited,
             operation,
           );
         } finally {
@@ -565,7 +734,7 @@ export function scrapflyScrape(
         }
       }
       const filePath = looksLikeFile(target);
-      if (filePath || fileHosts.list().has(host)) {
+      if (filePath || knownFile) {
         if (remaining() < scrapflyTimeoutMs.datacenter)
           throw refuseFile(
             { type: "unknown" },
@@ -689,6 +858,7 @@ export function scrapflyScrape(
               : result.error;
           throw new AppError(error.code, error.message, {
             tried: options.tried,
+            ...error.details,
           });
         }
         const { markdown, check, binary, costWarning, credits } = result;

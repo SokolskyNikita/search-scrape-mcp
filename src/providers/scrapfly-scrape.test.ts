@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileHosts } from "../config/file-hosts.js";
@@ -394,13 +394,22 @@ test("Scrapfly halts after a reported budget overrun and validates failed redire
           context: { cost: 25 },
         }),
   );
-  const provider = scrapflyScrape("fixture");
+  const provider = scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], fileState(t)),
+  );
   await assert.rejects(provider.scrape(target), {
     code: "provider_cost_overrun",
   });
   assert.equal(request.mock.callCount(), 1);
   unsafe = true;
-  await assert.rejects(provider.scrape(target), { code: "unsafe_url" });
+  await assert.rejects(
+    provider.scrape(target, undefined, { tried: [], allowHigherCost: true }),
+    { code: "unsafe_url" },
+  );
   assert.equal(request.mock.callCount(), 2);
 });
 
@@ -592,7 +601,15 @@ test("an unexpected paid file is kept and its host gets HEAD on the next URL aft
     undefined,
     hosts,
   );
-  assert.equal((await restarted.scrape(page)).check.code, "ok");
+  assert.equal(
+    (
+      await restarted.scrape(page, undefined, {
+        tried: [],
+        allowHigherCost: true,
+      })
+    ).check.code,
+    "ok",
+  );
   assert.equal((await restarted.scrape(redirected)).check.code, "ok");
   assert.deepEqual(methods, ["GET", "HEAD", "GET", "HEAD", "GET"]);
 });
@@ -625,10 +642,19 @@ test("Scrapfly BLOB refusal reports original scrape cost without fetching the ob
       });
     },
   );
-  await assert.rejects(scrapflyScrape("fixture").scrape(pdfUrl), {
-    code: "file_refused",
-    message: /application\/pdf, 5100000 bytes.*BLOB.*123 credits/,
-  });
+  await assert.rejects(
+    scrapflyScrape(
+      "fixture",
+      defaults,
+      undefined,
+      undefined,
+      new FileHosts([], fileState(t)),
+    ).scrape(pdfUrl),
+    {
+      code: "file_refused",
+      message: /application\/pdf, 5100000 bytes.*BLOB.*123 credits/,
+    },
+  );
   assert.equal(request.mock.callCount(), 2);
 });
 
@@ -677,4 +703,161 @@ test("the recorded private redirect error stops before stronger rungs", async (t
   missingResult = true;
   await assert.rejects(provider.scrape(requested), { code: "unsafe_url" });
   assert.equal(request.mock.callCount(), 2);
+});
+
+test("the recorded residential upgrade logs billing and requires opt-in after restart", async (t) => {
+  const state = fileState(t);
+  const log = state + ".jsonl";
+  const previousLog = process.env.MCP_STATS_LOG;
+  process.env.MCP_STATS_LOG = log;
+  t.after(() => {
+    if (previousLog === undefined) delete process.env.MCP_STATS_LOG;
+    else process.env.MCP_STATS_LOG = previousLog;
+  });
+  const breakdown = {
+    total: 25,
+    details: [
+      {
+        amount: 25,
+        code: "PROXY_RESIDENTIAL_NETWORK",
+        description: "Proxy Network (Residential)",
+      },
+    ],
+  };
+  const fetch = t.mock.method(globalThis, "fetch", async (url: URL) => {
+    assert.equal(url.searchParams.get("proxy_pool"), "public_datacenter_pool");
+    assert.equal(url.searchParams.get("cost_budget"), "5");
+    return Response.json(
+      {
+        ...success(),
+        context: {
+          proxy: {
+            pool: "public_residential_pool_ix",
+            identity: "private proxy identity",
+          },
+          cost: breakdown,
+        },
+      },
+      {
+        headers: {
+          "X-Scrapfly-Api-Cost": "25",
+          "X-Scrapfly-Remaining-Api-Credit": "197187",
+        },
+      },
+    );
+  });
+  const provider = () =>
+    scrapflyScrape(
+      "fixture",
+      defaults,
+      undefined,
+      undefined,
+      new FileHosts([], state),
+    );
+  assert.match(
+    (await provider().scrape(target)).costWarning ?? "",
+    /25 credits/,
+  );
+  const restarted = provider();
+  await assert.rejects(restarted.scrape(target), {
+    code: "provider_cost_opt_in_required",
+    message: /25 credits.*public_residential_pool_ix.*allow_higher_cost/,
+    details: { expectedCredits: 25 },
+  });
+  assert.equal(fetch.mock.callCount(), 1);
+  await restarted.scrape(target, undefined, {
+    tried: [],
+    allowHigherCost: true,
+  });
+  assert.equal(fetch.mock.callCount(), 2);
+  const lines = readFileSync(log, "utf8").trim().split("\n");
+  assert.equal(lines.length, 2);
+  for (const line of lines) {
+    const row = JSON.parse(line);
+    assert.equal(row.credits, 25);
+    assert.equal(row.remainingCredits, 197187);
+    assert.equal(row.requestedProxyPool, "public_datacenter_pool");
+    assert.equal(row.proxyPool, "public_residential_pool_ix");
+    assert.deepEqual(row.costBreakdown, breakdown);
+    assert.doesNotMatch(line, /private proxy identity/);
+  }
+});
+
+test("a pool rejection is terminal and records the host with a reason", async (t) => {
+  const code = "ERR::PROXY::POOL_NOT_AVAILABLE_FOR_TARGET";
+  const state = fileState(t);
+  const fetch = t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ result: { error: { code } } }, { status: 422 }),
+  );
+  const provider = scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], state),
+  );
+  await assert.rejects(provider.scrape(target), {
+    code: "provider_proxy_pool",
+    message: /POOL_NOT_AVAILABLE_FOR_TARGET.*residential.*25 credits/,
+  });
+  await assert.rejects(provider.scrape(target), {
+    code: "provider_cost_opt_in_required",
+    message: /POOL_NOT_AVAILABLE_FOR_TARGET/,
+    details: { expectedCredits: 25 },
+  });
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(new FileHosts([], state).list().size, 0);
+});
+
+test("provider 429 logs unknown cost and prevents new calls during Retry-After", async (t) => {
+  const state = fileState(t);
+  const log = state + ".jsonl";
+  const previousLog = process.env.MCP_STATS_LOG;
+  process.env.MCP_STATS_LOG = log;
+  t.after(() => {
+    if (previousLog === undefined) delete process.env.MCP_STATS_LOG;
+    else process.env.MCP_STATS_LOG = previousLog;
+  });
+  let now = 1_800_000_000_000;
+  t.mock.method(Date, "now", () => now);
+  let limited = true;
+  const fetch = t.mock.method(globalThis, "fetch", async () =>
+    limited
+      ? new Response(null, { status: 429, headers: { "Retry-After": "30" } })
+      : Response.json({ result: success().result }),
+  );
+  const provider = scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], state),
+  );
+  await assert.rejects(provider.scrape(target), {
+    code: "provider_rate",
+    message: /busy.*30 s/,
+  });
+  now += 2000;
+  await assert.rejects(provider.scrape(redirected), {
+    code: "provider_rate",
+    message: /busy.*28 s/,
+  });
+  assert.equal(fetch.mock.callCount(), 1);
+  now += 28000;
+  limited = false;
+  assert.equal((await provider.scrape(target)).check.code, "ok");
+  const rows = readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    rows.map((row) => row.providerStatus),
+    [429, 200],
+  );
+  for (const row of rows) {
+    assert.equal(row.credits, null);
+    assert.equal(row.costBreakdown, null);
+    assert.equal(row.remainingCredits, null);
+    assert.equal(row.proxyPool, null);
+  }
 });

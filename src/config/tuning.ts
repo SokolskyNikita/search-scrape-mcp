@@ -127,19 +127,19 @@ export const tuningSchema = z.object({
     1,
     10_000,
     5,
-    "Datacenter request cost budget in credits.",
+    "Datacenter requested cost budget in credits.",
   ),
   scrapflyUnblockerCost: integer(
     1,
     10_000,
     85,
-    "Unblocker request cost budget in credits.",
+    "Unblocker requested cost budget in credits.",
   ),
   scrapflyRenderCost: integer(
     1,
     10_000,
     40,
-    "Rendering request cost budget in credits.",
+    "Rendering requested cost budget in credits.",
   ),
   scrapflyDatacenterPool: pool
     .default("public_datacenter_pool")

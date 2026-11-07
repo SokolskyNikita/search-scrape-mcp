@@ -44,6 +44,7 @@ export type ScrapeResult = {
 };
 export type ScrapeOptions = {
   start?: ScrapeRung;
+  allowHigherCost?: boolean;
   tried: string[];
   deadline?: number;
 };

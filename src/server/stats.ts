@@ -47,6 +47,16 @@ export function writeProviderAttempt(
     datacenterBlocked?: boolean;
     hedgeTrigger?: "delay" | "failure";
     credits: number | null;
+    remainingCredits?: number | null;
+    requestedProxyPool?: string | null;
+    proxyPool?: string | null;
+    costBreakdown?:
+      | number
+      | {
+          total?: number;
+          details?: { amount: number; code: string; description?: string }[];
+        }
+      | null;
     costBudget?: number;
     providerStatus?: number;
     providerCode?: string;

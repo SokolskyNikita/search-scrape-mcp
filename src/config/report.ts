@@ -50,13 +50,13 @@ try {
     const missing = !lstatSync(settingsFile(), { throwIfNoEntry: false });
     if (missing) console.error("config.json is missing. Showing defaults.");
     const settings = publicSchema.parse(missing ? {} : loadSettings());
+    const { hosts, costs } = new FileHosts(settings.scrapflyFileHosts).read();
     console.log(
       JSON.stringify(
         {
           ...settings,
-          scrapflyEffectiveFileHosts: [
-            ...new FileHosts(settings.scrapflyFileHosts).list(),
-          ].sort(),
+          scrapflyEffectiveFileHosts: [...hosts].sort(),
+          scrapflyHigherCostHosts: Object.fromEntries(costs),
           today: {
             ...todayUsage(),
             browserDailyMinutes: settings.browserDailyMinutes,

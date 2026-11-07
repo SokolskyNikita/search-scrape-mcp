@@ -13,6 +13,7 @@ import { registerScrape } from "./scrape.js";
 test("scrape tools use fallback, bound content, and preserve batch order", async (t) => {
   const mcp = new McpServer({ name: "scrape-test", version: "1.0.0" });
   const seen: string[] = [];
+  const rateLimited = "https://9.9.9.9/busy";
   const content = "Public page content ".repeat(4_000).trim();
   const dir = mkdtempSync(join(tmpdir(), "scrape-tool-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -20,8 +21,15 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
     mcp,
     [
       {
-        scrape: async (url) => {
+        scrape: async (url, _signal, options) => {
           seen.push(url);
+          if (url === rateLimited) {
+            assert.equal(options?.allowHigherCost, true);
+            throw new AppError(
+              "provider_rate",
+              "Scrapfly is busy. Retry after 6 s.",
+            );
+          }
           throw new AppError("blocked", "Page was blocked.");
         },
       },
@@ -77,4 +85,18 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert.notEqual(result[0].result.path, result[2].result.path);
   assert.match(result[1].error.code, /url|target/);
   assert.deepEqual(seen, [first, second, first]);
+
+  const busyBatch = await client.callTool({
+    name: "scrape_batch",
+    arguments: { urls: [rateLimited, second], allow_higher_cost: true },
+  });
+  assert.notEqual(busyBatch.isError, true);
+  assert(Array.isArray(busyBatch.content));
+  const busyItems = JSON.parse(busyBatch.content[0].text);
+  assert.deepEqual(busyItems[0].error, {
+    code: "provider_rate",
+    message: "Scrapfly is busy. Retry after 6 s.",
+    tried: [],
+  });
+  assert.equal(busyItems[1].result.check.code, "ok");
 });

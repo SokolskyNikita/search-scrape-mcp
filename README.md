@@ -179,9 +179,9 @@ changing the schema. The test command checks that the table matches.
 | `searchGl` | `"us"` | Default Serper country code. |
 | `searchHl` | `"en"` | Default Serper language code. |
 | `scrapflyCountry` | `"us"` | Scrapfly proxy country. Set null to let Scrapfly choose. |
-| `scrapflyDatacenterCost` | `5` | Datacenter request cost budget in credits. |
-| `scrapflyUnblockerCost` | `85` | Unblocker request cost budget in credits. |
-| `scrapflyRenderCost` | `40` | Rendering request cost budget in credits. |
+| `scrapflyDatacenterCost` | `5` | Datacenter requested cost budget in credits. |
+| `scrapflyUnblockerCost` | `85` | Unblocker requested cost budget in credits. |
+| `scrapflyRenderCost` | `40` | Rendering requested cost budget in credits. |
 | `scrapflyDatacenterPool` | `"public_datacenter_pool"` | Proxy pool sent on the datacenter rung. |
 | `scrapflyUnblockerPool` | `"public_datacenter_pool"` | Initial proxy pool sent on the Unblocker rung. |
 | `scrapflyRenderPool` | `"public_datacenter_pool"` | Initial proxy pool sent on the rendering rung. |
@@ -251,12 +251,12 @@ may count against quota.
 
 Scrapfly starts with datacenter and escalates to the Unblocker when a page is
 blocked or challenged. Empty pages and JavaScript shells can jump straight
-to the render rung, which adds a one-second render wait by default. The default
-request cost budgets are 5, 85, and 40 credits for datacenter, Unblocker, and
-render. Scrapfly enforces its own billing. When its reported cost exceeds the
-requested budget, the server reports the overrun and stops automatic retries or
-escalation for that call. The default proxy country is `us`, configurable with
-`scrapflyCountry`. The Unblocker cap covers a measured 80-credit Cloudflare managed
+to the render rung, which adds a one-second render wait by default. The server
+sends `cost_budget` values of 5, 85, and 40 credits by default for datacenter,
+Unblocker, and render. Scrapfly can charge above these values,
+including when it switches a datacenter request to residential. The server
+reports observed overruns and stops automatic retries or escalation for that call. The default proxy country is `us`, configurable with
+`scrapflyCountry`. The Unblocker budget accommodates a measured 80-credit Cloudflare managed
 challenge scrape. A request-budget rejection advances to the next rung if available.
 This account's gateway rejected the newer `auto` and `unblocker` pool names
 during testing. All three pools default to `public_datacenter_pool`, with
@@ -264,13 +264,22 @@ during testing. All three pools default to `public_datacenter_pool`, with
 
 File-looking URLs and known file hosts get a datacenter HEAD check. Downloads
 are limited to 5 MB (5,000,000 bytes) and require a reported content length.
-File checks and downloads use the public datacenter pool. Scrapfly's
-`cost_budget` applies to Unblocker retries. Binary bandwidth is billed
-separately, including for BLOB scrapes whose offloaded contents are skipped.
+File checks and downloads request the public datacenter pool. Binary bandwidth
+is billed separately, including for BLOB scrapes whose offloaded contents are
+skipped.
 The server saves an unexpected inline binary when it can and reports the
 provider's charge. Hosts that return unexpected files are recorded in
 `file-hosts.txt` next to `usage.json`. Seed hostnames with `scrapflyFileHosts`.
-Run `npm run config` to see the combined list.
+The same file records hosts where Scrapfly reported an overrun or rejected the
+requested proxy pool. The server refuses further Scrapfly requests to those
+hosts and returns the expected credits and the reason. Set
+`allow_higher_cost: true` on `scrape` or `scrape_batch` to accept that risk for
+the call. The opt-in leaves the requested pool and budget settings in place.
+Run `npm run config` to see both lists.
+
+A provider HTTP 429 pauses new Scrape API requests across MCP sessions for
+the provider's `Retry-After` interval, or one second when the header is
+unavailable. Affected batch entries return individual busy errors.
 [Scrapfly billing documentation](https://scrapfly.io/docs/scrape-api/billing)
 
 Results include a page check and the rungs tried. A warning preserves usable
@@ -305,7 +314,9 @@ For a local estimate of blocking on no-Unblocker attempts, count
 `datacenterBlocked: true` among datacenter records. This is the server's
 page classification. Use the rate to monitor proximity to your account's
 free-request threshold.
-Credits are raw reported units or `null` when unavailable. The LaunchAgent
+Credits are raw reported units or `null` when unavailable. Scrapfly attempt
+rows also include `requestedProxyPool`, `proxyPool`, `costBreakdown`, and
+`remainingCredits`. The LaunchAgent
 writes `tools.jsonl` and rotates at 2 MiB by default, retaining one previous file. Arguments and fetched content are
 excluded. Startup and diagnostic messages go to separate stdout and stderr
 files.
