@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serper } from "./serper.js";
 
+test("Serper surfaces a rejected query without sending a hedge", async (t) => {
+  const request = t.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      { statusCode: 400, message: "Missing query" },
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(serper("fixture").search({ query: "", limit: 1 }), {
+    code: "provider_http",
+    message: "Serper returned HTTP 400.",
+  });
+  assert.equal(request.mock.callCount(), 1);
+});
+
 test("Serper hedges transient failures and keeps the first usable answer", async (t) => {
   const logger = t.mock.method(console, "log", () => {});
   let calls = 0;

@@ -139,9 +139,12 @@ file accepts `port` (default 8765), `token`, and ordered arrays
 `["scrapfly"]`), and `browserProviders` (default `["scrapfly"]`).
 Omitting `SCRAPFLY_API_KEY` leaves search enabled.
 
-Search uses US English and accepts optional `recency` (`day`, `week`, `month`
-or `year`), `site`, and up to five `exclude_domains`. Hits include dates when
-Serper supplies them. A query starts at most one hedge after a transient
+Search defaults to US English. Both search tools accept a country code (`gl`),
+language code (`hl`), geographic `location`, result `page` (starting at 1),
+and a boolean `autocorrect`. Use either `recency` (`day`, `week`, `month`, or
+`year`) or a Google time filter such as `tbs: "qdr:h"`. You can also specify
+`site` and up to five `exclude_domains`. Hits include dates when Serper supplies
+them. A query starts at most one hedge after a transient
 failure or 900 ms without an answer. Both requests may count against quota.
 
 Scrapfly starts with datacenter and escalates to the Unblocker when a page is

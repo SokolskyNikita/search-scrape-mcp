@@ -4,6 +4,12 @@ export interface SearchInput {
   query: string;
   limit: number;
   recency?: "day" | "week" | "month" | "year";
+  location?: string;
+  gl?: string;
+  hl?: string;
+  page?: number;
+  autocorrect?: boolean;
+  tbs?: string;
   site?: string;
   exclude_domains?: string[];
 }

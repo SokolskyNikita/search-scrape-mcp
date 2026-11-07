@@ -19,11 +19,29 @@ const responseSchema = z.object({
   credits: z.number().finite().nonnegative().optional(),
 });
 
+class SerperHttpError extends AppError {
+  constructor(readonly status: number) {
+    super("provider_http", `Serper returned HTTP ${status}.`);
+  }
+}
+
 export function serper(key: string): SearchProvider {
   return {
     name: "serper",
     async search(
-      { query, limit, recency, site, exclude_domains = [] },
+      {
+        query,
+        limit,
+        recency,
+        site,
+        exclude_domains = [],
+        location,
+        gl = "us",
+        hl = "en",
+        page,
+        autocorrect,
+        tbs,
+      },
       signal,
       retry,
     ) {
@@ -53,9 +71,12 @@ export function serper(key: string): SearchProvider {
               body: JSON.stringify({
                 q: queryWithOperators,
                 num: limit,
-                gl: "us",
-                hl: "en",
-                ...(recency ? { tbs: `qdr:${freshness[recency]}` } : {}),
+                gl,
+                hl,
+                location,
+                page,
+                autocorrect,
+                tbs: recency ? `qdr:${freshness[recency]}` : tbs,
               }),
               signal: requestSignal,
             },
@@ -76,11 +97,7 @@ export function serper(key: string): SearchProvider {
               "provider_limit",
               "Serper rate or quota limit reached.",
             );
-          if (!response.ok)
-            throw new AppError(
-              "provider_http",
-              `Serper returned HTTP ${response.status}.`,
-            );
+          if (!response.ok) throw new SerperHttpError(response.status);
           const parsed = responseSchema.safeParse(body);
           if (!parsed.success)
             throw new AppError("provider_response", "Invalid Serper response.");
@@ -105,6 +122,11 @@ export function serper(key: string): SearchProvider {
           () => false,
           (error: unknown) =>
             !requestSignal.aborted &&
+            !(
+              error instanceof SerperHttpError &&
+              error.status < 500 &&
+              error.status !== 408
+            ) &&
             !(
               error instanceof AppError &&
               ["provider_auth", "provider_limit"].includes(error.code)

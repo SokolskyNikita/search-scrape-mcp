@@ -18,6 +18,21 @@ const input = z
     query: query.optional(),
     q: query.optional().describe("Alias for query."),
     recency: z.enum(["day", "week", "month", "year"]).optional(),
+    location: z.string().trim().min(1).max(256).optional(),
+    gl: z
+      .string()
+      .trim()
+      .regex(/^[a-z]{2}$/i)
+      .toLowerCase()
+      .optional(),
+    hl: z
+      .string()
+      .trim()
+      .regex(/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i)
+      .optional(),
+    page: z.number().int().min(1).optional(),
+    autocorrect: z.boolean().optional(),
+    tbs: z.string().trim().min(1).max(256).optional(),
     site: domain.optional(),
     exclude_domains: z.array(domain).max(5).optional(),
     limit: z.number().int().min(1).max(10).default(5),
@@ -32,6 +47,9 @@ export function registerSearch(server: McpServer, providers: SearchProvider[]) {
   ) {
     if ((query === undefined) === (q === undefined)) {
       throw new AppError("input", "Provide exactly one of query or q.");
+    }
+    if (options.recency && options.tbs) {
+      throw new AppError("input", "Provide either recency or tbs.");
     }
     const args: SearchInput = { query: (query ?? q)!, ...options };
     return fallback(
