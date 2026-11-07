@@ -106,3 +106,45 @@ test("authenticated MCP search uses a recorded Serper response", async (t) => {
     await client.close();
   }
 });
+
+test("expired MCP sessions return 404 and a fresh initialize works", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  let closed = 0;
+  const token = "x".repeat(40);
+  const server = createMcpHttp(token, () => async () => {
+    closed++;
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+  const addr = server.address();
+  assert(addr && typeof addr === "object");
+  const url = new URL(`http://127.0.0.1:${addr.port}/mcp`);
+  const headers = { Authorization: `Bearer ${token}` };
+  async function connect() {
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: { headers },
+    });
+    const client = new Client({ name: "expiry-fixture", version: "1.0.0" });
+    await client.connect(transport);
+    t.after(() => client.close());
+    return transport;
+  }
+  const old = await connect();
+  now += 2 * 60 * 60_000 + 1;
+  assert.equal(
+    (
+      await fetch(url, {
+        headers: { ...headers, "Mcp-Session-Id": old.sessionId! },
+      })
+    ).status,
+    404,
+  );
+  assert.equal(closed, 1);
+  const fresh = await connect();
+  assert(fresh.sessionId && fresh.sessionId !== old.sessionId);
+});

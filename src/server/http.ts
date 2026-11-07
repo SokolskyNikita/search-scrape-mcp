@@ -45,14 +45,24 @@ export function createMcpHttp(
     { transport: StreamableHTTPServerTransport; active: number; used: number }
   >();
   const expected = digest(`Bearer ${token}`);
+  function expireSession(
+    id: string,
+    session: {
+      transport: StreamableHTTPServerTransport;
+      active: number;
+      used: number;
+    },
+  ) {
+    if (session.active || Date.now() - session.used < 2 * 60 * 60_000)
+      return false;
+    sessions.delete(id);
+    void session.transport
+      .close()
+      .catch(() => console.error("MCP session cleanup failed."));
+    return true;
+  }
   const expire = setInterval(() => {
-    for (const session of sessions.values()) {
-      if (!session.active && Date.now() - session.used > 30 * 60_000) {
-        void session.transport
-          .close()
-          .catch(() => console.error("MCP session cleanup failed."));
-      }
-    }
+    for (const [id, session] of sessions) expireSession(id, session);
   }, 60_000).unref();
   let pending = 0;
   let toolCalls = 0;
@@ -83,11 +93,6 @@ export function createMcpHttp(
           res.setHeader("Allow", "POST, DELETE");
           return reject(res, 405, "Method not allowed.");
         }
-        // This server only sends messages in response to a POST.
-        if (req.method === "GET") {
-          res.setHeader("Allow", "POST, DELETE");
-          return reject(res, 405, "Standalone event streams are disabled.");
-        }
         if (
           req.method === "POST" &&
           req.headers["content-type"]?.split(";")[0] !== "application/json"
@@ -110,7 +115,16 @@ export function createMcpHttp(
         const id = req.headers["mcp-session-id"];
         if (id !== undefined) {
           const session = typeof id === "string" ? sessions.get(id) : undefined;
-          if (!session) return reject(res, 404, "Unknown MCP session.");
+          if (typeof id !== "string" || !session || expireSession(id, session))
+            return reject(
+              res,
+              404,
+              "MCP session expired or unknown. Initialize a new session.",
+            );
+          if (req.method === "GET") {
+            res.setHeader("Allow", "POST, DELETE");
+            return reject(res, 405, "Standalone event streams are disabled.");
+          }
           if (session.active >= 4 && req.method === "POST")
             return reject(res, 429, "Session is busy.");
           const isToolCall =
@@ -128,9 +142,13 @@ export function createMcpHttp(
           }
           return;
         }
+        if (req.method === "GET") {
+          res.setHeader("Allow", "POST, DELETE");
+          return reject(res, 405, "Standalone event streams are disabled.");
+        }
         if (!isInitializeRequest(body))
           return reject(res, 400, "Initialize an MCP session first.");
-        if (sessions.size + pending >= 32)
+        if (sessions.size + pending >= 128)
           return reject(res, 503, "MCP session limit reached.");
         pending++;
         const mcp = new McpServer(
