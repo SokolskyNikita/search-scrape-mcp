@@ -216,7 +216,9 @@ scrape ladder reserves three seconds for completion or fallback, leaving
 uses 30 seconds, matching Scrapfly's minimums and the local HTTP timeouts.
 An unknown host can run datacenter and one advanced rung in 45 seconds.
 If a rung cannot fit or the next rung would switch between Unblocker and
-render, the tool returns a `start_rung` hint for a fresh call.
+render, the tool returns a `start_rung` hint for a fresh call. It preserves
+usable content and its warning, or returns `stronger_rung_required` when
+there is no usable content.
 Key and account credit rejections stop immediately.
 [Scrapfly timeout documentation](https://scrapfly.io/docs/scrape-api/understand-timeout)
 

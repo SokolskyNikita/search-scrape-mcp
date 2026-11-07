@@ -35,11 +35,7 @@ export function watchCaptcha(
       try {
         for (;;) {
           signal?.throwIfAborted();
-          const url = page.url();
-          if (
-            !mitigated() &&
-            !(URL.canParse(url) && isChallengeUrl(new URL(url)))
-          ) {
+          if (!mitigated()) {
             try {
               const view = await page.evaluate(
                 (cap) => ({
@@ -51,7 +47,13 @@ export function watchCaptcha(
                 }),
                 CHALLENGE_TEXT_CHARS + 1,
               );
+              const url = page.url();
+              const challengePath =
+                !view.hasFormFields &&
+                URL.canParse(url) &&
+                isChallengeUrl(new URL(url));
               if (
+                !challengePath &&
                 !looksChallenged(
                   view.hasFormFields ? "" : view.text,
                   view.title,

@@ -15,7 +15,7 @@ test("CAPTCHA widget events on ordinary form pages do not block navigation", asy
     },
   } as unknown as CDPSession;
   const page = {
-    url: () => "https://example.com/contact",
+    url: () => "https://example.com/captcha/contact",
     async evaluate() {
       return {
         title: "Contact",
