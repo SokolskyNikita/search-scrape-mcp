@@ -1,71 +1,57 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
-import type WebSocket from "ws";
-import { guardedCdp } from "./scrapfly-browser-transport.js";
+import type { CDPSession } from "playwright-core";
+import { guardNavigations } from "./browser-navigation.js";
 import { browserScraper } from "./scrapfly-browser.js";
 
-test("CDP transport blocks an unsafe redirect before Chromium sends it", async () => {
-  const messages: unknown[] = [];
-
-  class FakeSocket extends EventTarget {
-    static readonly OPEN = 1;
-    readyState = FakeSocket.OPEN;
-
-    send(data: string) {
-      messages.push(JSON.parse(data));
-    }
-
-    close() {
-      this.readyState = 3;
-      this.dispatchEvent(new Event("close"));
-    }
-  }
-
-  const connection = new FakeSocket();
-  const transport = guardedCdp(connection as unknown as WebSocket);
-
-  function intercept(id: string, url: string, redirectedRequestId?: string) {
-    connection.dispatchEvent(
-      new MessageEvent("message", {
-        data: JSON.stringify({
-          method: "Fetch.requestPaused",
-          sessionId: "page",
-          params: { requestId: id, request: { url }, redirectedRequestId },
-        }),
-      }),
-    );
-    transport.send({
-      id: messages.length + 1,
-      method: "Fetch.continueRequest",
-      sessionId: "page",
-      params: { requestId: id },
-    });
-  }
-
-  intercept("start", "https://93.184.215.14");
-  await setImmediate();
-  intercept("redirect", "http://127.0.0.1", "start");
-  await setImmediate();
-  assert.deepEqual(messages, [
-    {
-      id: 1,
-      method: "Fetch.continueRequest",
-      sessionId: "page",
-      params: { requestId: "start" },
+test("browser guard checks top-level redirects and leaves iframe requests to cloud egress", async () => {
+  const commands: { method: string; params: unknown }[] = [];
+  let paused: (event: unknown) => void = () =>
+    assert.fail("No request handler");
+  const cdp = {
+    on(_event: string, listener: typeof paused) {
+      paused = listener;
     },
-    {
-      id: 2,
-      method: "Fetch.failRequest",
-      sessionId: "page",
-      params: { requestId: "redirect", errorReason: "BlockedByClient" },
+    async send(method: string, params: unknown) {
+      commands.push({ method, params });
+      if (method === "Page.getFrameTree")
+        return { frameTree: { frame: { id: "main" } } };
     },
-  ]);
-
-  connection.dispatchEvent(
-    new MessageEvent("message", { data: "invalid JSON" }),
+  } as unknown as CDPSession;
+  const error = await guardNavigations(cdp);
+  assert.deepEqual(commands[1], {
+    method: "Fetch.enable",
+    params: { patterns: [{ resourceType: "Document" }] },
+  });
+  paused({
+    requestId: "1",
+    frameId: "main",
+    request: { url: "https://1.1.1.1/" },
+  });
+  paused({
+    requestId: "2",
+    frameId: "main",
+    request: { url: "http://127.0.0.1/" },
+  });
+  paused({
+    requestId: "3",
+    frameId: "iframe",
+    request: { url: "http://127.0.0.1/" },
+  });
+  await setImmediate();
+  assert(
+    commands.some(
+      ({ method, params }) =>
+        method === "Fetch.failRequest" &&
+        (params as { requestId: string }).requestId === "2",
+    ),
   );
-  assert.equal(connection.readyState, 3);
+  assert.equal(
+    commands.filter(({ method }) => method === "Fetch.continueRequest").length,
+    2,
+  );
+  assert.equal(error()?.code, "unsafe_url");
 });
 
 test("browser scraper releases the session when navigation fails", async () => {

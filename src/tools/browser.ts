@@ -102,7 +102,7 @@ export function registerBrowser(
                 .finally(() => {
                   active = undefined;
                 });
-            }, 5 * 60_000).unref();
+            }, 30 * 60_000).unref();
           }
         }
       }),

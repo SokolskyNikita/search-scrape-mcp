@@ -7,6 +7,7 @@ import {
 import { AppError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
 import { pageContent } from "../tools/page-content.js";
+import { guardNavigations } from "./browser-navigation.js";
 import { scrapflyTransport } from "./scrapfly-browser-transport.js";
 import type { BrowserProvider, ScrapeProvider } from "./types.js";
 
@@ -30,7 +31,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
     async open() {
       const endpoint = new URL("wss://browser.scrapfly.io");
       endpoint.searchParams.set("key", key);
-      endpoint.searchParams.set("timeout", "300");
+      endpoint.searchParams.set("timeout", "1800");
       endpoint.searchParams.set("auto_close", "true");
       endpoint.searchParams.set("solve_captcha", "true");
 
@@ -65,12 +66,18 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                 "browser_connect",
                 "Scrapfly returned no browser context.",
               );
-            // Routing enables Chromium Fetch interception. The transport checks
-            // every intercepted URL before allowing the request to continue.
-            await context.route("**/*", (route) => route.continue());
-            await context.routeWebSocket("**/*", (socket) => socket.close());
             const page = context.pages()[0] ?? (await context.newPage());
             const cdp = await context.newCDPSession(page);
+            const navigationError = await guardNavigations(cdp);
+            await page.routeWebSocket("**/*", async (socket) => {
+              try {
+                await validatePublicUrl(socket.url().replace(/^ws/, "http"));
+              } catch {
+                socket.close();
+                return;
+              }
+              socket.connectToServer();
+            });
             await cdp.send("Network.setBypassServiceWorker", { bypass: true });
             page.on("download", (download) => {
               void download
@@ -105,7 +112,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
             function closedError(): AppError {
               return new AppError(
                 "browser_closed",
-                "Browser session is closed.",
+                "Browser session expired or disconnected. Navigate again to start a new session.",
               );
             }
 
@@ -155,6 +162,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
 
             return {
               async run(action, fullPage) {
+                navigationError();
                 try {
                   if (isClosed()) throw closedError();
                   if (action.action === "navigate") {
@@ -174,6 +182,8 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                   return await within(snapshot(), actionTimeout);
                 } catch (error) {
                   if (isClosed()) throw closedError();
+                  const blocked = navigationError();
+                  if (blocked) throw blocked;
                   if (error instanceof AppError) throw error;
                   throw new AppError(
                     "browser_action",
