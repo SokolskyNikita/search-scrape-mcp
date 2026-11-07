@@ -195,7 +195,7 @@ export function createMcpHttp(
       }
     },
   );
-  http.maxConnections = 128;
+  http.maxConnections = settings.mcpSessionLimit;
   http.on("close", () => {
     clearInterval(expire);
     for (const { transport } of sessions.values()) {

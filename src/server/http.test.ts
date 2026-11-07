@@ -4,6 +4,7 @@ import { get } from "node:http";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { defaults } from "../config/tuning.js";
 import { serper } from "../providers/serper.js";
 import { registerSearch } from "../tools/search.js";
 import { createMcpHttp } from "./http.js";
@@ -36,9 +37,12 @@ test("authenticated MCP search uses a recorded Serper response", async (t) => {
     },
   );
   const token = "a".repeat(40);
-  const server = createMcpHttp(token, (mcp) =>
-    registerSearch(mcp, [serper("fake-key")]),
+  const server = createMcpHttp(
+    token,
+    (mcp) => registerSearch(mcp, [serper("fake-key")]),
+    { ...defaults, mcpSessionLimit: 256 },
   );
+  assert.equal(server.maxConnections, 256);
   server.listen(0, "127.0.0.1");
   t.after(() => {
     server.close();
