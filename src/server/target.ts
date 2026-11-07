@@ -17,32 +17,29 @@ function publicIp(value: string): boolean {
   return ip.match(globalV6);
 }
 
-const forbidden = () =>
-  new AppError(
-    "unsafe_url",
-    "Only public HTTP(S) URLs on standard ports are allowed.",
-  );
+const forbidden = (message: string) => new AppError("unsafe_url", message);
 
 export async function validatePublicUrl(value: string): Promise<URL> {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw forbidden();
+    throw forbidden("The URL is invalid.");
   }
   if (
     value.length > MAX_URL_CHARS ||
     /[\u0000-\u0020\u007f\\]/.test(value) ||
-    !["http:", "https:"].includes(url.protocol) ||
-    url.username ||
-    url.password ||
-    url.port
+    !["http:", "https:"].includes(url.protocol)
   )
-    throw forbidden();
+    throw forbidden("Use a valid public HTTP or HTTPS URL.");
+  if (url.username || url.password)
+    throw forbidden("URL credentials are not allowed.");
+  if (url.port) throw forbidden("Use the standard port for the URL scheme.");
 
   const host = url.hostname.replace(/^\[|\]$|\.$/g, "");
   if (ipaddr.isValid(host)) {
-    if (!publicIp(host)) throw forbidden();
+    if (!publicIp(host))
+      throw forbidden("The URL points to a private or reserved IP address.");
     return url;
   }
   if (
@@ -51,7 +48,7 @@ export async function validatePublicUrl(value: string): Promise<URL> {
       host,
     )
   ) {
-    throw forbidden();
+    throw forbidden("The URL hostname is local or reserved.");
   }
   const answers = await Promise.allSettled([
     dns.resolve4(`${host}.`),
@@ -69,6 +66,9 @@ export async function validatePublicUrl(value: string): Promise<URL> {
   }
   if (!addresses.length)
     throw new AppError("dns", "Target hostname did not resolve.");
-  if (addresses.some((address) => !publicIp(address))) throw forbidden();
+  if (addresses.some((address) => !publicIp(address)))
+    throw forbidden(
+      "The URL hostname resolves to a private or reserved IP address.",
+    );
   return url;
 }
