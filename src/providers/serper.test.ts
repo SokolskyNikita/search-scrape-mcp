@@ -109,3 +109,34 @@ test("a transient failure cannot send a hedge past the shared provider rate", as
   );
   assert.equal(request.mock.callCount(), 1);
 });
+
+test("Serper adds ISO dates only for valid absolute dates", async (t) => {
+  const dates = [
+    "Jul 30, 2026",
+    "2024-02-29",
+    "Feb 30, 2026",
+    "18 hours ago",
+    "vor 3 Stunden",
+  ];
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      organic: dates.map((date) => ({
+        title: "Fixture",
+        link: "https://example.com/",
+        date,
+      })),
+    }),
+  );
+  const hits = await serper("fixture").search({
+    query: "fixture",
+    limit: dates.length,
+  });
+  assert.deepEqual(
+    hits.map(({ date }) => date),
+    dates,
+  );
+  assert.deepEqual(
+    hits.map(({ dateIso }) => dateIso),
+    ["2026-07-30", "2024-02-29", undefined, undefined, undefined],
+  );
+});

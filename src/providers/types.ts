@@ -19,6 +19,7 @@ export interface SearchHit {
   url: string;
   snippet?: string;
   date?: string;
+  dateIso?: string;
 }
 
 export interface SearchProvider {

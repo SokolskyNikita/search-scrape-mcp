@@ -23,6 +23,40 @@ const responseSchema = z.object({
   credits: z.number().finite().nonnegative().optional(),
 });
 
+const months = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+function absoluteDate(date: string): string | undefined {
+  const text = date.trim();
+  const english = /^([A-Z][a-z]{2}) (\d{1,2}), (\d{4})$/.exec(text);
+  let iso = text;
+  if (english) {
+    const [, month, day, year] = english;
+    const monthNumber = months.indexOf(month!) + 1;
+    if (!monthNumber) return undefined;
+    iso = `${year}-${String(monthNumber).padStart(2, "0")}-${day!.padStart(2, "0")}`;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return undefined;
+  const parsed = new Date(iso);
+  if (
+    Number.isFinite(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === iso
+  )
+    return iso;
+}
+
 class SerperHttpError extends AppError {
   constructor(readonly status: number) {
     super("provider_http", `Serper returned HTTP ${status}.`);
@@ -213,6 +247,7 @@ export function serper(
           url: link,
           snippet: snippet?.slice(0, 320),
           date: date?.slice(0, 80),
+          dateIso: date ? absoluteDate(date) : undefined,
         }));
     },
   };
