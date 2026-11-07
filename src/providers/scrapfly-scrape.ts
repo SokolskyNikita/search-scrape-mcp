@@ -26,6 +26,7 @@ const challenge = () =>
 
 export function scrapflyScrape(key: string): ScrapeProvider {
   return {
+    name: "scrapfly",
     async scrape(url, signal) {
       const target = await validatePublicUrl(url);
       target.hash = "";

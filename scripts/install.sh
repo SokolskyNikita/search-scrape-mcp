@@ -44,6 +44,7 @@ console.log(`<?xml version="1.0" encoding="UTF-8"?>
   <key>WorkingDirectory</key><string>${xml(repo)}</string>
   <key>EnvironmentVariables</key><dict>
     <key>MCP_CONFIG</key><string>${xml(config)}</string>
+    <key>MCP_STATS_LOG</key><string>${xml(logs)}/tools.jsonl</string>
     <key>MCP_KEYS_FILE</key><string>${xml(keys)}</string>
   </dict>
   <key>RunAtLoad</key><true/>

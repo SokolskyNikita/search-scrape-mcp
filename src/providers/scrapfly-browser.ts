@@ -33,6 +33,7 @@ function within<T>(operation: Promise<T>, ms: number): Promise<T> {
 
 export function scrapflyBrowser(key: string): BrowserProvider {
   return {
+    name: "scrapfly",
     async open(signal) {
       const endpoint = new URL("wss://browser.scrapfly.io");
       endpoint.searchParams.set("key", key);
@@ -295,6 +296,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
 
 export function browserScraper(provider: BrowserProvider): ScrapeProvider {
   return {
+    name: "scrapfly-browser",
     async scrape(url, signal) {
       const target = await validatePublicUrl(url);
       const session = await provider.open(signal);

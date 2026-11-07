@@ -4,7 +4,7 @@ import type { ScrapeProvider } from "../providers/types.js";
 import { validatePublicUrl } from "../server/target.js";
 import { PageCache } from "./page-cache.js";
 import { pageContent } from "./page-content.js";
-import { batch, fallback, toolResult } from "./shared.js";
+import { batch, fallback, toolResult, type Attempt } from "./shared.js";
 
 const urlInput = z.string().trim().min(1).max(4_096);
 
@@ -16,7 +16,7 @@ export function registerScrape(
   async function scrape(
     url: string,
     limit: number,
-    attempt: () => void,
+    attempt: Attempt,
     signal: AbortSignal,
   ) {
     const target = await validatePublicUrl(url);

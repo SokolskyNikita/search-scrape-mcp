@@ -17,6 +17,7 @@ const responseSchema = z.object({
 
 export function serper(key: string): SearchProvider {
   return {
+    name: "serper",
     async search({ query, limit }) {
       const response = responseSchema.safeParse(
         await providerRequest(

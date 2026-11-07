@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SearchInput, SearchProvider } from "../providers/types.js";
 import { AppError } from "../server/error.js";
-import { batch, fallback, toolResult } from "./shared.js";
+import { batch, fallback, toolResult, type Attempt } from "./shared.js";
 
 const query = z.string().trim().min(1).max(500);
 const input = z
@@ -16,7 +16,7 @@ const input = z
 export function registerSearch(server: McpServer, providers: SearchProvider[]) {
   async function search(
     { query, q, limit }: z.infer<typeof input>,
-    attempt: () => void,
+    attempt: Attempt,
     signal: AbortSignal,
   ) {
     if ((query === undefined) === (q === undefined)) {
@@ -25,7 +25,7 @@ export function registerSearch(server: McpServer, providers: SearchProvider[]) {
     const args: SearchInput = { query: (query ?? q)!, limit };
     return fallback(
       providers,
-      (provider) => provider.search(args, signal, attempt),
+      (provider) => provider.search(args, signal, () => attempt(provider.name)),
       attempt,
       signal,
     );

@@ -68,6 +68,7 @@ export function registerBrowser(
   providers: BrowserProvider[],
 ) {
   let browser: BrowserSession | undefined;
+  let browserProvider: string | undefined;
   let active: Promise<unknown> | undefined;
   let closed = false;
   let idle: NodeJS.Timeout | undefined;
@@ -97,6 +98,7 @@ export function registerBrowser(
         clearTimeout(idle);
         const run = async () => {
           if (command.action === "close") {
+            if (browser) attempt(browserProvider);
             await close();
             return "Browser closed.";
           }
@@ -108,11 +110,15 @@ export function registerBrowser(
           }
           if (!browser && command.action === "navigate")
             await validatePublicUrl(command.url);
-          if (browser) attempt();
+          if (browser) attempt(browserProvider);
           else
             browser = await fallback(
               providers,
-              (provider) => provider.open(signal),
+              async (provider) => {
+                const opened = await provider.open(signal);
+                browserProvider = provider.name;
+                return opened;
+              },
               attempt,
               signal,
             );

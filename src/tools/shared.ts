@@ -1,17 +1,20 @@
 import type { BrowserImage } from "../providers/types.js";
+import { writeToolStats } from "../server/stats.js";
 import { AppError, safeError } from "../server/error.js";
 
-export async function fallback<T, R>(
+export type Attempt = (provider?: string) => void;
+
+export async function fallback<T extends { name?: string }, R>(
   providers: readonly T[],
   run: (provider: T) => Promise<R>,
-  attempt: () => void,
+  attempt: Attempt,
   signal: AbortSignal,
 ): Promise<R> {
   const errors: AppError[] = [];
   for (const provider of providers) {
     signal.throwIfAborted();
     try {
-      attempt();
+      attempt(provider.name);
       return await run(provider);
     } catch (error) {
       if (
@@ -35,11 +38,12 @@ export async function fallback<T, R>(
 
 export async function toolResult(
   name: string,
-  run: (attempt: () => void, signal: AbortSignal) => Promise<unknown>,
+  run: (attempt: Attempt, signal: AbortSignal) => Promise<unknown>,
 ) {
   const start = performance.now();
   let attempts = 0;
-  let ok = false;
+  let errorCode: string | null = null;
+  const providers = new Set<string>();
   const controller = new AbortController();
   const timeoutError = new AppError(
     "tool_timeout",
@@ -54,17 +58,19 @@ export async function toolResult(
       }, 54_000);
     });
     const result = await Promise.race([
-      run(() => {
+      run((provider) => {
         attempts++;
+        if (provider) providers.add(provider);
       }, controller.signal),
       deadline,
     ]);
-    ok =
-      !Array.isArray(result) ||
-      !result.some(
-        (item: unknown) =>
+    if (Array.isArray(result)) {
+      const failed = result.find(
+        (item: unknown): item is { error: { code: string } } =>
           item !== null && typeof item === "object" && "error" in item,
       );
+      errorCode = failed?.error.code ?? null;
+    }
     if (
       result &&
       typeof result === "object" &&
@@ -82,6 +88,7 @@ export async function toolResult(
     };
   } catch (error) {
     const failure = safeError(error);
+    errorCode = failure.code;
     if (failure.code === "internal") console.error("Unexpected tool error.");
     return {
       isError: true,
@@ -91,14 +98,13 @@ export async function toolResult(
     };
   } finally {
     clearTimeout(timer);
-    console.log(
-      JSON.stringify({
-        tool: name,
-        durationMs: Math.round(performance.now() - start),
-        ok,
-        attempts,
-      }),
-    );
+    writeToolStats({
+      tool: name,
+      durationMs: Math.round(performance.now() - start),
+      attempts,
+      provider: providers.size ? [...providers].join(",") : null,
+      errorCode,
+    });
   }
 }
 

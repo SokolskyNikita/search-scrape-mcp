@@ -10,6 +10,7 @@ export interface SearchHit {
 }
 
 export interface SearchProvider {
+  readonly name?: string;
   search(
     input: SearchInput,
     signal?: AbortSignal,
@@ -18,6 +19,7 @@ export interface SearchProvider {
 }
 
 export interface ScrapeProvider {
+  readonly name?: string;
   scrape(url: string, signal?: AbortSignal): Promise<string>;
 }
 
@@ -50,5 +52,6 @@ export interface BrowserSession {
 }
 
 export interface BrowserProvider {
+  readonly name?: string;
   open(signal?: AbortSignal): Promise<BrowserSession>;
 }
