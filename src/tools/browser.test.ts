@@ -16,7 +16,7 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const files = new OutputFiles(join(dir, "spills"));
   const page = "# Long page\n" + "page contents\n".repeat(2000).trimEnd();
-  const snapshot = "- link example [ref=s1-e2]\n".repeat(1000).trimEnd();
+  const snapshot = 'e2 link "example"\n'.repeat(1000).trimEnd();
   let opened = 0;
   const closed: number[] = [];
   const provider: BrowserProvider = {
@@ -67,6 +67,19 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
     assert.deepEqual((await b.call(command)).content, [
       { type: "text", text: "Browser 2" },
     ]);
+    for (const ref of ["e2", "f1e2"]) {
+      for (const action of [
+        { action: "click", ref },
+        { action: "fill", ref, text: "example" },
+        { action: "press", ref, key: "Enter" },
+      ] as const) {
+        assert.equal((await a.call(action)).isError, undefined);
+      }
+    }
+    assert.equal(
+      (await a.call({ action: "click", ref: "s1-e2" })).isError,
+      true,
+    );
     await a.call({ action: "close" });
     assert.deepEqual(closed, [1]);
     const actions = [

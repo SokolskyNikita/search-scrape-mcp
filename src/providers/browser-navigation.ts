@@ -1,10 +1,10 @@
-import type { CDPSession } from "playwright-core";
+import type { CDPSession, Page } from "playwright-core";
 import { safeError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
 
 export async function guardNavigations(
   cdp: CDPSession,
-  onDocumentResponse?: (status: number, mitigated: boolean) => void,
+  onDocumentResponse?: (status: number | undefined, mitigated: boolean) => void,
   pace?: (hostname: string, signal: AbortSignal) => Promise<() => void>,
   disconnected?: AbortSignal,
 ) {
@@ -76,15 +76,30 @@ export async function guardNavigations(
     })().catch(() => console.error("Browser navigation interception failed."));
   });
   if (onDocumentResponse) {
-    cdp.on("Network.responseReceived", ({ frameId, type, response }) => {
-      if (frameId === frameTree.frame.id && type === "Document") {
-        const mitigated = Object.entries(response.headers).some(
-          ([name, value]) =>
-            name.toLowerCase() === "cf-mitigated" && value === "challenge",
-        );
-        onDocumentResponse(response.status, mitigated);
-      }
+    const responses = new Map<string, [number, boolean]>();
+    cdp.on(
+      "Network.responseReceived",
+      ({ frameId, type, response, loaderId }) => {
+        if (frameId === frameTree.frame.id && type === "Document") {
+          const mitigated = Object.entries(response.headers).some(
+            ([name, value]) =>
+              name.toLowerCase() === "cf-mitigated" && value === "challenge",
+          );
+          responses.set(loaderId, [response.status, mitigated]);
+          if (responses.size > 32)
+            responses.delete(responses.keys().next().value!);
+          onDocumentResponse(response.status, mitigated);
+        }
+      },
+    );
+    cdp.on("Page.frameNavigated", ({ frame, type }) => {
+      if (frame.id !== frameTree.frame.id || type !== "BackForwardCacheRestore")
+        return;
+      // A restored document has no new Network.responseReceived event.
+      const response = responses.get(frame.loaderId);
+      onDocumentResponse(response?.[0], response?.[1] ?? false);
     });
+    await cdp.send("Page.enable");
   }
   if (onDocumentResponse || pace) await cdp.send("Network.enable");
   // A separate CDP session keeps Playwright's own request interception disabled.
@@ -108,7 +123,7 @@ export function documentResponseState() {
     get mitigated() {
       return mitigated;
     },
-    observe(nextStatus: number, challenge: boolean) {
+    observe(nextStatus: number | undefined, challenge: boolean) {
       status = nextStatus;
       mitigated = challenge;
     },
@@ -124,4 +139,10 @@ export function documentResponseState() {
       return true;
     },
   };
+}
+
+export async function goBack(page: Page) {
+  // A BFCache restore commits but does not fire DOMContentLoaded again.
+  await page.goBack({ waitUntil: "commit" });
+  await page.waitForFunction(() => document.readyState !== "loading");
 }

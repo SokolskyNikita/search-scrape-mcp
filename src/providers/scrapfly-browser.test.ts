@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
-import { chromium, type CDPSession } from "playwright-core";
+import { chromium, type CDPSession, type LaunchOptions } from "playwright-core";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   documentResponseState,
   guardNavigations,
+  goBack,
 } from "./browser-navigation.js";
 import { defaults } from "../config/tuning.js";
 import { RequestLimits } from "../server/request-limits.js";
+import { browserSnapshots } from "./browser-snapshot.js";
+import { browserActionError } from "./browser-action-error.js";
+import { watchCaptcha } from "./browser-captcha.js";
 import { browserScraper } from "./scrapfly-browser.js";
 
 test("browser guard checks top-level redirects and leaves iframe requests to cloud egress", async () => {
@@ -19,11 +23,13 @@ test("browser guard checks top-level redirects and leaves iframe requests to clo
     assert.fail("No request handler");
   let received: (event: unknown) => void = () =>
     assert.fail("No response handler");
-  const statuses: [number, boolean][] = [];
+  let restored = paused;
+  const statuses: [number | undefined, boolean][] = [];
   const cdp = {
     on(event: string, listener: typeof paused) {
       if (event === "Fetch.requestPaused") paused = listener;
       if (event === "Network.responseReceived") received = listener;
+      if (event === "Page.frameNavigated") restored = listener;
     },
     async send(method: string, params: unknown) {
       commands.push({ method, params });
@@ -34,8 +40,8 @@ test("browser guard checks top-level redirects and leaves iframe requests to clo
   const error = await guardNavigations(cdp, (status, mitigated) =>
     statuses.push([status, mitigated]),
   );
-  assert.equal(commands[1]?.method, "Network.enable");
-  assert.deepEqual(commands[2], {
+  assert.equal(commands[2]?.method, "Network.enable");
+  assert.deepEqual(commands[3], {
     method: "Fetch.enable",
     params: { patterns: [{ resourceType: "Document" }] },
   });
@@ -70,15 +76,31 @@ test("browser guard checks top-level redirects and leaves iframe requests to clo
   const challenge = { status: 403, headers: { "CF-Mitigated": "challenge" } };
   received({ frameId: "iframe", type: "Document", response: challenge });
   received({ frameId: "main", type: "Fetch", response: challenge });
-  received({ frameId: "main", type: "Document", response: challenge });
+  received({
+    frameId: "main",
+    type: "Document",
+    response: challenge,
+    loaderId: "challenge",
+  });
   received({
     frameId: "main",
     type: "Document",
     response: { status: 200, headers: {} },
+    loaderId: "next",
+  });
+  restored({
+    frame: { id: "main", loaderId: "challenge" },
+    type: "BackForwardCacheRestore",
+  });
+  restored({
+    frame: { id: "main", loaderId: "unknown" },
+    type: "BackForwardCacheRestore",
   });
   assert.deepEqual(statuses, [
     [403, true],
     [200, false],
+    [403, true],
+    [undefined, false],
   ]);
 });
 
@@ -205,15 +227,33 @@ test("browser main-frame navigations share scrape hostname slots until network c
   connection.abort();
 });
 
-const chromeExecutable =
-  process.env.MCP_TEST_CHROME ?? chromium.executablePath();
+const chromeExecutable = process.env.MCP_TEST_CHROME;
+const skipChrome =
+  process.env.CODEX_SANDBOX === "seatbelt"
+    ? "Local Chrome cannot launch inside the macOS Codex sandbox. Run this test outside it."
+    : !chromeExecutable && "Set MCP_TEST_CHROME to a local Chrome executable";
+
+async function launchChrome(options: LaunchOptions) {
+  assert(
+    chromeExecutable && existsSync(chromeExecutable),
+    "MCP_TEST_CHROME does not point to an existing executable.",
+  );
+  try {
+    return await chromium.launch({
+      ...options,
+      executablePath: chromeExecutable,
+    });
+  } catch (error) {
+    throw new Error(
+      "Local Chrome failed to start. Check MCP_TEST_CHROME and run outside the macOS Codex sandbox.",
+      { cause: error },
+    );
+  }
+}
+
 test(
   "a browser page loads 32 same-host files under navigation pacing",
-  {
-    skip:
-      !existsSync(chromeExecutable) &&
-      "Set MCP_TEST_CHROME to a Chromium executable",
-  },
+  { skip: skipChrome },
   async (t) => {
     const count = 32;
     const server = createServer((req, res) => {
@@ -238,8 +278,7 @@ test(
     );
     t.after(() => server.close());
     const address = server.address() as AddressInfo;
-    const browser = await chromium.launch({
-      executablePath: chromeExecutable,
+    const browser = await launchChrome({
       proxy: { server: `http://127.0.0.1:${address.port}` },
     });
     try {
@@ -259,3 +298,144 @@ test(
     }
   },
 );
+
+test(
+  "browser snapshots filter the viewport and keep native refs usable",
+  { skip: skipChrome },
+  async (t) => {
+    const server = createServer((req, res) => {
+      res.setHeader("Content-Type", "text/html");
+      switch (new URL(req.url!, "http://1.1.1.1").pathname) {
+        case "/fixture":
+          res.end(`
+          <a style="position:absolute;top:-1px;left:-1px;width:1px;height:1px;overflow:hidden" href="#main">Skip to content</a>
+          <h1 id="main">Fixture heading</h1>
+          <form aria-label="Main form">
+            <button type="button" onclick="this.textContent='Clicked'">Main button</button>
+            <input aria-label="Main field">
+          </form>
+          <iframe src="/frame" style="border:0"></iframe>
+          <a href="/next">Follow link</a>
+          <div style="height:1500px"></div>
+          <h2>Lower heading</h2><button>Lower button</button>
+          <iframe src="/frame" style="border:0"></iframe>
+        `);
+          break;
+        case "/frame":
+          res.end(
+            `<button onclick="this.textContent='Frame clicked'">Frame button</button><input aria-label="Frame field">`,
+          );
+          break;
+        default:
+          res.end("<h1>Second page</h1>");
+      }
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    t.after(() => server.close());
+    const { port } = server.address() as AddressInfo;
+    const browser = await launchChrome({
+      proxy: { server: `http://127.0.0.1:${port}` },
+      ignoreDefaultArgs: ["--disable-back-forward-cache"],
+    });
+    try {
+      const page = await browser.newPage();
+      page.setDefaultTimeout(5_000);
+      const cdp = await page.context().newCDPSession(page);
+      const captcha = watchCaptcha(cdp, page);
+      const doc = documentResponseState();
+      const blocked = await guardNavigations(
+        cdp,
+        (status, mitigated) => {
+          doc.observe(status, mitigated);
+          captcha.reset();
+        },
+        async () => () => {},
+      );
+      await page.goto("http://1.1.1.1/fixture");
+      const snapshots = browserSnapshots(page);
+      const viewport = await snapshots.read();
+      assert.match(viewport, /heading "Fixture heading"/);
+      assert.match(viewport, /3 interactive elements outside the viewport/);
+      assert.doesNotMatch(viewport, /Lower|Skip to content/);
+      const mainButton = /^(e\d+) button "Main button"/m.exec(viewport)?.[1];
+      const mainField = /^(e\d+) textbox "Main field"/m.exec(viewport)?.[1];
+      const frameButton = /^(f1e\d+) button "Frame button"/m.exec(
+        viewport,
+      )?.[1];
+      const frameField = /^(f1e\d+) textbox "Frame field"/m.exec(viewport)?.[1];
+      assert(mainButton && mainField && frameButton && frameField, viewport);
+      await snapshots.locator(mainButton).click();
+      await snapshots.locator(frameButton).click();
+      await snapshots.locator(mainField).fill("main input");
+      await snapshots.locator(frameField).fill("frame input");
+      assert.equal(
+        await snapshots.locator(mainField).inputValue(),
+        "main input",
+      );
+      assert.equal(
+        await snapshots.locator(frameField).inputValue(),
+        "frame input",
+      );
+      const allControls = await snapshots.read({ scope: "page" });
+      assert.match(allControls, /Lower heading/);
+      assert.match(allControls, /Lower button/);
+      assert.match(allControls, /button "Clicked"/);
+      assert.match(allControls, /button "Frame clicked"/);
+      assert.match(allControls, /^f\d+e\d+ button "Frame button"/m);
+      const full = JSON.parse(await snapshots.read({ scope: "full" }));
+      assert(Array.isArray(full));
+      const form = await snapshots.read({ query: "MAIN FORM" });
+      const formRef = /^(e\d+) form "Main form"/m.exec(form)?.[1];
+      assert(formRef, form);
+      const subtree = await snapshots.read({ target: formRef });
+      assert.match(subtree, /Main field/);
+      assert.doesNotMatch(subtree, /Frame|Lower/);
+      assert.match(await snapshots.read({ target: frameField }), /Frame field/);
+      assert.match(
+        await snapshots.read({ query: "CLICKED" }),
+        /button "Clicked" \(in form "Main form"\)/,
+      );
+      assert.match(
+        await snapshots.read({ query: "lower button" }),
+        /button "Lower button"/,
+      );
+      assert.equal(
+        await snapshots.read({ query: "absent" }),
+        "No matching elements.",
+      );
+      await page.getByRole("link", { name: "Follow link" }).click();
+      assert.throws(() => snapshots.locator(mainField), /stale element ref/);
+      assert.match(await snapshots.read(), /Second page/);
+      await goBack(page);
+      assert.equal(blocked(), undefined);
+      assert.equal(doc.status, 200);
+      await captcha.wait(() => doc.mitigated);
+      assert.match(await snapshots.read(), /Fixture heading/);
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+test("browser diagnostics use safe action details without quoting page data", () => {
+  assert.equal(
+    browserActionError(
+      new Error(
+        'locator.fill: Error: strict mode violation: locator("private selector") resolved to 3 elements:\nprivate HTML',
+      ),
+      "fill",
+    ).message,
+    "The locator matched 3 elements. Use a ref or a more specific selector.",
+  );
+  assert.equal(
+    browserActionError(
+      new Error(
+        "locator.click: Timeout 15000ms exceeded.\n - element is not visible\nhttps://user:password@example.com",
+      ),
+      "click",
+    ).message,
+    "Browser click timed out after 15000 ms. The element is not visible.",
+  );
+});

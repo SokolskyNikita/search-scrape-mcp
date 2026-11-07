@@ -11,11 +11,14 @@ import { chromium, type Browser } from "playwright-core";
 import { AppError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
 import { checkPage } from "../tools/page-check.js";
-import { cleanPage, pageContent } from "../tools/page-content.js";
+import { cleanPage } from "../tools/page-content.js";
+import { browserSnapshots } from "./browser-snapshot.js";
+import { browserActionError } from "./browser-action-error.js";
 import { watchCaptcha } from "./browser-captcha.js";
 import {
   guardNavigations,
   documentResponseState,
+  goBack,
 } from "./browser-navigation.js";
 import { scrapflyTransport } from "./scrapfly-browser-transport.js";
 import type {
@@ -34,7 +37,7 @@ function within<T>(operation: Promise<T>, ms: number): Promise<T> {
     delay(ms, undefined, { signal: controller.signal }).then(() => {
       throw new AppError(
         "browser_timeout",
-        "Scrapfly Cloud Browser timed out.",
+        `Scrapfly Cloud Browser timed out after ${ms} ms.`,
       );
     }),
   ]).finally(() => controller.abort());
@@ -177,51 +180,11 @@ export function scrapflyBrowser(
               );
             }
 
-            let generation = 0;
-            const refs = new Map<string, string>();
-            page.on("framenavigated", (frame) => {
-              if (frame === page.mainFrame()) refs.clear();
-            });
-
+            const snapshots = browserSnapshots(page);
             function locator(target: BrowserTarget) {
-              if (target.selector) return page.locator(target.selector);
-              const ref = target.ref && refs.get(target.ref);
-              if (!ref)
-                throw new AppError(
-                  "browser_ref",
-                  "Unknown or stale element ref. Take a fresh snapshot.",
-                );
-              return page.getByRef(ref);
-            }
-
-            async function snapshot(): Promise<string> {
-              if (page.url() === "about:blank")
-                throw new AppError(
-                  "empty_page",
-                  "The browser is on a blank page.",
-                );
-              await validatePublicUrl(page.url());
-              const tree = (
-                await page.ariaSnapshot({ mode: "ai", timeout: actionTimeout })
-              )
-                .split("\n")
-                .filter(
-                  (line) =>
-                    !/^\s*- (?:generic|group|separator):?\s*$/.test(line),
-                )
-                .join("\n");
-              refs.clear();
-              const version = ++generation;
-              const snapshot = pageContent(
-                tree.replace(
-                  /\[ref=(e\d+)\]/g,
-                  (_, ref: string) => `[ref=s${version}-${ref}]`,
-                ),
-              );
-              for (const match of snapshot.matchAll(/\[ref=(s\d+-(e\d+))\]/g)) {
-                if (match[1] && match[2]) refs.set(match[1], match[2]);
-              }
-              return snapshot;
+              return target.selector
+                ? page.locator(target.selector)
+                : snapshots.locator(target.ref);
             }
 
             async function content() {
@@ -288,24 +251,7 @@ export function scrapflyBrowser(
                     return await within(content(), actionTimeout);
                   }
                   if (action.action === "back") {
-                    const history = await cdp.send("Page.getNavigationHistory");
-                    const previous = history.entries[history.currentIndex - 1];
-                    if (
-                      previous &&
-                      documentResponse.prepare(
-                        page.url(),
-                        new URL(previous.url),
-                      )
-                    )
-                      captcha.reset();
-                    const response = await page.goBack({
-                      waitUntil: "domcontentloaded",
-                    });
-                    if (documentResponse.status === undefined && response)
-                      documentResponse.observe(
-                        response.status(),
-                        response.headers()["cf-mitigated"] === "challenge",
-                      );
+                    await goBack(page);
                     await captcha.wait(
                       () => documentResponse.mitigated,
                       runSignal,
@@ -316,8 +262,20 @@ export function scrapflyBrowser(
                     await locator(action).fill(action.text);
                   if (action.action === "press")
                     await locator(action).press(action.key);
-                  if (action.action === "scroll")
+                  if (action.action === "scroll") {
                     await page.mouse.wheel(0, action.pixels);
+                    await within(
+                      page.evaluate(
+                        () =>
+                          new Promise<void>((resolve) =>
+                            requestAnimationFrame(() =>
+                              requestAnimationFrame(() => resolve()),
+                            ),
+                          ),
+                      ),
+                      actionTimeout,
+                    );
+                  }
                   if (action.action === "wait") {
                     if (action.selector)
                       await page
@@ -344,7 +302,20 @@ export function scrapflyBrowser(
                       data: image.toString("base64"),
                     };
                   }
-                  return await within(snapshot(), actionTimeout);
+                  if (page.url() === "about:blank")
+                    throw new AppError(
+                      "empty_page",
+                      "The browser is on a blank page.",
+                    );
+                  await validatePublicUrl(page.url());
+                  return await within(
+                    snapshots.read(
+                      action.action === "snapshot" || action.action === "find"
+                        ? action
+                        : undefined,
+                    ),
+                    actionTimeout,
+                  );
                 } catch (error) {
                   if (
                     error instanceof AppError &&
@@ -357,10 +328,7 @@ export function scrapflyBrowser(
                   const blocked = navigationError();
                   if (blocked) throw blocked;
                   if (error instanceof AppError) throw error;
-                  throw new AppError(
-                    "browser_action",
-                    "Scrapfly Cloud Browser action failed or timed out.",
-                  );
+                  throw browserActionError(error, action.action);
                 } finally {
                   runSignal?.removeEventListener("abort", abort);
                   navigationSignal = undefined;

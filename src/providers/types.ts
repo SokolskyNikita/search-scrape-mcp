@@ -68,7 +68,12 @@ export type BrowserImage = {
 
 export type BrowserAction =
   | { action: "navigate"; url: string }
-  | { action: "snapshot" }
+  | {
+      action: "snapshot";
+      scope?: "viewport" | "page" | "full";
+      target?: string;
+    }
+  | { action: "find"; query: string }
   | ({ action: "click" } & BrowserTarget)
   | ({ action: "fill"; text: string } & BrowserTarget)
   | ({ action: "press"; key: string } & BrowserTarget)
