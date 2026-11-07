@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { BrowserProvider, BrowserSession } from "../providers/types.js";
 import { AppError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
+import type { OutputFiles } from "./output-files.js";
 import { fallback, toolResult } from "./shared.js";
 
 const selector = z
@@ -66,6 +67,7 @@ const schema = z.discriminatedUnion("action", [
 export function registerBrowser(
   server: McpServer,
   providers: BrowserProvider[],
+  files: OutputFiles,
 ) {
   let browser: BrowserSession | undefined;
   let browserProvider: string | undefined;
@@ -123,7 +125,11 @@ export function registerBrowser(
               signal,
             );
           try {
-            return await browser.run(command, false, signal);
+            const result = await browser.run(command, signal);
+            signal.throwIfAborted();
+            return typeof result === "string"
+              ? (files.spill(result, 12_000) ?? result)
+              : result;
           } catch (error) {
             if (
               signal.aborted ||

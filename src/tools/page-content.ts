@@ -2,11 +2,7 @@ import { AppError } from "../server/error.js";
 
 export function pageContent(
   text: string,
-  {
-    status,
-    title = "",
-    limit = 12_000,
-  }: { status?: number; title?: string; limit?: number } = {},
+  { status, title = "" }: { status?: number; title?: string } = {},
 ): string {
   const clean = text
     .replace(/\r\n?/g, "\n")
@@ -44,7 +40,5 @@ export function pageContent(
   }
   if (!/[\p{L}\p{N}]/u.test(clean))
     throw new AppError("empty_page", "Target returned no readable content.");
-  return clean.length <= limit
-    ? clean
-    : clean.slice(0, Math.max(0, limit - 15)).trimEnd() + "\n\n[truncated]";
+  return clean;
 }

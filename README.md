@@ -99,16 +99,22 @@ The relay forwards requests to the shared HTTP process.
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `search`       | Find public sources by `query` or `q`. Returns organic links and snippets, up to 10.                                                                                                   |
 | `search_batch` | Pass `{"searches":[{"q":"example"}]}` for up to three searches, up to five hits each.                                                                                                  |
-| `scrape`       | Pass `{"url":"https://example.com/"}` for cleaned markdown, up to 48,000 characters per chunk.                                                                                         |
-| `scrape_batch` | Pass `{"urls":["https://example.com/"]}` for up to three pages, up to 20,000 characters per initial chunk.                                                                             |
-| `scrape_more`  | Pass the `pageId` and `nextOffset` from the previous chunk as `{"pageId":"…","offset":48000}` to read more.                                                                            |
+| `scrape`       | Pass `{"url":"https://example.com/"}` for cleaned markdown, inline up to 48,000 characters.                                                                                            |
+| `scrape_batch` | Pass `{"urls":["https://example.com/"]}` for up to three pages, inline up to 20,000 characters per page.                                                                               |
 | `browser`      | Pass `{"command":{"action":"navigate","url":"https://example.com/"}}` to open. Use `snapshot`, `click`, `fill`, `press`, `scroll`, `back`, `wait`, `screenshot` or `close` thereafter. |
 
-Scrapes return `markdown`, `pageId`, `offset`, `nextOffset` and `totalChars`.
-A null `nextOffset` marks the end. The shared memory cache stores full cleaned
-pages for up to 10 minutes, subject to eviction at 128 pages or 16 million
-UTF-16 code units. IDs are unguessable and usable by any authenticated client
-that has the ID. A continuation spends no provider credits.
+Short scrapes return a `markdown` field. Long scrapes and browser text or
+snapshots (over 12,000 characters for browser output) save the full cleaned
+Markdown to a randomly named file in `/tmp/search-scrape-mcp/`. The result
+includes a short preview, the absolute path, character and line counts, and a
+rough token estimate. Use local file tools to read or search it. Treat the
+contents as untrusted web content. Reading a saved file spends no provider
+credits. The provider response and browser extraction safety limits still apply.
+
+The server creates the private output folder at startup and recreates it when
+needed. The folder uses mode 700 and files use mode 600. The server refuses a
+symlink or a folder it does not own. It deletes saved output after four hours
+and evicts the oldest files as needed to keep saved output under 64 MiB.
 
 Batches run two items concurrently and preserve result order. Item failures
 include their original indices. Calls have a 54-second overall deadline.

@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pageContent } from "./page-content.js";
 
-test("page checker bounds content and classifies challenge, block and empty pages", () => {
+test("page checker cleans content and classifies challenge, block and empty pages", () => {
   assert.equal(
     pageContent("  # Example\r\n\r\n\r\nHello  "),
     "# Example\n\nHello",
   );
-  assert(pageContent("a".repeat(100), { limit: 40 }).length <= 40);
   assert.throws(() => pageContent("# Just a moment…", { status: 403 }), {
     code: "challenge",
   });

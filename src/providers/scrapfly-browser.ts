@@ -174,18 +174,18 @@ export function scrapflyBrowser(key: string): BrowserProvider {
               return snapshot;
             }
 
-            async function content(fullPage = false): Promise<string> {
+            async function content(): Promise<string> {
               await validatePublicUrl(page.url());
-              const title = (await page.title()).slice(0, 512);
+              const title = await page.title();
               const body = await page
                 .locator("body")
                 .evaluate(
                   (element, cap) =>
                     (element as HTMLElement).innerText.slice(0, cap + 1),
-                  fullPage ? 2_000_000 : 16_000,
+                  2_000_000,
                   { timeout: actionTimeout },
                 );
-              if (fullPage && body.length > 2_000_000)
+              if (body.length > 2_000_000)
                 throw new AppError(
                   "page_size",
                   "Browser page exceeds 2 million characters.",
@@ -193,16 +193,14 @@ export function scrapflyBrowser(key: string): BrowserProvider {
               const readable = pageContent(body, {
                 title,
                 status: lastStatus,
-                limit: fullPage ? Infinity : 16_000,
               });
               return pageContent(
                 title ? `# ${title}\n\n${readable}` : readable,
-                { limit: fullPage ? Infinity : 12_000 },
               );
             }
 
             return {
-              async run(action, fullPage, runSignal) {
+              async run(action, runSignal) {
                 runSignal?.throwIfAborted();
                 runSignal?.addEventListener("abort", abort, { once: true });
                 navigationError();
@@ -217,7 +215,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                       waitUntil: "domcontentloaded",
                     });
                     await captcha.wait(() => mitigated, runSignal);
-                    return await within(content(fullPage), actionTimeout);
+                    return await within(content(), actionTimeout);
                   }
                   if (action.action === "back") {
                     lastStatus = undefined;
@@ -303,7 +301,6 @@ export function browserScraper(provider: BrowserProvider): ScrapeProvider {
       try {
         const result = await session.run(
           { action: "navigate", url: target.href },
-          true,
           signal,
         );
         if (typeof result !== "string")

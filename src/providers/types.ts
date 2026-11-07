@@ -45,7 +45,6 @@ export type BrowserAction =
 export interface BrowserSession {
   run(
     action: Exclude<BrowserAction, { action: "close" }>,
-    fullPage?: boolean,
     signal?: AbortSignal,
   ): Promise<string | BrowserImage>;
   close(): Promise<void>;

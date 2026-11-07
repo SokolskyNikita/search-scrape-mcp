@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ScrapeProvider } from "../providers/types.js";
 import { validatePublicUrl } from "../server/target.js";
-import { PageCache } from "./page-cache.js";
+import type { OutputFiles } from "./output-files.js";
 import { pageContent } from "./page-content.js";
 import { batch, fallback, toolResult, type Attempt } from "./shared.js";
 
@@ -11,7 +11,7 @@ const urlInput = z.string().trim().min(1).max(4_096);
 export function registerScrape(
   server: McpServer,
   providers: readonly ScrapeProvider[],
-  cache = new PageCache(),
+  files: OutputFiles,
 ) {
   async function scrape(
     url: string,
@@ -23,20 +23,19 @@ export function registerScrape(
     const markdown = await fallback(
       providers,
       async (provider) =>
-        pageContent(await provider.scrape(target.href, signal), {
-          limit: Infinity,
-        }),
+        pageContent(await provider.scrape(target.href, signal)),
       attempt,
       signal,
     );
     signal.throwIfAborted();
-    return cache.read(cache.put(markdown), 0, limit);
+    return files.spill(markdown, limit) ?? { markdown };
   }
 
   server.registerTool(
     "scrape",
     {
-      description: "Read a public web page as markdown or plain text.",
+      description:
+        "Read a public web page as Markdown. Large results are saved to a local file.",
       inputSchema: z.object({ url: urlInput }).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -56,18 +55,5 @@ export function registerScrape(
       toolResult("scrape_batch", (attempt, signal) =>
         batch(urls, (url) => scrape(url, 20_000, attempt, signal)),
       ),
-  );
-  server.registerTool(
-    "scrape_more",
-    {
-      description:
-        "Read the next chunk of a cached scrape without fetching again.",
-      inputSchema: z
-        .object({ pageId: z.uuid(), offset: z.number().int().min(0) })
-        .strict(),
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    },
-    ({ pageId, offset }) =>
-      toolResult("scrape_more", async () => cache.read(pageId, offset, 48_000)),
   );
 }
