@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
 import type { CDPSession } from "playwright-core";
-import { guardNavigations } from "./browser-navigation.js";
+import {
+  documentResponseState,
+  guardNavigations,
+} from "./browser-navigation.js";
 import { browserScraper } from "./scrapfly-browser.js";
 
 test("browser guard checks top-level redirects and leaves iframe requests to cloud egress", async () => {
@@ -120,4 +123,16 @@ test("browser scrape checks the final URL and actual navigation status", async (
   await assert.rejects(scraper.scrape("https://1.1.1.1/article"), {
     code: "content_moved",
   });
+});
+
+test("fragment changes retain status but a new document starts with no response", () => {
+  const doc = documentResponseState();
+  doc.observe(403, true);
+  const current = "https://example.com/page";
+  assert.equal(doc.prepare(current, new URL(current + "#section")), false);
+  assert.equal(doc.status, 403);
+  assert.equal(doc.mitigated, true);
+  assert.equal(doc.prepare(current, new URL(current + "?new=1")), true);
+  assert.equal(doc.status, undefined);
+  assert.equal(doc.mitigated, false);
 });

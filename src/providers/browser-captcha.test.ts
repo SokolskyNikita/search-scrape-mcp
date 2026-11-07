@@ -7,6 +7,9 @@ test("CAPTCHA widget events on ordinary form pages do not block navigation", asy
   let handle: (event: { method: string }) => void = () =>
     assert.fail("Missing event listener");
   const cdp = {
+    async send() {
+      assert.fail("Solver must stay disabled on an ordinary form");
+    },
     on(_event: string, listener: typeof handle) {
       handle = listener;
     },
@@ -34,7 +37,12 @@ test("CAPTCHA widget events on ordinary form pages do not block navigation", asy
 test("challenge titles and challenge URLs trigger the bounded wait", async () => {
   let title = "Just a moment…";
   let url = "https://example.com/article";
-  const cdp = { on() {} } as unknown as CDPSession;
+  const cdp = {
+    on() {},
+    async send() {
+      assert.fail("Zero wait must not enable the solver");
+    },
+  } as unknown as CDPSession;
   const page = {
     url: () => url,
     async evaluate() {
@@ -54,4 +62,24 @@ test("challenge titles and challenge URLs trigger the bounded wait", async () =>
   );
   url = "https://example.com/article";
   await captcha.wait(() => false);
+});
+
+test("the solver is enabled for a challenge and disabled after it clears", async () => {
+  const calls: string[] = [];
+  let challenged = true;
+  const cdp = {
+    on() {},
+    async send(method: string) {
+      calls.push(method);
+      if (method === "Antibot.captchaEnable") challenged = false;
+    },
+  } as unknown as CDPSession;
+  const page = {
+    url: () => "https://example.com/",
+    async evaluate() {
+      return { title: "Article", text: "Readable body" };
+    },
+  } as unknown as Page;
+  await watchCaptcha(cdp, page, 1_000).wait(() => challenged);
+  assert.deepEqual(calls, ["Antibot.captchaEnable", "Antibot.captchaDisable"]);
 });

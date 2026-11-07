@@ -14,7 +14,10 @@ import { validatePublicUrl } from "../server/target.js";
 import { checkPage } from "../tools/page-check.js";
 import { cleanPage, pageContent } from "../tools/page-content.js";
 import { watchCaptcha } from "./browser-captcha.js";
-import { guardNavigations } from "./browser-navigation.js";
+import {
+  guardNavigations,
+  documentResponseState,
+} from "./browser-navigation.js";
 import { scrapflyTransport } from "./scrapfly-browser-transport.js";
 import type {
   BrowserProvider,
@@ -56,7 +59,7 @@ export function scrapflyBrowser(
         String(settings.browserSessionSeconds),
       );
       endpoint.searchParams.set("auto_close", "true");
-      endpoint.searchParams.set("solve_captcha", "true");
+      endpoint.searchParams.set("solve_captcha", "false");
 
       let transport: ConnectOverCDPTransport | undefined;
       let browser: Browser | undefined;
@@ -94,15 +97,12 @@ export function scrapflyBrowser(
             const page = context.pages()[0] ?? (await context.newPage());
             const cdp = await context.newCDPSession(page);
             const captcha = watchCaptcha(cdp, page, settings.captchaWaitMs);
-            // Same-document navigations have no new response. Keep the document status.
-            let lastStatus: number | undefined;
-            let mitigated = false;
+            const documentResponse = documentResponseState();
             const navigationError = await guardNavigations(
               cdp,
               (status, challenge) => {
                 captcha.reset();
-                lastStatus = status;
-                mitigated = challenge;
+                documentResponse.observe(status, challenge);
               },
             );
             await page.routeWebSocket("**/*", async (socket) => {
@@ -211,12 +211,17 @@ export function scrapflyBrowser(
                   "browser_navigation",
                   "The browser page changed while reading its content.",
                 );
-              if (lastStatus === undefined)
+              if (documentResponse.status === undefined)
                 throw new AppError(
                   "browser_navigation",
                   "The browser did not report the document’s response status.",
                 );
-              return { url, status: lastStatus, title, text: cleanPage(body) };
+              return {
+                url,
+                status: documentResponse.status,
+                title,
+                text: cleanPage(body),
+              };
             }
 
             return {
@@ -228,17 +233,45 @@ export function scrapflyBrowser(
                   if (isClosed()) throw closedError();
                   if (action.action === "navigate") {
                     const target = await validatePublicUrl(action.url);
+                    if (documentResponse.prepare(page.url(), target))
+                      captcha.reset();
                     const response = await page.goto(target.href, {
                       waitUntil: "domcontentloaded",
                     });
-                    if (lastStatus === undefined && response)
-                      lastStatus = response.status();
-                    await captcha.wait(() => mitigated, runSignal);
+                    if (documentResponse.status === undefined && response)
+                      documentResponse.observe(
+                        response.status(),
+                        response.headers()["cf-mitigated"] === "challenge",
+                      );
+                    await captcha.wait(
+                      () => documentResponse.mitigated,
+                      runSignal,
+                    );
                     return await within(content(), actionTimeout);
                   }
                   if (action.action === "back") {
-                    await page.goBack({ waitUntil: "domcontentloaded" });
-                    await captcha.wait(() => mitigated, runSignal);
+                    const history = await cdp.send("Page.getNavigationHistory");
+                    const previous = history.entries[history.currentIndex - 1];
+                    if (
+                      previous &&
+                      documentResponse.prepare(
+                        page.url(),
+                        new URL(previous.url),
+                      )
+                    )
+                      captcha.reset();
+                    const response = await page.goBack({
+                      waitUntil: "domcontentloaded",
+                    });
+                    if (documentResponse.status === undefined && response)
+                      documentResponse.observe(
+                        response.status(),
+                        response.headers()["cf-mitigated"] === "challenge",
+                      );
+                    await captcha.wait(
+                      () => documentResponse.mitigated,
+                      runSignal,
+                    );
                   }
                   if (action.action === "click") await locator(action).click();
                   if (action.action === "fill")
@@ -275,6 +308,13 @@ export function scrapflyBrowser(
                   }
                   return await within(snapshot(), actionTimeout);
                 } catch (error) {
+                  if (
+                    error instanceof AppError &&
+                    error.code === "captcha_control"
+                  ) {
+                    await close();
+                    throw new AppError("browser_closed", error.message);
+                  }
                   if (isClosed()) throw closedError();
                   const blocked = navigationError();
                   if (blocked) throw blocked;

@@ -45,3 +45,31 @@ export async function guardNavigations(
     return error;
   };
 }
+
+export function documentResponseState() {
+  let status: number | undefined;
+  let mitigated = false;
+  return {
+    get status() {
+      return status;
+    },
+    get mitigated() {
+      return mitigated;
+    },
+    observe(nextStatus: number, challenge: boolean) {
+      status = nextStatus;
+      mitigated = challenge;
+    },
+    prepare(current: string, target: URL) {
+      const from = new URL(current);
+      const to = new URL(target);
+      const differentUrl = from.href !== to.href;
+      from.hash = to.hash = "";
+      // Fragment-only changes keep the current document and get no response.
+      if (differentUrl && from.href === to.href) return false;
+      status = undefined;
+      mitigated = false;
+      return true;
+    },
+  };
+}
