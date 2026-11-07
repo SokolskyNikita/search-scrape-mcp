@@ -6,6 +6,7 @@ import {
 } from "playwright-core";
 import { AppError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
+import { checkPage } from "../tools/page-check.js";
 import { pageContent } from "../tools/page-content.js";
 import { watchCaptcha } from "./browser-captcha.js";
 import { guardNavigations } from "./browser-navigation.js";
@@ -295,7 +296,8 @@ export function scrapflyBrowser(key: string): BrowserProvider {
 export function browserScraper(provider: BrowserProvider): ScrapeProvider {
   return {
     name: "scrapfly-browser",
-    async scrape(url, signal) {
+    async scrape(url, signal, options) {
+      options?.tried.push("browser");
       const target = await validatePublicUrl(url);
       const session = await provider.open(signal);
       try {
@@ -305,7 +307,10 @@ export function browserScraper(provider: BrowserProvider): ScrapeProvider {
         );
         if (typeof result !== "string")
           throw new AppError("internal", "Expected browser page text.");
-        return result;
+        const check = checkPage(result, target, target, 200);
+        if (check.code !== "ok" && !check.warning)
+          throw new AppError(check.code, check.reason);
+        return { markdown: result, check };
       } finally {
         await session.close();
       }

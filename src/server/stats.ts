@@ -7,10 +7,27 @@ export function writeToolStats(stats: {
   provider: string | null;
   errorCode: string | null;
 }) {
+  writeStats({ ok: stats.errorCode === null, ...stats });
+}
+
+export function writeProviderAttempt(attempt: {
+  provider: string;
+  rung: string;
+  credits: number | null;
+  durationMs: number;
+  errorCode: string | null;
+}) {
+  writeStats({
+    event: "provider_attempt",
+    ok: attempt.errorCode === null,
+    ...attempt,
+  });
+}
+
+function writeStats(fields: object) {
   const line = JSON.stringify({
     timestamp: new Date().toISOString(),
-    ok: stats.errorCode === null,
-    ...stats,
+    ...fields,
   });
   const file = process.env.MCP_STATS_LOG;
   if (!file) {

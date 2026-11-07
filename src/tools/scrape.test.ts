@@ -25,7 +25,12 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
           throw new AppError("blocked", "Page was blocked.");
         },
       },
-      { scrape: async () => content },
+      {
+        scrape: async () => ({
+          markdown: content,
+          check: { code: "ok", reason: "Readable page." },
+        }),
+      },
     ],
     new OutputFiles(join(dir, "spills")),
   );

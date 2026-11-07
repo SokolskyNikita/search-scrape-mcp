@@ -1,12 +1,18 @@
+import type { PageCheck } from "../tools/page-check.js";
+
 export interface SearchInput {
   query: string;
   limit: number;
+  recency?: "day" | "week" | "month" | "year";
+  site?: string;
+  exclude_domains?: string[];
 }
 
 export interface SearchHit {
   title: string;
   url: string;
   snippet?: string;
+  date?: string;
 }
 
 export interface SearchProvider {
@@ -18,9 +24,22 @@ export interface SearchProvider {
   ): Promise<SearchHit[]>;
 }
 
+export const scrapeRungs = ["datacenter", "unblocker", "render"] as const;
+export type ScrapeRung = (typeof scrapeRungs)[number];
+export type ScrapeResult = {
+  markdown: string;
+  check: PageCheck;
+  hint?: string;
+};
+export type ScrapeOptions = { start?: ScrapeRung; tried: string[] };
+
 export interface ScrapeProvider {
   readonly name?: string;
-  scrape(url: string, signal?: AbortSignal): Promise<string>;
+  scrape(
+    url: string,
+    signal?: AbortSignal,
+    options?: ScrapeOptions,
+  ): Promise<ScrapeResult>;
 }
 
 export type BrowserTarget = { selector?: string; ref?: string };

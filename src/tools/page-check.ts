@@ -71,6 +71,7 @@ export function checkPage(
       return {
         text,
         nav: menu || (linked > 0 && linked >= text.length / 2),
+        linked: linked > 0,
         prose:
           !menu && linked < text.length / 2 && text.split(/\s+/).length >= 8,
       };
@@ -215,7 +216,10 @@ export function checkPage(
     ((leadLength >= 1200 && leadNav >= leadLength / 2 && proseLength < 650) ||
       (text.length >= 80 &&
         navLength >= text.length * 0.65 &&
-        proseLength < 200))
+        proseLength < 200) ||
+      (text.length < 200 &&
+        proseLength === 0 &&
+        lines.filter((line) => line.linked).length >= 4))
   )
     return {
       code: "menus_only",

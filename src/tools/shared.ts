@@ -19,9 +19,18 @@ export async function fallback<T extends { name?: string }, R>(
     } catch (error) {
       if (
         !(error instanceof AppError) ||
-        ["unsafe_url", "dns", "provider_auth", "provider_limit"].includes(
-          error.code,
-        )
+        [
+          "unsafe_url",
+          "dns",
+          "provider_auth",
+          "provider_limit",
+          "provider_credit",
+          "provider_rate",
+          "not_found",
+          "sign_in",
+          "content_moved",
+          "consent",
+        ].includes(error.code)
       )
         throw error;
       errors.push(error);
@@ -93,7 +102,16 @@ export async function toolResult(
     return {
       isError: true,
       content: [
-        { type: "text" as const, text: `${failure.code}: ${failure.message}` },
+        {
+          type: "text" as const,
+          text: failure.details
+            ? JSON.stringify({
+                code: failure.code,
+                reason: failure.message,
+                ...failure.details,
+              })
+            : `${failure.code}: ${failure.message}`,
+        },
       ],
     };
   } finally {
@@ -108,23 +126,37 @@ export async function toolResult(
   }
 }
 
-export async function batch<I, O>(inputs: I[], run: (input: I) => Promise<O>) {
+export async function batch<I, O>(
+  inputs: I[],
+  run: (input: I) => Promise<O>,
+  group?: (input: I) => string | undefined,
+) {
   const results: (
     | { index: number; result: O }
     | { index: number; error: { code: string; message: string } }
   )[] = [];
-  let next = 0;
+  const pending = inputs.map((input, index) => ({
+    input,
+    index,
+    key: group?.(input),
+  }));
+  const busy = new Set<string>();
   await Promise.all(
     Array.from({ length: Math.min(2, inputs.length) }, async () => {
-      while (next < inputs.length) {
-        const index = next++;
+      for (;;) {
+        const next = pending.findIndex(({ key }) => !key || !busy.has(key));
+        if (next < 0) return;
+        const { input, index, key } = pending.splice(next, 1)[0]!;
+        if (key) busy.add(key);
         try {
-          results[index] = { index, result: await run(inputs[index]!) };
+          results[index] = { index, result: await run(input) };
         } catch (error) {
-          const { code, message } = safeError(error);
+          const { code, message, details } = safeError(error);
           if (code === "internal")
             console.error("Unexpected batch item error.");
-          results[index] = { index, error: { code, message } };
+          results[index] = { index, error: { code, message, ...details } };
+        } finally {
+          if (key) busy.delete(key);
         }
       }
     }),

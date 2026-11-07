@@ -100,3 +100,9 @@ test("short, rendered and index pages and articles that mention walls pass", () 
   const index = new URL("/category/news", page);
   assert.equal(checkPage(menu, index, index, 200).code, "ok");
 });
+
+test("short navigation shells are distinguished from a legitimate short page", () => {
+  const shell =
+    "# Quotes to Scrape\n[Quotes to Scrape](https://example.com/)\n[Login](https://example.com/login)\n[Next →](https://example.com/page/2)\nQuotes by [GoodReads](https://example.com/quotes)\nMade with love by [Zyte](https://example.com/about)";
+  assert.equal(checkPage(shell, page, page, 200).code, "menus_only");
+});

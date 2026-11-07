@@ -1,11 +1,11 @@
 import { AppError } from "../server/error.js";
 
-export async function providerRequest(
+export async function providerResponse(
   provider: string,
   url: URL,
   init: RequestInit = {},
-  classifyError?: (response: Response) => AppError | undefined,
-): Promise<unknown> {
+  onHeaders?: (response: Response) => void,
+) {
   try {
     const timeout = AbortSignal.timeout(32_000);
     const signal = init.signal
@@ -16,16 +16,9 @@ export async function providerRequest(
       redirect: "error",
       signal,
     });
-    if (!response.ok) {
-      await response.body?.cancel();
-      const classified = classifyError?.(response);
-      if (classified) throw classified;
-      throw new AppError(
-        "provider_http",
-        `${provider} returned HTTP ${response.status}.`,
-      );
-    }
+    onHeaders?.(response);
     const reader = response.body?.getReader();
+    if (!reader && !response.ok) return { response, body: null };
     if (!reader)
       throw new AppError(
         "provider_response",
@@ -48,8 +41,9 @@ export async function providerRequest(
       body += decoder.decode(value, { stream: true });
     }
     try {
-      return JSON.parse(body + decoder.decode()) as unknown;
+      return { response, body: JSON.parse(body + decoder.decode()) as unknown };
     } catch {
+      if (!response.ok) return { response, body: null };
       throw new AppError(
         "provider_response",
         `${provider} returned invalid JSON.`,
@@ -62,4 +56,22 @@ export async function providerRequest(
       `${provider} request failed or timed out.`,
     );
   }
+}
+
+export async function providerRequest(
+  provider: string,
+  url: URL,
+  init: RequestInit = {},
+  classifyError?: (response: Response) => AppError | undefined,
+): Promise<unknown> {
+  const { response, body } = await providerResponse(provider, url, init);
+  if (!response.ok)
+    throw (
+      classifyError?.(response) ??
+      new AppError(
+        "provider_http",
+        `${provider} returned HTTP ${response.status}.`,
+      )
+    );
+  return body;
 }
