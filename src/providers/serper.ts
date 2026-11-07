@@ -32,12 +32,12 @@ export function serper(key: string): SearchProvider {
       if (!response.success)
         throw new AppError("provider_response", "Invalid Serper response.");
       return response.data.organic
-        .filter(({ link }) => /^https?:\/\//i.test(link) && link.length <= 2048)
+        .filter(({ link }) => /^https?:\/\//i.test(link) && link.length <= 1024)
         .slice(0, limit)
         .map(({ title, link, snippet }) => ({
-          title: title.slice(0, 240),
+          title: title.slice(0, 160),
           url: link,
-          snippet: snippet?.slice(0, 500),
+          snippet: snippet?.slice(0, 320),
         }));
     },
   };

@@ -43,7 +43,14 @@ export async function providerRequest(
       }
       body += decoder.decode(value, { stream: true });
     }
-    return JSON.parse(body + decoder.decode()) as unknown;
+    try {
+      return JSON.parse(body + decoder.decode()) as unknown;
+    } catch {
+      throw new AppError(
+        "provider_response",
+        `${provider} returned invalid JSON.`,
+      );
+    }
   } catch (error) {
     if (error instanceof AppError) throw error;
     throw new AppError(

@@ -11,10 +11,13 @@ export function registerScrape(
   server: McpServer,
   providers: readonly ScrapeProvider[],
 ) {
-  async function scrape(url: string, limit: number) {
+  async function scrape(url: string, limit: number, attempt: () => void) {
     const target = await validatePublicUrl(url);
-    return fallback(providers, async (provider) =>
-      pageContent(await provider.scrape(target.href), { limit }),
+    return fallback(
+      providers,
+      async (provider) =>
+        pageContent(await provider.scrape(target.href), { limit }),
+      attempt,
     );
   }
 
@@ -25,7 +28,8 @@ export function registerScrape(
       inputSchema: z.object({ url: urlInput }).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ url }) => toolResult(() => scrape(url, 12_000)),
+    ({ url }) =>
+      toolResult("scrape", (attempt) => scrape(url, 12_000, attempt)),
   );
   server.registerTool(
     "scrape_batch",
@@ -34,6 +38,9 @@ export function registerScrape(
       inputSchema: z.object({ urls: z.array(urlInput).min(1).max(3) }).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ urls }) => toolResult(() => batch(urls, (url) => scrape(url, 4_000))),
+    ({ urls }) =>
+      toolResult("scrape_batch", (attempt) =>
+        batch(urls, (url) => scrape(url, 4_000, attempt)),
+      ),
   );
 }

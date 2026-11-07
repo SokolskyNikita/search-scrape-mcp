@@ -1,26 +1,37 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SearchInput, SearchProvider } from "../providers/types.js";
+import { AppError } from "../server/error.js";
 import { batch, fallback, toolResult } from "./shared.js";
 
+const query = z.string().trim().min(1).max(500);
 const input = z
   .object({
-    query: z.string().trim().min(1).max(500),
+    query: query.optional(),
+    q: query.optional().describe("Alias for query."),
     limit: z.number().int().min(1).max(10).default(5),
   })
   .strict();
 
 export function registerSearch(server: McpServer, providers: SearchProvider[]) {
-  const search = (args: SearchInput) =>
-    fallback(providers, (provider) => provider.search(args));
+  async function search(
+    { query, q, limit }: z.infer<typeof input>,
+    attempt: () => void,
+  ) {
+    if ((query === undefined) === (q === undefined)) {
+      throw new AppError("input", "Provide exactly one of query or q.");
+    }
+    const args: SearchInput = { query: (query ?? q)!, limit };
+    return fallback(providers, (provider) => provider.search(args), attempt);
+  }
   server.registerTool(
     "search",
     {
-      description: "Search the web for links and snippets.",
+      description: "Find web sources when you do not have a URL.",
       inputSchema: input,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    (args) => toolResult(() => search(args)),
+    (args) => toolResult("search", (attempt) => search(args, attempt)),
   );
   server.registerTool(
     "search_batch",
@@ -40,6 +51,9 @@ export function registerSearch(server: McpServer, providers: SearchProvider[]) {
         .strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ searches }) => toolResult(() => batch(searches, search)),
+    ({ searches }) =>
+      toolResult("search_batch", (attempt) =>
+        batch(searches, (args) => search(args, attempt)),
+      ),
   );
 }

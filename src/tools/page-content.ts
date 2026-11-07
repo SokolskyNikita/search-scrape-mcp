@@ -25,7 +25,7 @@ export function pageContent(
   )
     throw new AppError(
       "challenge",
-      "Target returned an unsolved anti-bot challenge.",
+      "Anti-bot challenge remains. Try the site’s API, CLI or local browser.",
     );
   if (
     status === 401 ||
@@ -35,7 +35,10 @@ export function pageContent(
       titleOrLead,
     )
   )
-    throw new AppError("blocked", "Target blocked access.");
+    throw new AppError(
+      "blocked",
+      "Target blocked access. Try the site’s API, CLI or local browser.",
+    );
   if (status !== undefined && (status < 200 || status >= 300)) {
     throw new AppError("target_http", `Target returned HTTP ${status}.`);
   }

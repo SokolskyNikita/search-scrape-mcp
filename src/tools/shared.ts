@@ -3,10 +3,12 @@ import { AppError, safeError } from "../server/error.js";
 export async function fallback<T, R>(
   providers: readonly T[],
   run: (provider: T) => Promise<R>,
+  attempt: () => void,
 ): Promise<R> {
   const errors: AppError[] = [];
   for (const provider of providers) {
     try {
+      attempt();
       return await run(provider);
     } catch (error) {
       if (
@@ -28,29 +30,50 @@ export async function fallback<T, R>(
   );
 }
 
-export function toolResult(run: () => Promise<unknown>) {
-  return run()
-    .then((result) => ({
+export async function toolResult(
+  name: string,
+  run: (attempt: () => void) => Promise<unknown>,
+) {
+  const start = performance.now();
+  let attempts = 0;
+  let ok = false;
+  try {
+    const result = await run(() => {
+      attempts++;
+    });
+    ok =
+      !Array.isArray(result) ||
+      !result.some(
+        (item: unknown) =>
+          item !== null && typeof item === "object" && "error" in item,
+      );
+    return {
       content: [
         {
           type: "text" as const,
           text: typeof result === "string" ? result : JSON.stringify(result),
         },
       ],
-    }))
-    .catch((error: unknown) => {
-      const failure = safeError(error);
-      if (failure.code === "internal") console.error("Unexpected tool error.");
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: `${failure.code}: ${failure.message}`,
-          },
-        ],
-      };
-    });
+    };
+  } catch (error) {
+    const failure = safeError(error);
+    if (failure.code === "internal") console.error("Unexpected tool error.");
+    return {
+      isError: true,
+      content: [
+        { type: "text" as const, text: `${failure.code}: ${failure.message}` },
+      ],
+    };
+  } finally {
+    console.log(
+      JSON.stringify({
+        tool: name,
+        durationMs: Math.round(performance.now() - start),
+        ok,
+        attempts,
+      }),
+    );
+  }
 }
 
 export async function batch<I, O>(inputs: I[], run: (input: I) => Promise<O>) {

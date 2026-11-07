@@ -78,7 +78,7 @@ test("authenticated MCP search uses a recorded Serper response", async (t) => {
     assert.deepEqual(
       await client.callTool({
         name: "search",
-        arguments: { query: "example" },
+        arguments: { q: "example" },
       }),
       {
         content: [
