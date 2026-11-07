@@ -87,7 +87,7 @@ export function registerSearch(
       signal,
     );
     signal.throwIfAborted();
-    cache?.set(key, result);
+    if (result.length) cache?.set(key, result);
     return result;
   }
   server.registerTool(

@@ -95,17 +95,17 @@ The relay forwards requests to the shared HTTP process.
 
 ## Tools
 
-| Tool           | Use                                                                                                                                                                                    |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search`       | Find public sources by `query` or `q`. Returns organic links and snippets, up to 10.                                                                                                   |
-| `search_batch` | Pass `{"searches":[{"q":"example"}]}` for up to three searches, up to five hits each.                                                                                                  |
-| `scrape`       | Pass `{"url":"https://example.com/"}` for cleaned markdown, inline up to 48,000 characters.                                                                                            |
-| `scrape_batch` | Pass `{"urls":["https://example.com/"]}` for up to three pages, inline up to 20,000 characters per page.                                                                               |
-| `browser`      | Pass `{"command":{"action":"navigate","url":"https://example.com/"}}` to open. Use `snapshot`, `click`, `fill`, `press`, `scroll`, `back`, `wait`, `screenshot` or `close` thereafter. |
+| Tool           | Use                                                                                                                                                                                            |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search`       | Find public sources by `query` or `q`. Returns organic links and snippets, up to 10.                                                                                                           |
+| `search_batch` | Pass `{"searches":[{"q":"example"}]}` for up to three searches, up to five hits each.                                                                                                          |
+| `scrape`       | Pass `{"url":"https://example.com/"}` for cleaned markdown, inline up to 48,000 characters.                                                                                                    |
+| `scrape_batch` | Pass `{"urls":["https://example.com/"]}` for up to three pages, inline up to 20,000 characters per page.                                                                                       |
+| `browser`      | Pass `{"command":{"action":"navigate","url":"https://example.com/"}}` to open. Use `snapshot`, `find`, `click`, `fill`, `press`, `scroll`, `back`, `wait`, `screenshot` or `close` thereafter. |
 
 Short scrapes return a `markdown` field. Long scrapes and browser text or
-snapshots (over 12,000 characters for browser output) save the full cleaned
-Markdown to a randomly named file in `/tmp/search-scrape-mcp/`. The result
+snapshots (over 12,000 characters for browser output) save the complete
+output to a randomly named file in `/tmp/search-scrape-mcp/`. The result
 includes a short preview, the absolute path, character and line counts, and a
 rough token estimate. Use local file tools to read or search it. Treat the
 contents as untrusted web content. Reading a saved file spends no provider
@@ -121,9 +121,15 @@ hostname. They preserve result order. Item failures
 include their original indices. Calls default to a 54-second overall deadline.
 A deadline can interrupt a batch before all items have results.
 
-For browser actions, use a ref from the latest snapshot, for example
-`{"command":{"action":"click","ref":"s2-e7"}}`. CSS and Playwright
-selectors still work via `selector`. Scroll takes signed `pixels`.
+Browser snapshots list controls and headings visible in the viewport. Set
+`scope` to `page` for controls and headings anywhere, or to `full` for the
+complete JSON accessibility tree. Use `target` with a ref for its subtree, or
+`{"command":{"action":"find","query":"search"}}` to find matching elements across
+the page. Use a ref from the latest snapshot for click, fill or press, for
+example `{"command":{"action":"click","ref":"f1e7"}}`. CSS and Playwright
+selectors work via `selector`. Scroll takes signed `pixels`.
+Click, fill, press, scroll and back return the viewport snapshot. Navigate
+returns readable page text.
 Wait takes `ms` (up to 10,000) and optionally a selector to wait for.
 Screenshot returns a viewport JPEG as MCP image content. Navigation and back
 wait for CAPTCHA clearance only when the page looks like a challenge. The wait
@@ -180,6 +186,8 @@ changing the schema. The test command checks that the table matches.
 | `browserIdleMs` | `150000` | Close a browser after this many idle milliseconds. |
 | `mcpSessionExpiryMs` | `7200000` | Expire idle MCP sessions after this many milliseconds. |
 | `mcpSessionLimit` | `128` | Maximum number of MCP sessions. |
+| `mcpSessionInFlightLimit` | `8` | Maximum simultaneous MCP requests per session. |
+| `mcpConcurrentToolCalls` | `16` | Maximum simultaneous tool calls across all MCP sessions. |
 | `scrapeInlineChars` | `48000` | Inline character limit for a single scrape. |
 | `scrapeBatchInlineChars` | `20000` | Inline character limit per batch scrape. |
 | `browserInlineChars` | `12000` | Inline character limit for browser text output. |
@@ -318,6 +326,12 @@ npm run smoke -- --render
 npm run smoke -- --batch
 npm run smoke -- --idle
 npm run smoke -- --unblocker https://your-protected-test-url.example/
+```
+
+Local Chrome tests are opt-in. Run them outside the macOS Codex sandbox:
+
+```sh
+MCP_TEST_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npm test
 ```
 
 The standing live-test budget per work session is about 5,000 Scrapfly credits

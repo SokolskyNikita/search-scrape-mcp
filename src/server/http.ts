@@ -5,10 +5,13 @@ import { createServer, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
+  CallToolRequestSchema,
   isInitializeRequest,
   isJSONRPCRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import { AppError } from "./error.js";
+import { writeLimitEvent } from "./stats.js";
+import { toolResult } from "../tools/shared.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest();
 
@@ -134,12 +137,43 @@ export function createMcpHttp(
             res.setHeader("Allow", "POST, DELETE");
             return reject(res, 405, "Standalone event streams are disabled.");
           }
-          if (session.active >= 4 && req.method === "POST")
-            return reject(res, 429, "Session is busy.");
-          const isToolCall =
-            isJSONRPCRequest(body) && body.method === "tools/call";
-          if (isToolCall && toolCalls >= 8)
-            return reject(res, 429, "Server is busy.");
+          const request =
+            req.method === "POST" && isJSONRPCRequest(body) ? body : undefined;
+          const isToolCall = request?.method === "tools/call";
+          const sessionBusy =
+            session.active >= settings.mcpSessionInFlightLimit;
+          const serverBusy =
+            isToolCall && toolCalls >= settings.mcpConcurrentToolCalls;
+          if (request && (sessionBusy || serverBusy)) {
+            const code = sessionBusy ? "mcp_session_busy" : "mcp_server_busy";
+            const message = sessionBusy
+              ? "MCP session is busy."
+              : "MCP server is busy.";
+            const hint = "Retry after an in-flight call finishes.";
+            const call = CallToolRequestSchema.safeParse(request);
+            if (!call.success)
+              writeLimitEvent({ code, outcome: "rejected" }, settings);
+            const payload = call.success
+              ? {
+                  result: await toolResult(
+                    call.data.params.name,
+                    async () => {
+                      throw new AppError(code, message, { hint });
+                    },
+                    settings,
+                  ),
+                }
+              : { error: { code: -32000, message: `${message} ${hint}` } };
+            session.used = Date.now();
+            res.writeHead(200, {
+              "Content-Type": "application/json",
+              "Mcp-Session-Id": id,
+            });
+            res.end(
+              JSON.stringify({ jsonrpc: "2.0", id: request.id, ...payload }),
+            );
+            return;
+          }
           if (isToolCall) toolCalls++;
           session.active++;
           try {

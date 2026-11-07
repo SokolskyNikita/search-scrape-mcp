@@ -170,6 +170,18 @@ export const tuningSchema = z.object({
     "Expire idle MCP sessions after this many milliseconds.",
   ),
   mcpSessionLimit: integer(1, 1_024, 128, "Maximum number of MCP sessions."),
+  mcpSessionInFlightLimit: integer(
+    1,
+    1_024,
+    8,
+    "Maximum simultaneous MCP requests per session.",
+  ),
+  mcpConcurrentToolCalls: integer(
+    1,
+    1_024,
+    16,
+    "Maximum simultaneous tool calls across all MCP sessions.",
+  ),
   scrapeInlineChars: integer(
     0,
     200_000,
