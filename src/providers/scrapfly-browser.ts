@@ -1,14 +1,13 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { RequestLimits } from "../server/request-limits.js";
+import type { BrowserLease, Usage } from "../server/usage.js";
 import { defaults } from "../config/tuning.js";
 import {
   MAX_BROWSER_PAGE_CHARS,
   MAX_BROWSER_IMAGE_BYTES,
 } from "../config/safety-limits.js";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  chromium,
-  type Browser,
-  type ConnectOverCDPTransport,
-} from "playwright-core";
+import { chromium, type Browser } from "playwright-core";
 import { AppError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
 import { checkPage } from "../tools/page-check.js";
@@ -21,6 +20,7 @@ import {
 import { scrapflyTransport } from "./scrapfly-browser-transport.js";
 import type {
   BrowserProvider,
+  BrowserSession,
   BrowserTarget,
   ScrapeProvider,
 } from "./types.js";
@@ -43,10 +43,16 @@ function within<T>(operation: Promise<T>, ms: number): Promise<T> {
 export function scrapflyBrowser(
   key: string,
   settings = defaults,
+  limits?: RequestLimits,
+  usage?: Usage,
 ): BrowserProvider {
-  return {
+  const provider = {
     name: "scrapfly",
-    async open(signal, target) {
+    async open(
+      signal?: AbortSignal,
+      target?: URL,
+      lease?: BrowserLease,
+    ): Promise<BrowserSession> {
       const endpoint = new URL("wss://browser.scrapfly.io");
       endpoint.searchParams.set("api_key", key);
       if (target) {
@@ -56,12 +62,25 @@ export function scrapflyBrowser(
       }
       endpoint.searchParams.set(
         "timeout",
-        String(settings.browserSessionSeconds),
+        String(lease?.seconds ?? settings.browserSessionSeconds),
       );
       endpoint.searchParams.set("auto_close", "true");
       endpoint.searchParams.set("solve_captcha", "false");
 
-      let transport: ConnectOverCDPTransport | undefined;
+      let transport: Awaited<ReturnType<typeof scrapflyTransport>> | undefined;
+      const disconnected = new AbortController();
+      const opening = lease
+        ? AbortSignal.any([lease.signal, ...(signal ? [signal] : [])])
+        : signal;
+      const expired = () => transport?.terminate();
+      const onClosed = () => {
+        disconnected.abort();
+        lease?.signal.removeEventListener("abort", expired);
+        lease?.release();
+      };
+      let navigationContext = AsyncLocalStorage.snapshot();
+      let navigationSignal = opening;
+      let navigationDeadline = performance.now() + actionTimeout;
       let browser: Browser | undefined;
       let closing: Promise<void> | undefined;
       function close(): Promise<void> {
@@ -71,7 +90,7 @@ export function scrapflyBrowser(
           } catch {
             console.error("Could not close Scrapfly Cloud Browser connection.");
           } finally {
-            transport?.close();
+            transport?.terminate();
           }
         })());
       }
@@ -79,7 +98,9 @@ export function scrapflyBrowser(
       const abort = () => transport?.close();
       signal?.addEventListener("abort", abort, { once: true });
       try {
-        transport = await scrapflyTransport(endpoint, signal);
+        transport = await scrapflyTransport(endpoint, opening, onClosed);
+        lease?.signal.addEventListener("abort", expired, { once: true });
+        lease?.signal.throwIfAborted();
         browser = await chromium.connectOverCDP(transport, {
           timeout: 8_000,
           noDefaults: true,
@@ -104,6 +125,20 @@ export function scrapflyBrowser(
                 captcha.reset();
                 documentResponse.observe(status, challenge);
               },
+              limits &&
+                ((hostname, requestSignal) =>
+                  navigationContext(() =>
+                    limits.acquire(
+                      AbortSignal.any([
+                        requestSignal,
+                        ...(navigationSignal ? [navigationSignal] : []),
+                      ]),
+                      navigationDeadline,
+                      undefined,
+                      hostname,
+                    ),
+                  )),
+              disconnected.signal,
             );
             await page.routeWebSocket("**/*", async (socket) => {
               try {
@@ -229,6 +264,9 @@ export function scrapflyBrowser(
                 runSignal?.throwIfAborted();
                 runSignal?.addEventListener("abort", abort, { once: true });
                 navigationError();
+                navigationContext = AsyncLocalStorage.snapshot();
+                navigationSignal = runSignal;
+                navigationDeadline = performance.now() + actionTimeout;
                 try {
                   if (isClosed()) throw closedError();
                   if (action.action === "navigate") {
@@ -325,6 +363,8 @@ export function scrapflyBrowser(
                   );
                 } finally {
                   runSignal?.removeEventListener("abort", abort);
+                  navigationSignal = undefined;
+                  navigationDeadline = Infinity;
                 }
               },
               close,
@@ -344,6 +384,14 @@ export function scrapflyBrowser(
       } finally {
         signal?.removeEventListener("abort", abort);
       }
+    },
+  };
+  if (!usage) return provider;
+  return {
+    name: provider.name,
+    open(signal, target) {
+      signal?.throwIfAborted();
+      return usage.open((lease) => provider.open(signal, target, lease));
     },
   };
 }

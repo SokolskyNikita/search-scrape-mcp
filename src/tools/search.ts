@@ -49,6 +49,7 @@ export function registerSearch(
     { query, q, ...options }: z.infer<typeof input>,
     attempt: Attempt,
     signal: AbortSignal,
+    deadline: number,
   ) {
     if ((query === undefined) === (q === undefined)) {
       throw new AppError("input", "Provide exactly one of query or q.");
@@ -59,7 +60,8 @@ export function registerSearch(
     const args: SearchInput = { query: (query ?? q)!, ...options };
     return fallback(
       providers,
-      (provider) => provider.search(args, signal, () => attempt(provider.name)),
+      (provider) =>
+        provider.search(args, signal, () => attempt(provider.name), deadline),
       attempt,
       signal,
     );
@@ -74,7 +76,7 @@ export function registerSearch(
     (args) =>
       toolResult(
         "search",
-        (attempt, signal) => search(args, attempt, signal),
+        (attempt, signal, deadline) => search(args, attempt, signal, deadline),
         settings,
       ),
   );
@@ -99,10 +101,10 @@ export function registerSearch(
     ({ searches }) =>
       toolResult(
         "search_batch",
-        (attempt, signal) =>
+        (attempt, signal, deadline) =>
           batch(
             searches,
-            (args, itemAttempt) => search(args, itemAttempt, signal),
+            (args, itemAttempt) => search(args, itemAttempt, signal, deadline),
             (args) => args.site,
             { tool: "search_batch", attempt, settings },
           ),

@@ -5,7 +5,8 @@ import { AppError } from "../server/error.js";
 export async function scrapflyTransport(
   endpoint: URL,
   signal?: AbortSignal,
-): Promise<ConnectOverCDPTransport> {
+  onClosed?: () => void,
+): Promise<ConnectOverCDPTransport & { terminate(): void }> {
   signal?.throwIfAborted();
   const socket = new WebSocket(endpoint, {
     handshakeTimeout: 15_000,
@@ -13,6 +14,7 @@ export async function scrapflyTransport(
     perMessageDeflate: false,
   });
   const transport = cdpTransport(socket);
+  if (onClosed) socket.once("close", onClosed);
   const abort = () => socket.terminate();
   signal?.addEventListener("abort", abort, { once: true });
   await new Promise<void>((resolve, reject) => {
@@ -45,12 +47,16 @@ export async function scrapflyTransport(
       ),
     );
   }).finally(() => signal?.removeEventListener("abort", abort));
-  signal?.throwIfAborted();
+  if (signal?.aborted) {
+    socket.terminate();
+    signal.throwIfAborted();
+  }
   return transport;
 }
 
-function cdpTransport(socket: WebSocket): ConnectOverCDPTransport {
-  const transport: ConnectOverCDPTransport = {
+function cdpTransport(socket: WebSocket) {
+  const transport: ConnectOverCDPTransport & { terminate(): void } = {
+    terminate: () => socket.terminate(),
     close: () => socket.close(),
     send(message) {
       if (socket.readyState === WebSocket.OPEN)

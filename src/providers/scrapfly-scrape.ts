@@ -1,3 +1,5 @@
+import type { RequestLimits } from "../server/request-limits.js";
+import type { Usage } from "../server/usage.js";
 import {
   scrapeReserveMs,
   scrapflyTimeoutMs,
@@ -114,7 +116,9 @@ async function requestPage(
   timeout: number,
   settings: Tuning,
   signal: AbortSignal,
+  usage?: Usage,
 ) {
+  const startedAt = Date.now();
   const endpoint = new URL("https://api.scrapfly.io/scrape");
   const [pool, budget] = {
     datacenter: [
@@ -282,6 +286,7 @@ async function requestPage(
           : undefined,
     };
   } finally {
+    usage?.record("scrapfly", credits, startedAt);
     writeProviderAttempt(
       {
         provider: "scrapfly",
@@ -301,6 +306,8 @@ async function requestPage(
 export function scrapflyScrape(
   key: string,
   settings = defaults,
+  limits?: RequestLimits,
+  usage?: Usage,
 ): ScrapeProvider {
   const hosts = new Map<string, { rung: number; expires: number }>();
   function remember(host: string, rung: number) {
@@ -353,15 +360,29 @@ export function scrapflyScrape(
         }
         if (rung !== "datacenter") advancedRung = rung;
         lastBudgetError = undefined;
-        options.tried.push(rung);
-        const result = await requestPage(
-          key,
-          target,
-          rung,
-          timeout,
-          settings,
+        const release = await limits?.acquire(
           signal,
+          deadline - timeout,
+          "scrapfly",
+          host,
         );
+        const result = await (async () => {
+          try {
+            signal.throwIfAborted();
+            options.tried.push(rung);
+            return await requestPage(
+              key,
+              target,
+              rung,
+              timeout,
+              settings,
+              signal,
+              usage,
+            );
+          } finally {
+            release?.();
+          }
+        })();
         if (result.error) {
           if (
             !retryUsed &&

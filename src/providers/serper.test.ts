@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serper } from "./serper.js";
+import { defaults } from "../config/tuning.js";
+import { RequestLimits } from "../server/request-limits.js";
 
 test("Serper surfaces a rejected query without sending a hedge", async (t) => {
   const request = t.mock.method(globalThis, "fetch", async () =>
@@ -91,4 +93,19 @@ test("Serper sends locale and operators, filters subdomains, and preserves dates
       ["Different hostname", undefined],
     ],
   );
+});
+
+test("a transient failure cannot send a hedge past the shared provider rate", async (t) => {
+  const request = t.mock.method(globalThis, "fetch", async () =>
+    Response.json({}, { status: 503 }),
+  );
+  const settings = { ...defaults, localLimitWaitMs: 0 };
+  const limits = new RequestLimits(settings);
+  await assert.rejects(
+    serper("fixture", settings, limits).search({ query: "fixture", limit: 1 }),
+    {
+      code: "local_rate_limit",
+    },
+  );
+  assert.equal(request.mock.callCount(), 1);
 });

@@ -1,3 +1,5 @@
+import type { RequestLimits } from "../server/request-limits.js";
+import type { Usage } from "../server/usage.js";
 import { defaults } from "../config/tuning.js";
 import { MAX_SEARCH_HIT_URL_CHARS } from "../config/safety-limits.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -27,7 +29,12 @@ class SerperHttpError extends AppError {
   }
 }
 
-export function serper(key: string, settings = defaults): SearchProvider {
+export function serper(
+  key: string,
+  settings = defaults,
+  limits?: RequestLimits,
+  usage?: Usage,
+): SearchProvider {
   return {
     name: "serper",
     async search(
@@ -46,7 +53,12 @@ export function serper(key: string, settings = defaults): SearchProvider {
       },
       signal,
       retry,
+      deadline = Infinity,
     ) {
+      deadline = Math.min(
+        deadline,
+        performance.now() + settings.serperTimeoutMs,
+      );
       const controller = new AbortController();
       const requestSignal = AbortSignal.any([
         controller.signal,
@@ -60,6 +72,10 @@ export function serper(key: string, settings = defaults): SearchProvider {
       ].join(" ");
       const freshness = { day: "d", week: "w", month: "m", year: "y" };
       async function request(hedgeTrigger?: "delay" | "failure") {
+        await limits?.acquire(requestSignal, deadline, "serper");
+        requestSignal.throwIfAborted();
+        if (hedgeTrigger) retry?.();
+        usage?.record("serper", null, Date.now());
         const start = performance.now();
         let credits: number | null = null;
         let errorCode: string | null = null;
@@ -137,7 +153,9 @@ export function serper(key: string, settings = defaults): SearchProvider {
             ) &&
             !(
               error instanceof AppError &&
-              ["provider_auth", "provider_limit"].includes(error.code)
+              ["provider_auth", "provider_limit", "local_rate_limit"].includes(
+                error.code,
+              )
             )
               ? ("failure" as const)
               : undefined,
@@ -146,12 +164,17 @@ export function serper(key: string, settings = defaults): SearchProvider {
       const backup = startBackup.then((start) => {
         if (!start) return primary;
         requestSignal.throwIfAborted();
-        retry?.();
         return request(start);
       });
       const response = await Promise.any([primary, backup])
         .catch((error: AggregateError) => {
-          throw error.errors[0];
+          throw (
+            error.errors.find(
+              (failure: unknown) =>
+                failure instanceof AppError &&
+                failure.code === "local_rate_limit",
+            ) ?? error.errors[0]
+          );
         })
         .finally(() => controller.abort());
       return response.data.organic

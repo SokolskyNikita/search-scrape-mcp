@@ -2,7 +2,7 @@ export class AppError extends Error {
   constructor(
     readonly code: string,
     message: string,
-    readonly details?: { tried: string[]; hint?: string },
+    readonly details?: { tried?: string[]; hint?: string; retryAt?: string },
   ) {
     super(message);
   }

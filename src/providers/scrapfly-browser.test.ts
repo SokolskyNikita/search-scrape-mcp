@@ -6,6 +6,8 @@ import {
   documentResponseState,
   guardNavigations,
 } from "./browser-navigation.js";
+import { defaults } from "../config/tuning.js";
+import { RequestLimits } from "../server/request-limits.js";
 import { browserScraper } from "./scrapfly-browser.js";
 
 test("browser guard checks top-level redirects and leaves iframe requests to cloud egress", async () => {
@@ -135,4 +137,64 @@ test("fragment changes retain status but a new document starts with no response"
   assert.equal(doc.prepare(current, new URL(current + "?new=1")), true);
   assert.equal(doc.status, undefined);
   assert.equal(doc.mitigated, false);
+});
+
+test("browser HTTP requests share scrape hostname slots until network completion", async () => {
+  const handlers = new Map<string, (event: unknown) => void>();
+  const commands: [string, unknown][] = [];
+  const cdp = {
+    on(event: string, listener: (event: unknown) => void) {
+      handlers.set(event, listener);
+    },
+    async send(method: string, params: unknown) {
+      commands.push([method, params]);
+      if (method === "Page.getFrameTree")
+        return { frameTree: { frame: { id: "main" } } };
+    },
+  } as unknown as CDPSession;
+  const limits = new RequestLimits({
+    ...defaults,
+    localLimitWaitMs: 0,
+    siteGapMs: 0,
+    siteConcurrency: 1,
+  });
+  const connection = new AbortController();
+  const signal = connection.signal;
+  const blocked = await guardNavigations(
+    cdp,
+    undefined,
+    (host, requestSignal) =>
+      limits.acquire(requestSignal, Infinity, undefined, host),
+    signal,
+  );
+  assert.deepEqual(commands.at(-1), ["Fetch.enable", { patterns: [{}] }]);
+  const pause = (networkId: string, resourceType: string) =>
+    handlers.get("Fetch.requestPaused")!({
+      networkId,
+      requestId: networkId,
+      frameId: "main",
+      resourceType,
+      request: { url: "https://1.1.1.1/page" },
+    });
+  const releaseScrape = await limits.acquire(
+    signal,
+    Infinity,
+    "scrapfly",
+    "1.1.1.1",
+  );
+  pause("document", "Document");
+  await setImmediate();
+  assert.equal(blocked()?.code, "local_site_limit");
+  assert.equal(commands.at(-1)?.[0], "Fetch.failRequest");
+  releaseScrape();
+
+  pause("asset", "Script");
+  await setImmediate();
+  assert.equal(commands.at(-1)?.[0], "Fetch.continueRequest");
+  await assert.rejects(limits.acquire(signal, Infinity, undefined, "1.1.1.1"), {
+    code: "local_site_limit",
+  });
+  handlers.get("Network.loadingFinished")!({ requestId: "asset" });
+  (await limits.acquire(signal, Infinity, undefined, "1.1.1.1"))();
+  connection.abort();
 });

@@ -1,5 +1,27 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { defaults } from "../config/tuning.js";
 import { appendFileSync, renameSync, statSync } from "node:fs";
+
+export const statsContext = new AsyncLocalStorage<{
+  tool: string;
+  itemIndex?: number;
+}>();
+
+export function writeLimitEvent(
+  event: {
+    code: string;
+    outcome: "wait" | "rejected" | "shortened";
+    provider?: string;
+    retryAt?: string;
+    seconds?: number;
+  },
+  settings = defaults,
+) {
+  writeStats(
+    { event: "local_limit", ...statsContext.getStore(), ...event },
+    settings.statsLogMaxBytes,
+  );
+}
 
 export function writeToolStats(
   stats: {

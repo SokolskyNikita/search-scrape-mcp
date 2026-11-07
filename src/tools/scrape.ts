@@ -56,6 +56,7 @@ export function registerScrape(
         : safeError(error);
       throw new AppError(failure.code, failure.message, {
         tried,
+        ...failure.details,
         hint: failure.details?.hint,
       });
     }

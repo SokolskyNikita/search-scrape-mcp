@@ -27,6 +27,7 @@ export interface SearchProvider {
     input: SearchInput,
     signal?: AbortSignal,
     retry?: () => void,
+    deadline?: number,
   ): Promise<SearchHit[]>;
 }
 

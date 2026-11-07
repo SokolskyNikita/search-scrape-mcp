@@ -1,3 +1,5 @@
+import { RequestLimits } from "./request-limits.js";
+import { Usage } from "./usage.js";
 import type { Config } from "../config/index.js";
 import {
   browserScraper,
@@ -12,14 +14,16 @@ import { registerSearch } from "../tools/search.js";
 import { createMcpHttp } from "./http.js";
 
 export function createApp(config: Config) {
-  const search = { serper: serper(config.serperKey, config) };
+  const limits = new RequestLimits(config);
+  const usage = new Usage(config);
+  const search = { serper: serper(config.serperKey, config, limits, usage) };
   const browser = config.scrapflyKey
-    ? { scrapfly: scrapflyBrowser(config.scrapflyKey, config) }
+    ? { scrapfly: scrapflyBrowser(config.scrapflyKey, config, limits, usage) }
     : undefined;
   const scrape =
     config.scrapflyKey && browser
       ? {
-          scrapfly: scrapflyScrape(config.scrapflyKey, config),
+          scrapfly: scrapflyScrape(config.scrapflyKey, config, limits, usage),
           "scrapfly-browser": browserScraper(browser.scrapfly),
         }
       : undefined;

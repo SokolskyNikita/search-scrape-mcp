@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { defaults } from "../config/tuning.js";
+import { RequestLimits } from "../server/request-limits.js";
 import { scrapflyScrape } from "./scrapfly-scrape.js";
 import type { ScrapeOptions } from "./types.js";
 
@@ -334,5 +336,23 @@ test("deferred escalation returns a usable warning and the next rung", async (t)
   assert.equal(result.check.code, "menus_only");
   assert.equal(result.check.warning, true);
   assert.equal(result.hint, 'Retry with start_rung: "unblocker".');
+  assert.equal(request.mock.callCount(), 1);
+});
+
+test("each Scrapfly rung must obtain its own provider permit", async (t) => {
+  const request = t.mock.method(globalThis, "fetch", async () =>
+    Response.json(success("# Access denied", target, 403)),
+  );
+  const settings = { ...defaults, localLimitWaitMs: 0, siteGapMs: 0 };
+  const provider = scrapflyScrape(
+    "fake-key",
+    settings,
+    new RequestLimits(settings),
+  );
+  const first = options();
+  await assert.rejects(provider.scrape(target, undefined, first), {
+    code: "local_rate_limit",
+  });
+  assert.deepEqual(first.tried, ["datacenter"]);
   assert.equal(request.mock.callCount(), 1);
 });

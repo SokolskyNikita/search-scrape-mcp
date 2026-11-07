@@ -5,24 +5,72 @@ import { validatePublicUrl } from "../server/target.js";
 export async function guardNavigations(
   cdp: CDPSession,
   onDocumentResponse?: (status: number, mitigated: boolean) => void,
+  pace?: (hostname: string, signal: AbortSignal) => Promise<() => void>,
+  disconnected?: AbortSignal,
 ) {
   const { frameTree } = await cdp.send("Page.getFrameTree");
   let blocked: ReturnType<typeof safeError> | undefined;
+  const pending = new Map<string, AbortController>();
+  const finish = (id: string) => {
+    pending.get(id)?.abort();
+    pending.delete(id);
+  };
+  if (pace) {
+    cdp.on("Network.loadingFinished", ({ requestId }) => finish(requestId));
+    cdp.on("Network.loadingFailed", ({ requestId }) => finish(requestId));
+    disconnected?.addEventListener(
+      "abort",
+      () => {
+        for (const id of pending.keys()) finish(id);
+      },
+      { once: true },
+    );
+  }
   cdp.on("Fetch.requestPaused", (event) => {
     void (async () => {
-      if (event.frameId === frameTree.frame.id) {
-        try {
-          await validatePublicUrl(event.request.url);
-        } catch (error) {
-          blocked = safeError(error);
-          await cdp.send("Fetch.failRequest", {
-            requestId: event.requestId,
-            errorReason: "BlockedByClient",
-          });
-          return;
-        }
+      const main =
+        event.frameId === frameTree.frame.id &&
+        (!pace || event.resourceType === "Document");
+      const networkId = event.networkId;
+      const controller = new AbortController();
+      if (pace && networkId) {
+        // Redirects reuse the Network request ID and complete the previous hop.
+        finish(networkId);
+        pending.set(networkId, controller);
       }
-      await cdp.send("Fetch.continueRequest", { requestId: event.requestId });
+      let release: (() => void) | undefined;
+      try {
+        const url = main
+          ? await validatePublicUrl(event.request.url)
+          : new URL(event.request.url);
+        if (pace && (url.protocol === "https:" || url.protocol === "http:")) {
+          disconnected?.throwIfAborted();
+          controller.signal.throwIfAborted();
+          release = await pace(url.hostname, controller.signal);
+          if (networkId) {
+            if (controller.signal.aborted) {
+              release();
+              return;
+            }
+            controller.signal.addEventListener("abort", release, {
+              once: true,
+            });
+          }
+        }
+        await cdp.send("Fetch.continueRequest", { requestId: event.requestId });
+      } catch (error) {
+        const cancelled = controller.signal.aborted || disconnected?.aborted;
+        if (networkId && pending.get(networkId) === controller)
+          finish(networkId);
+        if (cancelled) return;
+        if (main) blocked = safeError(error);
+        await cdp.send("Fetch.failRequest", {
+          requestId: event.requestId,
+          errorReason: "BlockedByClient",
+        });
+      } finally {
+        if (!networkId) release?.();
+      }
     })().catch(() => console.error("Browser navigation interception failed."));
   });
   if (onDocumentResponse) {
@@ -35,10 +83,12 @@ export async function guardNavigations(
         onDocumentResponse(response.status, mitigated);
       }
     });
-    await cdp.send("Network.enable");
   }
+  if (onDocumentResponse || pace) await cdp.send("Network.enable");
   // A separate CDP session keeps Playwright's own request interception disabled.
-  await cdp.send("Fetch.enable", { patterns: [{ resourceType: "Document" }] });
+  await cdp.send("Fetch.enable", {
+    patterns: pace ? [{}] : [{ resourceType: "Document" }],
+  });
   return () => {
     const error = blocked;
     blocked = undefined;

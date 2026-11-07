@@ -10,6 +10,49 @@ const integer = (
 const pool = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
 
 export const tuningSchema = z.object({
+  serperRequestsPerMinute: integer(
+    1,
+    6_000,
+    60,
+    "Server-wide Serper request rate, including hedges.",
+  ),
+  scrapflyRequestsPerMinute: integer(
+    1,
+    6_000,
+    30,
+    "Server-wide Scrapfly scrape request rate, including retries and escalation.",
+  ),
+  localLimitWaitMs: integer(
+    0,
+    10_000,
+    2_500,
+    "Maximum wait for a provider or hostname permit, within the call deadline.",
+  ),
+  siteConcurrency: integer(
+    1,
+    32,
+    4,
+    "Maximum simultaneous requests per target hostname.",
+  ),
+  siteGapMs: integer(
+    0,
+    60_000,
+    1_000,
+    "Minimum time between request starts for the same target hostname.",
+  ),
+  browserConcurrency: integer(
+    1,
+    32,
+    4,
+    "Maximum simultaneous Cloud Browser sessions, including scrape fallback.",
+  ),
+  browserDailyMinutes: integer(
+    1,
+    10_000,
+    120,
+    "Daily Cloud Browser session-minutes across all sessions. Resets at midnight UTC.",
+  ),
+
   toolDeadlineSeconds: integer(
     35,
     55,

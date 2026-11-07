@@ -1,7 +1,7 @@
 import { defaults } from "../config/tuning.js";
 import { toolTimeoutMs } from "../config/deadline.js";
 import type { BrowserImage } from "../providers/types.js";
-import { writeToolStats } from "../server/stats.js";
+import { statsContext, writeToolStats } from "../server/stats.js";
 import { AppError, safeError } from "../server/error.js";
 
 export type Attempt = (provider?: string) => void;
@@ -28,6 +28,8 @@ export async function fallback<T extends { name?: string }, R>(
           "provider_limit",
           "provider_credit",
           "provider_rate",
+          "local_rate_limit",
+          "local_site_limit",
           "not_found",
           "sign_in",
           "content_moved",
@@ -76,13 +78,15 @@ export async function toolResult(
       }, toolTimeoutMs(settings));
     });
     const result = await Promise.race([
-      run(
-        (provider) => {
-          attempts++;
-          if (provider) providers.add(provider);
-        },
-        controller.signal,
-        start + toolTimeoutMs(settings),
+      statsContext.run({ tool: name }, () =>
+        run(
+          (provider) => {
+            attempts++;
+            if (provider) providers.add(provider);
+          },
+          controller.signal,
+          start + toolTimeoutMs(settings),
+        ),
       ),
       deadline,
     ]);
@@ -163,11 +167,15 @@ export async function batch<I, O>(
         let errorCode: string | null = null;
         const providers = new Set<string>();
         try {
-          const result = await run(input, (provider) => {
-            stats?.attempt(provider);
-            attempts++;
-            if (provider) providers.add(provider);
-          });
+          const result = await statsContext.run(
+            { tool: stats?.tool ?? "batch", itemIndex: index },
+            () =>
+              run(input, (provider) => {
+                stats?.attempt(provider);
+                attempts++;
+                if (provider) providers.add(provider);
+              }),
+          );
           results[index] = { index, result };
         } catch (error) {
           const { code, message, details } = safeError(error);

@@ -1,3 +1,4 @@
+import { todayUsage } from "../server/usage.js";
 import {
   relayTimeoutMs,
   scrapeBudgetMs,
@@ -52,6 +53,10 @@ try {
       JSON.stringify(
         {
           ...settings,
+          today: {
+            ...todayUsage(),
+            browserDailyMinutes: settings.browserDailyMinutes,
+          },
           derived: {
             toolTimeoutMs: toolTimeoutMs(settings),
             relayTimeoutMs: relayTimeoutMs(settings),
