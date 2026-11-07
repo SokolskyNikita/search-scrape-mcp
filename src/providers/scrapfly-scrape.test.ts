@@ -14,7 +14,7 @@ const fixture = {
   },
 };
 
-test("Scrapfly requests ASP and cleaned markdown, then validates its reported redirects", async (t) => {
+test("Scrapfly requests a budgeted proxy pool and cleaned markdown, then validates its reported redirects", async (t) => {
   let payload: unknown = fixture;
   const request = t.mock.method(
     globalThis,
@@ -27,7 +27,10 @@ test("Scrapfly requests ASP and cleaned markdown, then validates its reported re
       assert.deepEqual(Object.fromEntries(input.searchParams), {
         key: "fake-key",
         url: target,
-        asp: "true",
+        proxy_pool: "public_datacenter_pool",
+        cost_budget: "30",
+        timeout: "25000",
+        retry: "false",
         format: "markdown:only_content,no_images",
       });
       assert.equal(init.redirect, "error");

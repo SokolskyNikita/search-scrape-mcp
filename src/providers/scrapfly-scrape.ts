@@ -34,7 +34,10 @@ export function scrapflyScrape(key: string): ScrapeProvider {
       endpoint.search = new URLSearchParams({
         key,
         url: target.href,
-        asp: "true",
+        proxy_pool: "public_datacenter_pool",
+        cost_budget: "30",
+        timeout: "25000",
+        retry: "false",
         format: "markdown:only_content,no_images",
       }).toString();
 
@@ -54,7 +57,7 @@ export function scrapflyScrape(key: string): ScrapeProvider {
                 "provider_auth",
                 "Scrapfly rejected the API credential.",
               );
-            if (response.status === 429)
+            if (response.status === 429 || code?.includes("COST_BUDGET"))
               return new AppError(
                 "provider_limit",
                 "Scrapfly rate or quota limit reached.",
