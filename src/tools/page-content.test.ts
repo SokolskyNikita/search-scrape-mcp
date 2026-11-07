@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pageContent } from "./page-content.js";
+import { cleanPage, pageContent } from "./page-content.js";
 
 test("page checker cleans content and classifies challenge, block and empty pages", () => {
   assert.equal(
@@ -34,4 +34,35 @@ test("ordinary headings do not look like blocks or challenges", () => {
       `# ${heading}\n\nArticle body`,
     );
   }
+});
+
+test("Markdown cleanup removes image markup, redundant titles and empty definitions outside code", () => {
+  const content = [
+    "![](https://example.com/picture_(1).png)",
+    '[Anthropic](https://example.com/Anthropic "Anthropic")',
+    '[Reference](https://example.com/ref "Additional context")',
+    "[^20]:",
+    "[^21]:",
+    "    A continuation is a real definition.",
+    "4 Likes",
+    "```md",
+    "![](example.png)",
+    "[^22]:",
+    "```",
+  ].join("\n");
+  assert.equal(
+    cleanPage(content),
+    [
+      "[Anthropic](https://example.com/Anthropic)",
+      '[Reference](https://example.com/ref "Additional context")',
+      "",
+      "[^21]:",
+      "    A continuation is a real definition.",
+      "",
+      "```md",
+      "![](example.png)",
+      "[^22]:",
+      "```",
+    ].join("\n"),
+  );
 });

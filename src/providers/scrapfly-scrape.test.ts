@@ -132,7 +132,11 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
   assert.deepEqual(first.tried, ["datacenter", "unblocker"]);
   mode = "shell";
   await assert.rejects(provider.scrape(target), {
-    details: { tried: ["unblocker"], hint: 'Retry with start_rung: "render".' },
+    details: {
+      tried: ["unblocker"],
+      credits: 1,
+      hint: 'Retry with start_rung: "render".',
+    },
   });
   const next: ScrapeOptions = { start: "render", tried: [] };
   await provider.scrape(target, undefined, next);
@@ -140,7 +144,7 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
   mode = "missing";
   await assert.rejects(provider.scrape(target), {
     code: "not_found",
-    details: { tried: ["render"], hint: undefined },
+    details: { tried: ["render"], credits: 1, hint: undefined },
   });
   mode = "ok";
   await provider.scrape(target);
@@ -256,6 +260,7 @@ test("menu and consent pages escalate once and keep the remaining rung visible",
     code: "consent",
     details: {
       tried: ["datacenter", "unblocker"],
+      credits: 2,
       hint: 'Try start_rung: "render" for a stronger fetch.',
     },
   });
@@ -328,6 +333,7 @@ test("escalation stops with the stronger rung hint if its minimum cannot fit", a
       code: "stronger_rung_required",
       details: {
         tried: ["datacenter"],
+        credits: 1,
         hint: 'Retry with start_rung: "unblocker".',
       },
     },
@@ -526,7 +532,7 @@ test("datacenter HEAD gates files by headers before paying for a download", asyn
     mimeType: "application/pdf",
     extension: "pdf",
   });
-  assert.equal(result.credits, 1);
+  assert.equal(result.credits, 2);
   assert.deepEqual(methods.slice(3), ["HEAD", "GET"]);
 });
 
@@ -766,10 +772,11 @@ test("the recorded residential upgrade logs billing and requires opt-in after re
     details: { expectedCredits: 25 },
   });
   assert.equal(fetch.mock.callCount(), 1);
-  await restarted.scrape(target, undefined, {
+  const optedIn = await restarted.scrape(target, undefined, {
     tried: [],
     allowHigherCost: true,
   });
+  assert.equal(optedIn.credits, 25);
   assert.equal(fetch.mock.callCount(), 2);
   const lines = readFileSync(log, "utf8").trim().split("\n");
   assert.equal(lines.length, 2);
@@ -779,12 +786,14 @@ test("the recorded residential upgrade logs billing and requires opt-in after re
     assert.equal(row.remainingCredits, 197187);
     assert.equal(row.requestedProxyPool, "public_datacenter_pool");
     assert.equal(row.proxyPool, "public_residential_pool_ix");
+    assert.equal(row.host, "8.8.8.8");
+    assert.equal(row.url, target);
     assert.deepEqual(row.costBreakdown, breakdown);
     assert.doesNotMatch(line, /private proxy identity/);
   }
 });
 
-test("a pool rejection is terminal and records the host with a reason", async (t) => {
+test("a pool rejection is terminal but does not record an unverified price", async (t) => {
   const code = "ERR::PROXY::POOL_NOT_AVAILABLE_FOR_TARGET";
   const state = fileState(t);
   const fetch = t.mock.method(globalThis, "fetch", async () =>
@@ -802,11 +811,10 @@ test("a pool rejection is terminal and records the host with a reason", async (t
     message: /POOL_NOT_AVAILABLE_FOR_TARGET.*residential.*25 credits/,
   });
   await assert.rejects(provider.scrape(target), {
-    code: "provider_cost_opt_in_required",
+    code: "provider_proxy_pool",
     message: /POOL_NOT_AVAILABLE_FOR_TARGET/,
-    details: { expectedCredits: 25 },
   });
-  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(fetch.mock.callCount(), 2);
   assert.equal(new FileHosts([], state).list().size, 0);
 });
 
@@ -959,6 +967,7 @@ test("empty extraction falls back once at the same rung and records both charges
   assert.equal(result.check.warning, true);
   assert.deepEqual(tried, ["datacenter", "datacenter_full"]);
   assert.deepEqual(formats, ["raw", "markdown:no_images"]);
+  assert.equal(result.credits, 2);
   assert.equal(todayUsage(file).scrapflyCredits, 2);
 });
 
@@ -977,7 +986,11 @@ test("full-page fallback stops when the same rung cannot fit the deadline", asyn
     }),
     {
       code: "extraction_failed",
-      details: { hint: 'Retry with content_mode: "full".' },
+      details: {
+        tried: ["render"],
+        credits: 1,
+        hint: 'Retry with content_mode: "full".',
+      },
     },
   );
   assert.equal(request.mock.callCount(), 1);
@@ -996,4 +1009,105 @@ test("a failed extraction fallback does not escalate to a stronger rung", async 
   );
   assert.equal(request.mock.callCount(), 2);
   assert.deepEqual(tried, ["datacenter", "datacenter_full"]);
+});
+
+test("a target 503 or 429 offers a priced next rung; clear 4xx errors stop", async (t) => {
+  let status = 503;
+  const request = t.mock.method(globalThis, "fetch", async (url: URL) =>
+    Response.json(
+      url.searchParams.has("unblocker")
+        ? success()
+        : {
+            ...success("Try again later.", target, status),
+            context: { cost: 0 },
+          },
+    ),
+  );
+  const provider = scrapflyScrape("fixture");
+  for (const code of [503, 429]) {
+    status = code;
+    await assert.rejects(provider.scrape(target), {
+      code: "provider_cost_opt_in_required",
+      details: {
+        tried: ["datacenter"],
+        expectedCredits: 85,
+        hint: 'Try start_rung: "unblocker" with allow_higher_cost: true (request budget: up to 85 credits).',
+        credits: 0,
+      },
+    });
+  }
+  status = 400;
+  await assert.rejects(provider.scrape(target), { code: "target_http" });
+  assert.equal(request.mock.callCount(), 3);
+  status = 503;
+  const tried: string[] = [];
+  const withinBudget = scrapflyScrape("fixture", {
+    ...defaults,
+    scrapflyUnblockerCost: defaults.scrapflyDatacenterCost,
+  });
+  const result = await withinBudget.scrape(target, undefined, { tried });
+  assert.equal(result.check.code, "ok");
+  assert.equal(result.credits, 1);
+  assert.deepEqual(tried, ["datacenter", "unblocker"]);
+});
+
+test("a link-only extraction falls back to navigation with a render hint", async (t) => {
+  const links = [
+    "Home",
+    "Login",
+    "Contact the website administrator",
+    "Read the website privacy policy",
+  ]
+    .map((name, i) => `[${name}](https://8.8.8.8/link/${i})`)
+    .join("\n");
+  t.mock.method(globalThis, "fetch", async (url: URL) =>
+    url.searchParams.get("format") === "raw"
+      ? htmlResponse(
+          '<html><title>Quotes</title><body><header><h1>Quotes</h1></header><main><a href="/login">Login</a></main><footer>Copyright belongs to this site.</footer></body></html>',
+        )
+      : htmlResponse(links, target, "markdown"),
+  );
+  const tried: string[] = [];
+  const result = await scrapflyScrape("fixture").scrape(target, undefined, {
+    tried,
+  });
+  assert.deepEqual(tried, ["datacenter", "datacenter_full"]);
+  assert.equal(result.check.code, "menus_only");
+  assert.equal(result.check.next, "render");
+  assert.match(result.hint ?? "", /start_rung: "render"/);
+});
+
+test("bandwidth overrun does not set a host price, and cost updates keep one row", async (t) => {
+  const state = fileState(t);
+  const hosts = new FileHosts([], state);
+  const response = binaryFixture(target, pdf, 37);
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      ...response,
+      context: {
+        cost: {
+          total: 37,
+          details: [
+            { code: "BANDWIDTH", amount: 36 },
+            { code: "PROXY_DATACENTER_NETWORK", amount: 1 },
+          ],
+        },
+      },
+    }),
+  );
+  const result = await scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    hosts,
+  ).scrape(target);
+  assert.equal(result.credits, 37);
+  assert.match(result.costWarning ?? "", /37 credits/);
+  assert.equal(hosts.read().costs.size, 0);
+  hosts.remember("8.8.8.8", { expectedCredits: 25, reason: "first pool" });
+  hosts.remember("8.8.8.8", { expectedCredits: 25, reason: "updated pool" });
+  assert.equal(readFileSync(state, "utf8").trim().split("\n").length, 1);
+  assert.equal(hosts.read().costs.get("8.8.8.8")?.reason, "updated pool");
+  assert.equal(hosts.list().has("8.8.8.8"), true);
 });

@@ -87,12 +87,13 @@ export function registerScrape(
       if (
         !hit &&
         !binary &&
+        !costWarning &&
         check.code === "ok" &&
         !check.warning &&
         !check.next &&
         !hint
       )
-        cache?.set(key, { markdown, check, tried, costWarning });
+        cache?.set(key, { markdown, check, tried });
       return {
         ...(binary
           ? files.saveBinary(binary)

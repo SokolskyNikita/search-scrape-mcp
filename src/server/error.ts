@@ -7,6 +7,7 @@ export class AppError extends Error {
       hint?: string;
       retryAt?: string;
       expectedCredits?: number;
+      credits?: number;
     },
   ) {
     super(message);

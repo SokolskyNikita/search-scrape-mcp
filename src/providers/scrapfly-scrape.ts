@@ -21,7 +21,7 @@ import { defaults, type Tuning } from "../config/tuning.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { AppError, safeError } from "../server/error.js";
-import { writeProviderAttempt } from "../server/stats.js";
+import { providerTarget, writeProviderAttempt } from "../server/stats.js";
 import { validatePublicUrl } from "../server/target.js";
 import { checkPage, type PageCheck } from "../tools/page-check.js";
 import { mainContent } from "../tools/main-content.js";
@@ -30,6 +30,7 @@ import { providerResponse } from "./http.js";
 import {
   scrapeRungs,
   type ScrapeContentMode,
+  type ScrapeOptions,
   type ScrapeProvider,
   type ScrapeResult,
   type ScrapeRung,
@@ -170,6 +171,8 @@ function header(
 
 async function downloadContent(
   content: string,
+  target: URL,
+  recordCredits: (credits: number | null) => void,
   endpoint: URL,
   key: string,
   signal: AbortSignal,
@@ -222,10 +225,12 @@ async function downloadContent(
     errorCode = safeError(error).code;
     throw error;
   } finally {
+    recordCredits(credits);
     usage?.record("scrapfly", credits, startedAt);
     writeProviderAttempt(
       {
         provider: "scrapfly",
+        ...providerTarget(target),
         rung: "clob",
         credits,
         remainingCredits,
@@ -253,9 +258,12 @@ async function requestPage(
   checkBackoff: () => void,
   rateLimited: (ms: number) => number,
   contentMode: ScrapeContentMode,
+  recordCredits: (credits: number | null) => void,
   operation?: "head" | FileHeaders,
 ): Promise<
-  ScrapeResult | { head: FileHeaders } | { error: AppError; retryMs?: number }
+  | (ScrapeResult & { transientTarget?: boolean })
+  | { head: FileHeaders }
+  | { error: AppError; retryMs?: number }
 > {
   const startedAt = Date.now();
   const endpoint = new URL("https://api.scrapfly.io/scrape");
@@ -428,6 +436,11 @@ async function requestPage(
     if (failure) throw failure;
 
     if (operation === "head") {
+      if (code === "ERR::SCRAPE::OPERATION_TIMEOUT")
+        throw refuseFile(
+          { type: "unknown" },
+          "the target timed out during the HEAD check. A retry may work.",
+        );
       const metadata = fileHeaders(
         response.headers.get("content-type"),
         response.headers.get("content-length"),
@@ -542,7 +555,6 @@ async function requestPage(
       return {
         markdown: "",
         binary: await identifyDownload(bytes, type),
-        credits: credits ?? undefined,
         costWarning: costWarning(),
         check: { code: "ok", reason: "Binary download ready." },
       };
@@ -551,6 +563,8 @@ async function requestPage(
     if (format === "clob" && !operation)
       content = await downloadContent(
         content,
+        target,
+        recordCredits,
         endpoint,
         key,
         requestSignal,
@@ -588,13 +602,20 @@ async function requestPage(
         "binary_download",
         "Expected a file after the HEAD check but received page content.",
       );
+    // Only a target response (as opposed to Scrapfly's own HTTP errors)
+    // can trigger this limited retry path.
+    const transientTarget =
+      rung === "datacenter" &&
+      !operation &&
+      (result.status_code === 429 ||
+        (result.status_code >= 500 && check.code === "target_http"));
     errorCode = check.code === "ok" || check.warning ? null : check.code;
     if (check.code === "ok" && result.success === false)
       throw new AppError(
         "provider_response",
         "Scrapfly reported an unsuccessful scrape.",
       );
-    return { markdown, check, costWarning: costWarning() };
+    return { markdown, check, costWarning: costWarning(), transientTarget };
   } catch (error) {
     const caught = safeError(error);
     const failure =
@@ -637,22 +658,28 @@ async function requestPage(
     };
   } finally {
     const host = normalizeFileHost(target.hostname);
-    const warning = costWarning();
-    if (warning && credits !== null) {
+    const nonBandwidthCredits =
+      typeof breakdown === "object"
+        ? breakdown?.details
+            ?.filter(({ code }) => !/BANDWIDTH/i.test(code))
+            .reduce((sum, { amount }) => sum + amount, 0)
+        : undefined;
+    if (
+      overrun() &&
+      nonBandwidthCredits !== undefined &&
+      nonBandwidthCredits > budget
+    ) {
       fileHosts.remember(host, {
-        expectedCredits: credits,
-        reason: `${warning}${proxyPool ? ` Reported proxy pool: ${proxyPool}.` : ""}`,
-      });
-    } else if (providerCode === poolUnavailable) {
-      fileHosts.remember(host, {
-        expectedCredits: residentialBaseCredits,
-        reason: `Scrapfly rejected ${requestedProxyPool} for this host (${poolUnavailable}). Estimated residential base price.`,
+        expectedCredits: nonBandwidthCredits,
+        reason: `Scrapfly reported ${nonBandwidthCredits} non-bandwidth credits, above the ${budget}-credit rung budget.${proxyPool ? ` Reported proxy pool: ${proxyPool}.` : ""}`,
       });
     }
+    recordCredits(credits);
     usage?.record("scrapfly", credits, startedAt);
     writeProviderAttempt(
       {
         provider: "scrapfly",
+        ...providerTarget(target),
         rung: operation === "head" ? "datacenter_head" : rung,
         credits,
         remainingCredits,
@@ -695,9 +722,13 @@ export function scrapflyScrape(
       hosts.delete(hosts.keys().next().value!);
     hosts.set(host, { rung, expires: Date.now() + settings.siteMemoryMs });
   }
-  return {
-    name: "scrapfly",
-    async scrape(url, outer, options = { tried: [] }) {
+  const implementation = {
+    async scrape(
+      url: string,
+      outer: AbortSignal | undefined,
+      options: ScrapeOptions,
+      recordCredits: (credits: number | null) => void,
+    ): Promise<ScrapeResult> {
       const deadline =
         (options.deadline ?? performance.now() + toolTimeoutMs(settings)) -
         scrapeReserveMs;
@@ -755,6 +786,7 @@ export function scrapflyScrape(
             checkBackoff,
             rateLimited,
             fullFallback ? "full" : (options.contentMode ?? "main"),
+            recordCredits,
             operation,
           );
         } finally {
@@ -850,7 +882,7 @@ export function scrapflyScrape(
           if (remaining() < timeout)
             throw new AppError(
               "extraction_failed",
-              "Defuddle found no usable main content and too little time remains for a full-page fetch.",
+              `${result.error.message} Too little time remains for a full-page fetch.`,
               { hint: 'Retry with content_mode: "full".' },
             );
           const full = await attempt(rung, undefined, true);
@@ -867,13 +899,30 @@ export function scrapflyScrape(
                 ? `${full.costWarning} ${full.check.reason}`
                 : full.check.reason,
             );
-          if (full.binary || full.check.warning) return full;
+          if (full.check.code === "menus_only" && rung !== "render")
+            return {
+              ...full,
+              check: {
+                ...full.check,
+                next: "render",
+                reason: `${result.error.message} ${full.check.reason}`,
+              },
+              hint: 'Try start_rung: "render" to load JavaScript content.',
+            };
+          if (full.binary) return full;
+          if (full.check.warning)
+            return {
+              ...full,
+              check: {
+                ...full.check,
+                reason: `${result.error.message} ${full.check.reason}`,
+              },
+            };
           return {
             ...full,
             check: {
               code: "extraction_fallback",
-              reason:
-                "Defuddle found no usable main content. Returned whole-page Markdown.",
+              reason: `${result.error.message} Returned whole-page Markdown.`,
               warning: true,
             },
           };
@@ -922,8 +971,9 @@ export function scrapflyScrape(
             ...error.details,
           });
         }
-        const { markdown, check, binary, costWarning, credits } = result;
-        if (binary) return { markdown, check, binary, costWarning, credits };
+        const { markdown, check, binary, costWarning, transientTarget } =
+          result;
+        if (binary) return { markdown, check, binary, costWarning };
         if (file)
           throw refuseFile(
             file,
@@ -937,6 +987,28 @@ export function scrapflyScrape(
             `${costWarning} ${check.reason}`,
             { tried: options.tried },
           );
+        }
+        if (transientTarget) {
+          const expectedCredits = settings.scrapflyUnblockerCost;
+          const needsOptIn =
+            expectedCredits > settings.scrapflyDatacenterCost &&
+            !options.allowHigherCost;
+          if (
+            needsOptIn ||
+            remaining() < scrapflyTimeoutMs.unblocker ||
+            signal.aborted
+          )
+            throw new AppError(
+              needsOptIn ? "provider_cost_opt_in_required" : check.code,
+              check.reason,
+              {
+                tried: options.tried,
+                expectedCredits,
+                hint: `Try start_rung: "unblocker"${needsOptIn ? " with allow_higher_cost: true" : ""} (request budget: up to ${expectedCredits} credits).`,
+              },
+            );
+          index++;
+          continue;
         }
         const next = check.next === "render" ? 2 : index + 1;
         const stronger = scrapeRungs[next];
@@ -978,6 +1050,29 @@ export function scrapflyScrape(
       throw new AppError("internal", "No scrape rung was selected.", {
         tried: options.tried,
       });
+    },
+  };
+  return {
+    name: "scrapfly",
+    async scrape(url, outer, options = { tried: [] }) {
+      let totalCredits: number | undefined;
+      const recordCredits = (credits: number | null) => {
+        if (credits !== null) totalCredits = (totalCredits ?? 0) + credits;
+      };
+      try {
+        return {
+          ...(await implementation.scrape(url, outer, options, recordCredits)),
+          credits: totalCredits,
+        };
+      } catch (error) {
+        if (!(error instanceof AppError) || totalCredits === undefined)
+          throw error;
+        throw new AppError(error.code, error.message, {
+          tried: options.tried,
+          ...error.details,
+          credits: totalCredits,
+        });
+      }
     },
   };
 }

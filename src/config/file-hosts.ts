@@ -3,8 +3,11 @@ import {
   constants,
   fstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -25,10 +28,11 @@ export const fileHostsPath = () =>
 
 const costNotice = z.object({
   host: fileHost,
+  file: z.boolean().optional(),
   expectedCredits: z.number().finite().nonnegative(),
   reason: z.string().min(1),
 });
-type CostNotice = Omit<z.infer<typeof costNotice>, "host">;
+type CostNotice = Omit<z.infer<typeof costNotice>, "host" | "file">;
 
 function withFile<T>(file: string, flags: number, run: (fd: number) => T) {
   const fd = openSync(
@@ -52,8 +56,8 @@ export class FileHosts {
     private readonly file = fileHostsPath(),
   ) {}
 
-  read() {
-    const hosts = new Set(this.seeds);
+  read(includeSeeds = true) {
+    const hosts = new Set<string>();
     const costs = new Map<string, CostNotice>();
     try {
       const recorded = withFile(this.file, constants.O_RDONLY, (fd) =>
@@ -61,7 +65,8 @@ export class FileHosts {
       );
       for (const line of recorded.split("\n").filter(Boolean)) {
         if (line.startsWith("{")) {
-          const { host, ...notice } = costNotice.parse(JSON.parse(line));
+          const { host, file, ...notice } = costNotice.parse(JSON.parse(line));
+          if (file) hosts.add(host);
           if (notice.expectedCredits >= (costs.get(host)?.expectedCredits ?? 0))
             costs.set(host, notice);
         } else {
@@ -75,7 +80,10 @@ export class FileHosts {
           "Could not read private file host state.",
         );
     }
-    return { hosts, costs };
+    return {
+      hosts: includeSeeds ? new Set([...this.seeds, ...hosts]) : hosts,
+      costs,
+    };
   }
 
   list() {
@@ -85,24 +93,45 @@ export class FileHosts {
   remember(host: string, notice?: CostNotice) {
     try {
       host = fileHost.parse(host);
-      const { hosts, costs } = this.read();
+      const { hosts, costs } = this.read(false);
       const previous = costs.get(host);
-      if (
-        notice
-          ? previous &&
-            (previous.expectedCredits > notice.expectedCredits ||
-              (previous.expectedCredits === notice.expectedCredits &&
-                previous.reason === notice.reason))
-          : hosts.has(host)
-      )
-        return;
-      const line = notice ? JSON.stringify({ host, ...notice }) : host;
-      mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-      withFile(
-        this.file,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND,
-        (fd) => writeFileSync(fd, line + "\n", { flush: true }),
-      );
+      if (notice) {
+        if (previous && previous.expectedCredits > notice.expectedCredits)
+          return;
+        if (
+          previous?.expectedCredits === notice.expectedCredits &&
+          previous.reason === notice.reason
+        )
+          return;
+        costs.set(host, notice);
+      } else {
+        if (hosts.has(host) || this.seeds.includes(host)) return;
+        hosts.add(host);
+      }
+      const lines = [...new Set([...hosts, ...costs.keys()])].map((name) => {
+        const cost = costs.get(name);
+        return cost
+          ? JSON.stringify({
+              host: name,
+              ...(hosts.has(name) ? { file: true } : {}),
+              ...cost,
+            })
+          : name;
+      });
+      const dir = dirname(this.file);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const temporary = mkdtempSync(join(dir, ".file-hosts-"));
+      try {
+        const next = join(temporary, "state");
+        withFile(
+          next,
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+          (fd) => writeFileSync(fd, lines.join("\n") + "\n", { flush: true }),
+        );
+        renameSync(next, this.file);
+      } finally {
+        rmSync(temporary, { recursive: true, force: true });
+      }
     } catch {
       console.error("Could not persist Scrapfly host state.");
     }

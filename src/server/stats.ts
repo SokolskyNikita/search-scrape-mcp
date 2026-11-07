@@ -40,10 +40,20 @@ export function writeToolStats(
   );
 }
 
+export function providerTarget(target: URL) {
+  // Query parameters can contain credentials or other sensitive data.
+  return {
+    host: target.hostname,
+    url: `${target.origin}${target.pathname}`.slice(0, 200),
+  };
+}
+
 export function writeProviderAttempt(
   attempt: {
     provider: string;
     rung: string;
+    host?: string;
+    url?: string;
     datacenterBlocked?: boolean;
     hedgeTrigger?: "delay" | "failure";
     credits: number | null;

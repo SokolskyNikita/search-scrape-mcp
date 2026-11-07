@@ -2,7 +2,30 @@ import { Defuddle } from "defuddle/node";
 import { parseHTML } from "linkedom";
 import { AppError } from "../server/error.js";
 import { checkPage } from "./page-check.js";
-import { cleanPage } from "./page-content.js";
+import { cleanPage, markdownLink } from "./page-content.js";
+
+const words = (text: string) => text.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
+function urlKey(href: string, base: URL) {
+  const url = URL.parse(href, base);
+  if (!url || !/^https?:$/.test(url.protocol) || href.startsWith("#"))
+    return undefined;
+  url.hash = "";
+  return url.href;
+}
+
+function withTitle(markdown: string, title: string, h1: string) {
+  const heading = markdown.match(/^#{1,6}\s+([^\n]+)(?:\n|$)/);
+  const first = oneLine(heading?.[1]?.replace(markdownLink, "$1") ?? "");
+  // Prefer the visible H1 when it matches the extracted lead or the metadata
+  // title (which can carry a site name suffix).
+  const name = h1 && (h1 === first || title.startsWith(h1)) ? h1 : title;
+  if (!name) return markdown;
+  if (heading && first === name)
+    return "# " + markdown.replace(/^#{1,6}\s+/, "");
+  return `# ${name}\n\n${markdown}`;
+}
 
 export async function mainContent(
   html: string,
@@ -13,7 +36,6 @@ export async function mainContent(
   success?: boolean,
 ) {
   const { document } = parseHTML(html);
-  // Check the original title and body before Defuddle removes page elements.
   const body = (
     document.querySelector("body") ?? document.documentElement
   )?.cloneNode(true) as Element | undefined;
@@ -25,7 +47,8 @@ export async function mainContent(
     node.after("\n");
   }
   const text = body?.textContent ?? "";
-  const title = document.querySelector("title")?.textContent?.trim();
+  const title = oneLine(document.querySelector("title")?.textContent ?? "");
+  const h1 = oneLine(body?.querySelector("h1")?.textContent ?? "");
   const original = checkPage(
     cleanPage(title ? `# ${title}\n\n${text}` : text),
     target,
@@ -53,35 +76,106 @@ export async function mainContent(
   )
     return { markdown: "", check: original };
 
+  // Prefer the semantic main area. On pages without one, count linked
+  // headings outside the site's navigation, which often mark listing items.
+  const main = body?.querySelector('main, [role="main"]');
+  const links = new Set<string>();
+  for (const anchor of (main ?? body)?.querySelectorAll(
+    main ? "a[href]" : ":is(h2,h3,h4,h5,h6) a[href]",
+  ) ?? []) {
+    if (anchor.closest('nav, header, footer, aside, [role="navigation"]'))
+      continue;
+    const href = urlKey(anchor.getAttribute("href")!, final);
+    if (href) links.add(href);
+  }
+  function lostLinks(markdown: string) {
+    if (links.size < 8) return false;
+    const kept = new Set<string>();
+    for (const match of markdown.matchAll(markdownLink)) {
+      const href = urlKey(match[2] ?? match[3] ?? "", final);
+      if (href && links.has(href)) kept.add(href);
+    }
+    return kept.size <= 2 && kept.size * 5 < links.size;
+  }
+  // Repeated author microdata marks pages with multiple contributions.
+  // Defuddle's partial selector filtering can remove all of those bylines.
+  const hasMultipleBylines =
+    (body?.querySelectorAll('[itemprop~="author"]').length ?? 0) > 1;
+  const extract = (standardize: boolean) => {
+    const copy = document.cloneNode(true) as Document;
+    for (const picture of copy.querySelectorAll("picture")) picture.remove();
+    return Defuddle(copy, final.href, {
+      markdown: true,
+      removeImages: true,
+      includeReplies: "extractors",
+      standardize,
+      removePartialSelectors: !hasMultipleBylines,
+      useAsync: false,
+      fetch: async () => {
+        throw new Error("Network access is disabled during extraction.");
+      },
+    });
+  };
   let markdown = "";
+  let extractedTitle = "";
+  let missingLinks = false;
+  let listingRecovered = false;
   try {
     if (document.documentElement) {
-      const extracted = await Defuddle(document, final.href, {
-        markdown: true,
-        removeImages: true,
-        includeReplies: "extractors",
-        useAsync: false,
-        fetch: async () => {
-          throw new Error("Network access is disabled during extraction.");
-        },
-      });
+      const extracted = await extract(true);
+      extractedTitle = oneLine(extracted.title || title);
       markdown = cleanPage(extracted.content);
+      missingLinks = lostLinks(markdown);
+      if (missingLinks) {
+        // Standardization can strip anchors nested inside listing headings.
+        const retry = cleanPage((await extract(false)).content);
+        if (!lostLinks(retry)) {
+          markdown = retry;
+          missingLinks = false;
+          listingRecovered = true;
+        }
+      }
     }
   } catch {
-    markdown = "";
+    if (!missingLinks) markdown = "";
   }
-  if (!/[\p{L}\p{N}]/u.test(markdown)) {
-    if (original.code === "empty_page" && text.trim())
-      return { markdown: "", check: original };
+  if (missingLinks)
+    throw new AppError(
+      "extraction_failed",
+      "Defuddle dropped most links from the main area.",
+    );
+  const proseWords = words(markdown.replace(markdownLink, ""));
+  if (
+    !words(markdown) ||
+    (proseWords === 0 && markdown !== markdown.replace(markdownLink, "")) ||
+    (proseWords <= 5 && proseWords * 3 < words(text))
+  ) {
     throw new AppError(
       "extraction_failed",
       "Defuddle found no usable main content.",
     );
   }
 
+  // Access and interstitial decisions come only from the original page.
+  const extractedCheck = checkPage(
+    markdown,
+    target,
+    final,
+    status,
+    contentType,
+  );
   const check =
-    original.code === "paywall"
+    original.warning && original.code !== "menus_only"
       ? original
-      : checkPage(markdown, target, final, status, contentType);
-  return { markdown, check };
+      : ["empty_page", "menus_only"].includes(extractedCheck.code)
+        ? extractedCheck
+        : { code: "ok", reason: "Readable page content." };
+  return {
+    markdown: withTitle(
+      markdown,
+      listingRecovered && h1 ? h1 : extractedTitle,
+      h1,
+    ),
+    check,
+  };
 }
