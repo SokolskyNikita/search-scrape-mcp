@@ -127,8 +127,9 @@ selectors still work via `selector`. Scroll takes signed `pixels`.
 Wait takes `ms` (up to 10,000) and optionally a selector to wait for.
 Screenshot returns a viewport JPEG as MCP image content. Navigation and back
 wait for CAPTCHA clearance only when the page looks like a challenge. The wait
-defaults to 40 seconds within the overall tool deadline. Scrapfly's
-`solve_captcha` can still solve and bill for widgets on ordinary forms.
+defaults to 40 seconds within the overall tool deadline. The browser enables
+Scrapfly’s solver only while a challenge is present. Scrapfly can charge for
+solving CAPTCHAs.
 Use `close` when done to stop session charges. By default, the server closes
 an idle browser after 2 minutes 30 seconds and Scrapfly caps a session at
 30 minutes. After browser expiry, navigate again to open a fresh browser.
@@ -156,7 +157,7 @@ changing the schema. The test command checks that the table matches.
 | `searchGl` | `"us"` | Default Serper country code. |
 | `searchHl` | `"en"` | Default Serper language code. |
 | `scrapflyDatacenterCost` | `5` | Datacenter request cost budget in credits. |
-| `scrapflyUnblockerCost` | `30` | Unblocker request cost budget in credits. |
+| `scrapflyUnblockerCost` | `85` | Unblocker request cost budget in credits. |
 | `scrapflyRenderCost` | `40` | Rendering request cost budget in credits. |
 | `scrapflyDatacenterPool` | `"public_datacenter_pool"` | Proxy pool sent on the datacenter rung. |
 | `scrapflyUnblockerPool` | `"public_datacenter_pool"` | Initial proxy pool sent on the Unblocker rung. |
@@ -195,8 +196,9 @@ against quota.
 Scrapfly starts with datacenter and escalates to the Unblocker when a page is
 blocked or challenged. Empty pages and JavaScript shells can jump straight
 to the render rung, which adds a one-second render wait by default. The default
-request cost budgets are 5, 30, and 40 credits for datacenter, Unblocker, and
-render. A request-budget rejection advances to the next rung if available.
+request cost budgets are 5, 85, and 40 credits for datacenter, Unblocker, and
+render. The Unblocker cap covers a measured 80-credit Cloudflare managed
+challenge scrape. A request-budget rejection advances to the next rung if available.
 This account's gateway rejected the newer `auto` and `unblocker` pool names
 during testing. All three pools default to `public_datacenter_pool`, with
 `unblocker=true` on the two stronger rungs. [Scrapfly proxy pool migration guide](https://scrapfly.io/new-pricing#legacy-spellings)
@@ -269,13 +271,23 @@ npm run lint
 npm run format:check
 npm run smoke
 npm run smoke -- --challenge
+npm run smoke -- --captcha-form
+npm run smoke -- --render
+npm run smoke -- --batch
+npm run smoke -- --idle
 npm run smoke -- --unblocker https://your-protected-test-url.example/
 ```
+
+The standing live-test budget per work session is about 5,000 Scrapfly credits
+and 1,000 Serper searches. Ask before exceeding either budget. Runtime
+per-request cost limits still apply.
 
 The offline suite uses fixtures and loopback only. The ordinary live smoke test
 makes one search (plus a hedge if needed), one scrape and one short browser
 session. The challenge smoke test separately uses one browser session against
 a real Cloudflare WAF challenge and fails if the gated page cannot be read.
-The optional Unblocker smoke test runs a single scrape tool call against a
-protected URL and checks that the request progressed from datacenter to
-Unblocker and returned readable content.
+The other focused modes check the Turnstile form, explicit rendering and
+render hints, a three-item batch, or closure after the default idle period.
+The optional Unblocker smoke test checks that a protected URL escalates from
+datacenter to Unblocker and returns readable content. It repeats the request
+to verify that site memory starts at Unblocker.

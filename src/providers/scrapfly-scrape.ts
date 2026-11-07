@@ -329,6 +329,7 @@ export function scrapflyScrape(
       let advancedRung: ScrapeRung | undefined;
       let lastBudgetError: AppError | undefined;
       let lastThin: string | undefined;
+      let warning: { markdown: string; check: PageCheck } | undefined;
       let protectedSite = false;
       for (let index = Math.max(previous, start); index < scrapeRungs.length;) {
         const rung = scrapeRungs[index]!;
@@ -336,15 +337,17 @@ export function scrapflyScrape(
         const defer = advancedRung !== undefined && advancedRung !== rung;
         if (signal.aborted || remaining() < timeout || defer) {
           if (protectedSite && !hosts.has(host)) remember(host, 1);
+          const hint = `Retry with start_rung: "${rung}".`;
+          if (warning) return { ...warning, hint };
           throw new AppError(
-            lastBudgetError?.code ?? "provider_down",
+            "stronger_rung_required",
             lastBudgetError?.message ??
               (defer
                 ? "Scrapfly needs another call for the next advanced rung."
                 : "Too little time remains for Scrapfly’s minimum request timeout."),
             {
               tried: options.tried,
-              hint: `Retry with start_rung: "${rung}".`,
+              hint,
             },
           );
         }
@@ -418,6 +421,7 @@ export function scrapflyScrape(
             hint: check.next ? hint : undefined,
           });
         }
+        if (check.warning && markdown) warning = { markdown, check };
         lastThin = check.code;
         index = next;
       }

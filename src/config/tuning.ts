@@ -48,7 +48,7 @@ export const tuningSchema = z.object({
   scrapflyUnblockerCost: integer(
     1,
     10_000,
-    30,
+    85,
     "Unblocker request cost budget in credits.",
   ),
   scrapflyRenderCost: integer(

@@ -99,6 +99,6 @@ test("the config report uses defaults for a missing settings file", (t) => {
   );
   const settings = JSON.parse(output);
   assert.equal(settings.toolDeadlineSeconds, 54);
-  assert.equal(settings.scrapflyUnblockerCost, 30);
+  assert.equal(settings.scrapflyUnblockerCost, 85);
   assert.equal(settings.derived.scrapeBudgetMs, 51_000);
 });

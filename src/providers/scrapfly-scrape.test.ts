@@ -87,7 +87,7 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
         : "datacenter";
     assert.equal(
       input.searchParams.get("cost_budget"),
-      { datacenter: "5", unblocker: "30", render: "40" }[rung],
+      { datacenter: "5", unblocker: "85", render: "40" }[rung],
     );
     assert.equal(
       input.searchParams.get("timeout"),
@@ -261,7 +261,7 @@ test("a per-request budget rejection escalates but insufficient account credit s
   await assert.rejects(
     scrapflyScrape("fixture").scrape(target, undefined, budget),
     {
-      code: "provider_cost_budget",
+      code: "stronger_rung_required",
       details: {
         tried: ["datacenter", "unblocker"],
         hint: 'Retry with start_rung: "render".',
@@ -307,12 +307,32 @@ test("escalation stops with the stronger rung hint if its minimum cannot fit", a
       tried: [],
     }),
     {
-      code: "provider_down",
+      code: "stronger_rung_required",
       details: {
         tried: ["datacenter"],
         hint: 'Retry with start_rung: "unblocker".',
       },
     },
   );
+  assert.equal(request.mock.callCount(), 1);
+});
+
+test("deferred escalation returns a usable warning and the next rung", async (t) => {
+  const menu = Array.from(
+    { length: 30 },
+    (_, i) =>
+      `[Read related stories for topic ${i}](https://example.com/topic/${i})`,
+  ).join("\n");
+  const request = t.mock.method(globalThis, "fetch", async () =>
+    Response.json(success(menu)),
+  );
+  const result = await scrapflyScrape("fixture").scrape(target, undefined, {
+    tried: [],
+    deadline: performance.now() + 32_000,
+  });
+  assert.equal(result.markdown, menu);
+  assert.equal(result.check.code, "menus_only");
+  assert.equal(result.check.warning, true);
+  assert.equal(result.hint, 'Retry with start_rung: "unblocker".');
   assert.equal(request.mock.callCount(), 1);
 });

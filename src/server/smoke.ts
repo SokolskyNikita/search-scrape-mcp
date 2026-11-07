@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import { relayTimeoutMs } from "../config/deadline.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { loadProviderKeys, parseSettings } from "../config/index.js";
@@ -9,7 +11,10 @@ import { AppError, safeError } from "./error.js";
 async function smoke() {
   const unblocker = process.argv.includes("--unblocker");
   const challenge = process.argv.includes("--challenge");
-  const browserOnly = challenge || process.argv.includes("--browser-only");
+  const captchaForm = process.argv.includes("--captcha-form");
+  const idle = process.argv.includes("--idle");
+  const browserOnly =
+    challenge || captchaForm || idle || process.argv.includes("--browser-only");
   const config = {
     ...parseSettings({ token: randomBytes(32).toString("base64url") }),
     ...loadProviderKeys(),
@@ -37,27 +42,32 @@ async function smoke() {
       },
     );
     await client.connect(transport);
+    const invoke = (name: string, args: Record<string, unknown>) =>
+      client.callTool({ name, arguments: args }, undefined, {
+        timeout: relayTimeoutMs(config),
+      });
     async function call(
       name: string,
       args: Record<string, unknown>,
       expected: RegExp | undefined,
       label = name,
     ) {
-      const result = await client.callTool(
-        { name, arguments: args },
-        undefined,
-        { timeout: 240_000 },
-      );
+      const result = await invoke(name, args);
       if (result.isError) {
         const first = Array.isArray(result.content)
           ? result.content[0]
           : undefined;
-        const reason =
+        const text =
           first?.type === "text" && typeof first.text === "string"
-            ? first.text.split(":", 1)[0]
-            : undefined;
+            ? first.text
+            : "";
+        const reason = text.startsWith("{")
+          ? JSON.parse(text).code
+          : text.split(":", 1)[0];
         const code =
-          reason && /^[a-z_0-9]{1,30}$/.test(reason) ? reason : "tool_error";
+          typeof reason === "string" && /^[a-z_0-9]{1,30}$/.test(reason)
+            ? reason
+            : "tool_error";
         throw new AppError("smoke", `${label} failed (${code}).`);
       }
       if (expected && !expected.test(JSON.stringify(result)))
@@ -66,8 +76,69 @@ async function smoke() {
       return result;
     }
     const url = challenge
-      ? "https://zerocaptcha.io/captcha-test/cloudflare-managed-challenge"
-      : "https://example.com/";
+      ? "https://zerocaptcha.io/captcha-test/cloudflare-js-challenge"
+      : captchaForm
+        ? "https://zerocaptcha.io/captcha-test/cloudflare-turnstile-login-form"
+        : "https://example.com/";
+    if (process.argv.includes("--render")) {
+      const url = "https://quotes.toscrape.com/js/";
+      const quotes = /The world as we have created it/i;
+      const preview = await call(
+        "scrape",
+        { url },
+        /start_rung.*render/i,
+        "render hint",
+      );
+      if (quotes.test(JSON.stringify(preview)))
+        throw new AppError(
+          "smoke",
+          "JavaScript fixture already contained quotes before rendering.",
+        );
+      await call(
+        "scrape",
+        { url, start_rung: "render" },
+        quotes,
+        "follow render hint",
+      );
+      await call(
+        "scrape",
+        { url, start_rung: "render" },
+        quotes,
+        "explicit render",
+      );
+      return;
+    }
+    if (process.argv.includes("--batch")) {
+      const result = await call(
+        "scrape_batch",
+        {
+          urls: [
+            "https://example.com/",
+            "https://example.com/?smoke=2",
+            "https://www.leboncoin.fr/",
+          ],
+        },
+        undefined,
+      );
+      const first = Array.isArray(result.content)
+        ? result.content[0]
+        : undefined;
+      const items = first?.type === "text" ? JSON.parse(first.text) : [];
+      if (
+        items.length !== 3 ||
+        items.some(
+          (item: { index: number; error?: object }, index: number) =>
+            item.index !== index || item.error,
+        ) ||
+        !items[2]?.result?.tried?.includes("unblocker")
+      )
+        throw new AppError(
+          "smoke",
+          "Batch did not return three ordered successes with Unblocker on the protected item.",
+        );
+      console.log("scrape batch: OK");
+      return;
+    }
     if (unblocker) {
       const target = process.argv[process.argv.indexOf("--unblocker") + 1];
       if (!target)
@@ -95,6 +166,26 @@ async function smoke() {
           "Protected page did not return readable content after escalation to Unblocker.",
         );
       console.log("scrape protected page: OK");
+      const second = await call(
+        "scrape",
+        { url: target },
+        undefined,
+        "remembered Unblocker",
+      );
+      const content = Array.isArray(second.content)
+        ? second.content[0]
+        : undefined;
+      const remembered =
+        content?.type === "text" ? JSON.parse(content.text) : undefined;
+      if (
+        remembered?.check?.code !== "ok" ||
+        remembered?.tried?.[0] !== "unblocker"
+      )
+        throw new AppError(
+          "smoke",
+          "Repeat scrape did not start at the remembered Unblocker rung.",
+        );
+      console.log("remembered Unblocker: OK");
       return;
     }
     if (!browserOnly) {
@@ -109,11 +200,23 @@ async function smoke() {
       "browser",
       { command: { action: "navigate", url } },
       challenge
-        ? /Cloudflare WAF managed challenge test page/i
-        : /Example Domain/i,
+        ? /Cloudflare 5-second JS challenge test page/i
+        : captchaForm
+          ? /Cloudflare Turnstile login form demo/i
+          : /Example Domain/i,
       challenge ? "browser real challenge" : "browser navigate",
     );
-    if (!challenge) {
+    if (idle) {
+      await delay(config.browserIdleMs + 1_000);
+      const snapshot = await invoke("browser", {
+        command: { action: "snapshot" },
+      });
+      if (!snapshot.isError || !/browser_closed/.test(JSON.stringify(snapshot)))
+        throw new AppError("smoke", "Idle browser session did not close.");
+      console.log("browser idle close: OK");
+      return;
+    }
+    if (!challenge && !captchaForm) {
       await call(
         "browser",
         { command: { action: "navigate", url: `${url}#smoke` } },
