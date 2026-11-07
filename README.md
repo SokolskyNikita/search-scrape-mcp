@@ -130,7 +130,8 @@ complete JSON accessibility tree. Use `target` with a ref for its subtree, or
 the page. Use a ref from the latest snapshot for click, fill or press, for
 example `{"command":{"action":"click","ref":"f1e7"}}`. CSS and Playwright
 selectors work via `selector`. Scroll takes signed `pixels`.
-Click, fill, press, scroll and back return the viewport snapshot. Navigate
+Click, fill, press, scroll and back return the viewport snapshot. Compact
+snapshots show filled values and shorten long link URLs. Navigate
 returns readable page text.
 Wait takes `ms` (up to 10,000) and optionally a selector to wait for.
 Screenshot returns a viewport JPEG as MCP image content. Navigation and back
@@ -159,6 +160,7 @@ changing the schema. The test command checks that the table matches.
 | Setting | Default | Description |
 | --- | --- | --- |
 | `port` | `8765` | Local MCP HTTP port. |
+| `scrapflyFileHosts` | `[]` | Seed hostnames that always get a Scrapfly HEAD check. |
 | `serperRequestsPerMinute` | `60` | Server-wide Serper request rate, including hedges. |
 | `scrapflyRequestsPerMinute` | `30` | Server-wide Scrapfly scrape request rate, including retries and escalation. |
 | `serperBurstCapacity` | `20` | Maximum accumulated Serper request tokens. |
@@ -259,6 +261,17 @@ challenge scrape. A request-budget rejection advances to the next rung if availa
 This account's gateway rejected the newer `auto` and `unblocker` pool names
 during testing. All three pools default to `public_datacenter_pool`, with
 `unblocker=true` on the two stronger rungs. [Scrapfly proxy pool migration guide](https://scrapfly.io/new-pricing#legacy-spellings)
+
+File-looking URLs and known file hosts get a datacenter HEAD check. Downloads
+are limited to 5 MB (5,000,000 bytes) and require a reported content length.
+File checks and downloads use the public datacenter pool. Scrapfly's
+`cost_budget` applies to Unblocker retries. Binary bandwidth is billed
+separately, including for BLOB scrapes whose offloaded contents are skipped.
+The server saves an unexpected inline binary when it can and reports the
+provider's charge. Hosts that return unexpected files are recorded in
+`file-hosts.txt` next to `usage.json`. Seed hostnames with `scrapflyFileHosts`.
+Run `npm run config` to see the combined list.
+[Scrapfly billing documentation](https://scrapfly.io/docs/scrape-api/billing)
 
 Results include a page check and the rungs tried. A warning preserves usable
 content such as a paywall teaser or persistent menus. A failure gives a reason

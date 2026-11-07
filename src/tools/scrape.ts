@@ -19,6 +19,8 @@ const startRung = z
   .enum(scrapeRungs)
   .optional()
   .describe("Start at this rung or higher if the hostname already needs it.");
+const fileLimits =
+  "Files are checked before downloading and limited to 5 MB on datacenter. Scrapfly cost_budget does not cover file downloads.";
 const freshInput = z.boolean().optional().describe("Bypass the local cache.");
 const urlInput = z.string().trim().min(1).max(MAX_URL_CHARS);
 
@@ -44,7 +46,7 @@ export function registerScrape(
       const target = await validatePublicUrl(url);
       const key = JSON.stringify([target.href, start ?? "datacenter"]);
       const hit = cache?.get(key, fresh);
-      const { markdown, check, hint, binary, costWarning } =
+      const { markdown, check, hint, binary, costWarning, credits } =
         hit ??
         (await fallback(
           providers,
@@ -68,6 +70,7 @@ export function registerScrape(
           ? files.saveBinary(binary)
           : (files.spill(markdown, limit) ?? { markdown })),
         ...(costWarning ? { costWarning } : {}),
+        ...(credits !== undefined ? { credits } : {}),
         check,
         tried: hit?.tried ?? tried,
         ...(hit ? { cached: true } : {}),
@@ -89,7 +92,8 @@ export function registerScrape(
     "scrape",
     {
       description:
-        "Read a public web page as Markdown or save a binary download. Large results are saved to a local file.",
+        "Read a public web page as Markdown or save a binary download. Large results are saved to a local file. " +
+        fileLimits,
       inputSchema: toolInput({
         url: urlInput,
         start_rung: startRung,
@@ -116,7 +120,7 @@ export function registerScrape(
   server.registerTool(
     "scrape_batch",
     {
-      description: "Read up to three public web pages in order.",
+      description: "Read up to three public web pages in order. " + fileLimits,
       inputSchema: toolInput({
         urls: z.array(urlInput).min(1).max(3),
         start_rung: startRung,

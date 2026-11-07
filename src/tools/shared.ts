@@ -41,6 +41,8 @@ export async function fallback<T extends { name?: string }, R>(
           "provider_credit",
           "provider_cost_overrun",
           "binary_download",
+          "file_refused",
+          "file_host_state",
           "output_size",
           "provider_rate",
           "local_rate_limit",

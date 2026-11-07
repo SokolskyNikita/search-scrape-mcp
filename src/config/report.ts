@@ -1,3 +1,4 @@
+import { FileHosts } from "./file-hosts.js";
 import { todayUsage } from "../server/usage.js";
 import {
   relayTimeoutMs,
@@ -53,6 +54,9 @@ try {
       JSON.stringify(
         {
           ...settings,
+          scrapflyEffectiveFileHosts: [
+            ...new FileHosts(settings.scrapflyFileHosts).list(),
+          ].sort(),
           today: {
             ...todayUsage(),
             browserDailyMinutes: settings.browserDailyMinutes,

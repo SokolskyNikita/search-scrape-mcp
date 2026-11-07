@@ -43,7 +43,7 @@ function displayUrl(value: string): string {
       value = url.href;
     }
   }
-  return shorten(value, 140);
+  return shorten(value, 100);
 }
 
 function describe(node: Node, matchedText?: string): string {
@@ -113,7 +113,7 @@ export function browserSnapshots(page: Page) {
         "The page changed while taking the snapshot. Take a new snapshot.",
       );
 
-    const lines: string[] = [];
+    const lines: Promise<string>[] = [];
     let outside = 0;
     function visit(nodes: (Node | string)[], viewport?: Box, context?: string) {
       for (const node of nodes) {
@@ -153,7 +153,24 @@ export function browserSnapshots(page: Page) {
           if (!full) {
             const detail = describe(node, matchedText);
             lines.push(
-              `${node.ref} ${detail}${query && context ? ` (in ${context})` : ""}`,
+              (async () => {
+                const value =
+                  node.text &&
+                  ["textbox", "searchbox", "combobox", "spinbutton"].includes(
+                    node.role,
+                  ) &&
+                  (await page
+                    .getByRef(node.ref!)
+                    .evaluate(
+                      (element) => !element.matches('input[type="password"]'),
+                      undefined,
+                      { timeout: 1_000 },
+                    )
+                    .catch(() => false))
+                    ? ` value=${JSON.stringify(node.text.slice(0, 200))}`
+                    : "";
+                return `${node.ref} ${detail}${value}${query && context ? ` (in ${context})` : ""}`;
+              })(),
             );
           }
         }
@@ -180,14 +197,20 @@ export function browserSnapshots(page: Page) {
     }
     visit(tree, clip);
     if (full) return JSON.stringify(tree, null, 2);
+    const rendered = await Promise.all(lines);
+    if (version !== epoch)
+      throw new AppError(
+        "browser_navigation",
+        "The page changed while taking the snapshot. Take a new snapshot.",
+      );
     if (viewportOnly) {
-      lines.push(
+      rendered.push(
         "",
         `${outside} interactive element${outside === 1 ? "" : "s"} outside the viewport. Scroll, use find, or set scope to page or full.`,
       );
     }
     return (
-      lines.join("\n").trimStart() ||
+      rendered.join("\n").trimStart() ||
       (query ? "No matching elements." : "No interactive elements or headings.")
     );
   }

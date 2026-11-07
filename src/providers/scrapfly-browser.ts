@@ -12,6 +12,7 @@ import { AppError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
 import { checkPage } from "../tools/page-check.js";
 import { cleanPage } from "../tools/page-content.js";
+import { browserInputs } from "./browser-input.js";
 import { browserSnapshots } from "./browser-snapshot.js";
 import { browserActionError } from "./browser-action-error.js";
 import { watchCaptcha } from "./browser-captcha.js";
@@ -181,6 +182,7 @@ export function scrapflyBrowser(
             }
 
             const snapshots = browserSnapshots(page);
+            const inputs = browserInputs(page);
             function locator(target: BrowserTarget) {
               return target.selector
                 ? page.locator(target.selector)
@@ -259,9 +261,9 @@ export function scrapflyBrowser(
                   }
                   if (action.action === "click") await locator(action).click();
                   if (action.action === "fill")
-                    await locator(action).fill(action.text);
+                    await inputs.fill(locator(action), action.text, action.ref);
                   if (action.action === "press")
-                    await locator(action).press(action.key);
+                    await inputs.press(locator(action), action.key, action.ref);
                   if (action.action === "scroll") {
                     await page.mouse.wheel(0, action.pixels);
                     await within(

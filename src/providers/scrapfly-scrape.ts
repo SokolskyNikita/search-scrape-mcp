@@ -1,3 +1,14 @@
+import { FileHosts, normalizeFileHost } from "../config/file-hosts.js";
+import {
+  datacenterFilePool,
+  fileHeaders,
+  identifyDownload,
+  isHtml,
+  looksLikeFile,
+  maxFileBytes,
+  refuseFile,
+  type FileHeaders,
+} from "./scrapfly-files.js";
 import { MAX_PROVIDER_RESPONSE_BYTES } from "../config/safety-limits.js";
 import type { RequestLimits } from "../server/request-limits.js";
 import type { Usage } from "../server/usage.js";
@@ -49,7 +60,9 @@ const envelope = z.object({
       status_code: z.number().int().min(100).max(599).nullish(),
       success: z.boolean().optional(),
       url: z.string().nullish(),
-      error: z.object({ code: z.string() }).nullish(),
+      error: z
+        .object({ code: z.string(), message: z.string().optional() })
+        .nullish(),
     })
     .nullish(),
   code: z.string().optional(),
@@ -103,24 +116,11 @@ function header(
   return Array.isArray(value) ? value[0] : value;
 }
 
-function mimeType(value: string | null | undefined, bytes: Buffer) {
-  if (bytes.subarray(0, 5).toString() === "%PDF-") return "application/pdf";
-  if (bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex")))
-    return "image/png";
-  if (bytes.subarray(0, 3).equals(Buffer.from("ffd8ff", "hex")))
-    return "image/jpeg";
-  const type = value?.split(";", 1)[0]?.trim().toLowerCase();
-  return type && /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(type)
-    ? type
-    : "application/octet-stream";
-}
-
 async function downloadContent(
   content: string,
   endpoint: URL,
   key: string,
   signal: AbortSignal,
-  format: "text" | "binary",
 ) {
   const url = URL.canParse(content) ? new URL(content) : undefined;
   if (
@@ -137,14 +137,14 @@ async function downloadContent(
     url,
     { signal },
     undefined,
-    format,
+    "text",
   );
-  if (!response.ok || !(typeof body === "string" || Buffer.isBuffer(body)))
+  if (!response.ok || typeof body !== "string")
     throw new AppError(
       "provider_response",
       "Could not download Scrapfly content.",
     );
-  return { body, contentType: response.headers.get("Content-Type") };
+  return body;
 }
 
 async function requestPage(
@@ -154,8 +154,12 @@ async function requestPage(
   timeout: number,
   settings: Tuning,
   signal: AbortSignal,
-  usage?: Usage,
-): Promise<ScrapeResult | { error: AppError; retryMs?: number }> {
+  usage: Usage | undefined,
+  fileHosts: FileHosts,
+  operation?: "head" | FileHeaders,
+): Promise<
+  ScrapeResult | { head: FileHeaders } | { error: AppError; retryMs?: number }
+> {
   const startedAt = Date.now();
   const endpoint = new URL("https://api.scrapfly.io/scrape");
   const [pool, budget] = (
@@ -174,7 +178,7 @@ async function requestPage(
   endpoint.search = new URLSearchParams({
     key,
     url: target.href,
-    proxy_pool: String(pool),
+    proxy_pool: operation ? datacenterFilePool : pool,
     cost_budget: String(budget),
     timeout: String(timeout),
     retry: "false",
@@ -210,6 +214,7 @@ async function requestPage(
       "Scrapfly",
       endpoint,
       {
+        method: operation === "head" ? "HEAD" : "GET",
         headers: { Accept: "application/json" },
         signal: requestSignal,
       },
@@ -240,7 +245,23 @@ async function requestPage(
       data?.code ??
       "";
     if (/^ERR(?:::[A-Z0-9_]{1,64}){1,4}$/.test(code)) providerCode = code;
+    const upstream =
+      code.includes("UPSTREAM_WEBSITE_ERROR") ||
+      code.includes("BAD_UPSTREAM_RESPONSE");
     const hops = new Set<string>();
+    // An upstream rejection can omit both the target response and redirect log.
+    // For an explicit redirect endpoint, the requested destination is still known.
+    if (upstream && target.pathname.endsWith("/redirect-to")) {
+      const destination = target.searchParams.get("url");
+      if (destination) redirect(target.href, destination);
+    }
+    // Error messages can include a nested redirect URL even when the hop list is empty.
+    for (const match of result?.error?.message
+      ?.slice(0, 8192)
+      .matchAll(/(?=(https?:\/\/[^\s<>"'\x60]+))/gi) ?? []) {
+      const url = URL.parse(match[1]!);
+      if (url && url.origin !== target.origin) hops.add(url.href);
+    }
     function redirect(from: string, location: string) {
       const url = URL.parse(location, from);
       if (!url)
@@ -269,8 +290,37 @@ async function requestPage(
     await Promise.all(
       [...hops].filter((url) => url !== target.href).map(validatePublicUrl),
     );
+    if (
+      operation === "head" &&
+      response.status >= 300 &&
+      response.status < 400
+    ) {
+      const location = response.headers.get("location");
+      if (location) {
+        const redirected = URL.parse(location, target);
+        if (!redirected)
+          throw new AppError(
+            "unsafe_url",
+            "Scrapfly reported an invalid redirect.",
+          );
+        await validatePublicUrl(redirected.href);
+      }
+    }
     const failure = providerError(response.status, code);
     if (failure) throw failure;
+
+    if (operation === "head") {
+      const metadata = fileHeaders(
+        response.headers.get("content-type"),
+        response.headers.get("content-length"),
+      );
+      if (!response.ok || code)
+        throw refuseFile(
+          { type: "unknown" },
+          "datacenter HEAD did not verify the target.",
+        );
+      return { head: metadata };
+    }
 
     if (code === "ERR::SCRAPE::OPERATION_TIMEOUT")
       throw new AppError(
@@ -296,9 +346,6 @@ async function requestPage(
         } satisfies PageCheck,
       };
     }
-    const upstream =
-      code.includes("UPSTREAM_WEBSITE_ERROR") ||
-      code.includes("BAD_UPSTREAM_RESPONSE");
     if (!response.ok && !upstream) {
       if (response.status >= 500 || response.status === 408)
         throw new AppError(
@@ -320,46 +367,42 @@ async function requestPage(
       header(result.response_headers, "content-type") ??
       result.content_type ??
       undefined;
-    if (result.format === "blob" || result.format === "binary") {
+    const format = result.format?.toLowerCase();
+    if (format === "blob" || format === "binary") {
+      const metadata = fileHeaders(
+        contentType,
+        header(result.response_headers, "content-length"),
+      );
+      if (!operation) {
+        fileHosts.remember(normalizeFileHost(target.hostname));
+        fileHosts.remember(normalizeFileHost(final.hostname));
+      }
+      if (format === "blob")
+        throw refuseFile(
+          metadata,
+          `Scrapfly returned a BLOB (over 5 MB).${credits === null ? "" : ` Scrapfly reported ${credits} credits for the scrape.`}`,
+        );
       if (
         result.status_code < 200 ||
         result.status_code >= 300 ||
         result.success === false
-      ) {
-        const check = checkPage("", target, final, result.status_code);
+      )
         throw new AppError(
-          check.code === "empty_page" ? "binary_download" : check.code,
-          check.reason,
+          "binary_download",
+          `File fetch failed (HTTP ${result.status_code}).`,
         );
-      }
-      let bytes: Buffer;
-      let type = contentType;
       const content = result.content ?? "";
-      if (result.format === "blob") {
-        const downloaded = await downloadContent(
-          content,
-          endpoint,
-          key,
-          requestSignal,
-          "binary",
-        ).catch((error: unknown) => {
-          throw new AppError("binary_download", safeError(error).message);
-        });
-        if (!Buffer.isBuffer(downloaded.body))
-          throw new AppError(
-            "binary_download",
-            "Scrapfly returned an invalid binary download.",
-          );
-        bytes = downloaded.body;
-        type = downloaded.contentType ?? type;
-      } else {
-        bytes = Buffer.from(content, "base64");
-        if (bytes.toString("base64") !== content)
-          throw new AppError(
-            "binary_download",
-            "Scrapfly returned invalid base64 for the download.",
-          );
-      }
+      const bytes = Buffer.from(content, "base64");
+      if (bytes.toString("base64") !== content)
+        throw new AppError(
+          "binary_download",
+          "Scrapfly returned invalid base64 for the download.",
+        );
+      if (operation && bytes.length > maxFileBytes)
+        throw refuseFile(
+          { type: metadata.type, size: bytes.length },
+          "the downloaded file exceeded 5 MB.",
+        );
       if (
         !bytes.length ||
         bytes.length >
@@ -369,32 +412,26 @@ async function requestPage(
           "output_size",
           "The binary download is empty or exceeds the output size limit.",
         );
+      const type =
+        metadata.type === "unknown" && operation
+          ? operation.type
+          : metadata.type;
+      if (operation?.type === "application/pdf" && type !== "application/pdf")
+        throw new AppError(
+          "binary_download",
+          "The target changed content type after the PDF HEAD check.",
+        );
       return {
         markdown: "",
-        binary: { bytes, mimeType: mimeType(type, bytes) },
+        binary: await identifyDownload(bytes, type),
+        credits: credits ?? undefined,
         costWarning: costWarning(),
-        check: {
-          code: "ok",
-          reason: "Binary download ready.",
-        } satisfies PageCheck,
+        check: { code: "ok", reason: "Binary download ready." },
       };
     }
     let content = result.content ?? "";
-    if (result.format === "clob") {
-      const downloaded = await downloadContent(
-        content,
-        endpoint,
-        key,
-        requestSignal,
-        "text",
-      );
-      if (typeof downloaded.body !== "string")
-        throw new AppError(
-          "provider_response",
-          "Scrapfly returned an invalid text download.",
-        );
-      content = downloaded.body;
-    }
+    if (format === "clob" && !operation)
+      content = await downloadContent(content, endpoint, key, requestSignal);
     const markdown = cleanPage(content);
     const check = checkPage(
       markdown,
@@ -403,6 +440,11 @@ async function requestPage(
       result.status_code,
       contentType,
     );
+    if (operation && check.code === "ok")
+      throw new AppError(
+        "binary_download",
+        "Expected a file after the HEAD check but received page content.",
+      );
     errorCode = check.code === "ok" || check.warning ? null : check.code;
     if (check.code === "ok" && result.success === false)
       throw new AppError(
@@ -430,7 +472,8 @@ async function requestPage(
         : failure;
     const warning = costWarning();
     const reported =
-      warning && mapped.code !== "unsafe_url"
+      warning &&
+      !["unsafe_url", "file_refused", "binary_download"].includes(mapped.code)
         ? new AppError("provider_cost_overrun", `${warning} ${mapped.message}`)
         : mapped;
     errorCode = reported.code;
@@ -449,14 +492,14 @@ async function requestPage(
     writeProviderAttempt(
       {
         provider: "scrapfly",
-        rung,
+        rung: operation === "head" ? "datacenter_head" : rung,
         credits,
         costBudget: budget,
         providerStatus,
         providerCode,
         durationMs: Math.round(performance.now() - start),
         errorCode,
-        ...(rung === "datacenter"
+        ...(rung === "datacenter" && operation !== "head"
           ? { datacenterBlocked: errorCode !== null && blocked.has(errorCode) }
           : {}),
       },
@@ -470,6 +513,7 @@ export function scrapflyScrape(
   settings = defaults,
   limits?: RequestLimits,
   usage?: Usage,
+  fileHosts = new FileHosts(settings.scrapflyFileHosts),
 ): ScrapeProvider {
   const hosts = new Map<string, { rung: number; expires: number }>();
   function remember(host: string, rung: number) {
@@ -489,7 +533,80 @@ export function scrapflyScrape(
       const signal = outer ?? AbortSignal.timeout(toolTimeoutMs(settings));
       const target = await validatePublicUrl(url);
       target.hash = "";
-      const host = target.hostname;
+      const host = normalizeFileHost(target.hostname);
+      let file: FileHeaders | undefined;
+      async function attempt(
+        rung: ScrapeRung,
+        operation?: "head" | FileHeaders,
+      ) {
+        const timeout = scrapflyTimeoutMs[rung];
+        const release = await limits?.acquire(
+          signal,
+          deadline - timeout,
+          "scrapfly",
+          host,
+        );
+        try {
+          signal.throwIfAborted();
+          options.tried.push(operation === "head" ? "datacenter_head" : rung);
+          return await requestPage(
+            key,
+            target,
+            rung,
+            timeout,
+            settings,
+            signal,
+            usage,
+            fileHosts,
+            operation,
+          );
+        } finally {
+          release?.();
+        }
+      }
+      const filePath = looksLikeFile(target);
+      if (filePath || fileHosts.list().has(host)) {
+        if (remaining() < scrapflyTimeoutMs.datacenter)
+          throw refuseFile(
+            { type: "unknown" },
+            "too little time remains for the HEAD check.",
+          );
+        const checked = await attempt("datacenter", "head");
+        if ("error" in checked) {
+          if (
+            [
+              "provider_timeout",
+              "provider_down",
+              "provider_http",
+              "provider_cost_budget",
+            ].includes(checked.error.code)
+          )
+            throw refuseFile(
+              { type: "unknown" },
+              `datacenter HEAD failed. ${checked.error.message}`,
+            );
+          throw checked.error;
+        }
+        if (!("head" in checked))
+          throw new AppError("internal", "Expected Scrapfly HEAD metadata.");
+        if (filePath && isHtml(checked.head.type))
+          throw refuseFile(
+            checked.head,
+            "datacenter HEAD reported an HTML page for the file URL.",
+          );
+        if (!isHtml(checked.head.type)) {
+          file = checked.head;
+          if (options.start && options.start !== "datacenter")
+            throw refuseFile(file, "downloads are allowed only on datacenter.");
+          if (file.size === undefined)
+            throw refuseFile(
+              file,
+              "datacenter HEAD did not report a valid content length.",
+            );
+          if (file.size > maxFileBytes)
+            throw refuseFile(file, "the size exceeds 5 MB.");
+        }
+      }
       const known = hosts.get(host);
       if (known && known.expires <= Date.now()) hosts.delete(host);
       const previous = hosts.get(host)?.rung ?? 0;
@@ -500,12 +617,20 @@ export function scrapflyScrape(
       let lastThin: string | undefined;
       let warning: { markdown: string; check: PageCheck } | undefined;
       let protectedSite = false;
-      for (let index = Math.max(previous, start); index < scrapeRungs.length;) {
+      for (
+        let index = file ? 0 : Math.max(previous, start);
+        index < scrapeRungs.length;
+      ) {
         const rung = scrapeRungs[index]!;
         const timeout = scrapflyTimeoutMs[rung];
         const defer = advancedRung !== undefined && advancedRung !== rung;
         if (signal.aborted || remaining() < timeout || defer) {
           if (protectedSite && !hosts.has(host)) remember(host, 1);
+          if (file)
+            throw refuseFile(
+              file,
+              "too little time remains for a datacenter download.",
+            );
           const hint = `Retry with start_rung: "${rung}".`;
           if (warning) return { ...warning, hint };
           throw new AppError(
@@ -522,31 +647,12 @@ export function scrapflyScrape(
         }
         if (rung !== "datacenter") advancedRung = rung;
         lastBudgetError = undefined;
-        const release = await limits?.acquire(
-          signal,
-          deadline - timeout,
-          "scrapfly",
-          host,
-        );
-        const result = await (async () => {
-          try {
-            signal.throwIfAborted();
-            options.tried.push(rung);
-            return await requestPage(
-              key,
-              target,
-              rung,
-              timeout,
-              settings,
-              signal,
-              usage,
-            );
-          } finally {
-            release?.();
-          }
-        })();
+        const result = await attempt(rung, file);
+        if ("head" in result)
+          throw new AppError("internal", "Unexpected Scrapfly HEAD metadata.");
         if ("error" in result) {
           if (
+            !file &&
             !retryUsed &&
             result.retryMs !== undefined &&
             remaining() >= result.retryMs + timeout &&
@@ -559,6 +665,7 @@ export function scrapflyScrape(
           if (index === previous) hosts.delete(host);
           if (protectedSite && !hosts.has(host)) remember(host, 1);
           if (
+            !file &&
             result.error.code === "provider_cost_budget" &&
             index + 1 < scrapeRungs.length
           ) {
@@ -566,21 +673,40 @@ export function scrapflyScrape(
             index++;
             continue;
           }
-          throw new AppError(result.error.code, result.error.message, {
+          const error =
+            file &&
+            [
+              "provider_cost_budget",
+              "provider_http",
+              "provider_response",
+              "provider_down",
+              "provider_timeout",
+            ].includes(result.error.code)
+              ? refuseFile(
+                  file,
+                  `datacenter could not deliver the file. ${result.error.message}`,
+                )
+              : result.error;
+          throw new AppError(error.code, error.message, {
             tried: options.tried,
           });
         }
-        const { markdown, check, binary, costWarning } = result;
+        const { markdown, check, binary, costWarning, credits } = result;
+        if (binary) return { markdown, check, binary, costWarning, credits };
+        if (file)
+          throw refuseFile(
+            file,
+            `datacenter could not deliver the file. ${check.reason}`,
+          );
         if (costWarning) {
           if (check.code === "ok" || check.warning)
-            return { markdown, check, binary, costWarning };
+            return { markdown, check, costWarning };
           throw new AppError(
             "provider_cost_overrun",
             `${costWarning} ${check.reason}`,
             { tried: options.tried },
           );
         }
-        if (binary) return { markdown, check, binary };
         const next = check.next === "render" ? 2 : index + 1;
         const stronger = scrapeRungs[next];
         const hint = stronger

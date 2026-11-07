@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { fileHost } from "./file-hosts.js";
 
 const integer = (
   min: number,
@@ -10,6 +11,10 @@ const integer = (
 const pool = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
 
 export const tuningSchema = z.object({
+  scrapflyFileHosts: z
+    .array(fileHost)
+    .default([])
+    .describe("Seed hostnames that always get a Scrapfly HEAD check."),
   serperRequestsPerMinute: integer(
     1,
     6_000,

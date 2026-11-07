@@ -12,6 +12,7 @@ import {
 } from "./browser-navigation.js";
 import { defaults } from "../config/tuning.js";
 import { RequestLimits } from "../server/request-limits.js";
+import { browserInputs } from "./browser-input.js";
 import { browserSnapshots } from "./browser-snapshot.js";
 import { browserActionError } from "./browser-action-error.js";
 import { watchCaptcha } from "./browser-captcha.js";
@@ -315,11 +316,24 @@ test(
             <input aria-label="Main field">
           </form>
           <iframe src="/frame" style="border:0"></iframe>
-          <a href="/next">Follow link</a>
+          <form action="/search">
+            <input type="search" name="q" aria-label="Search Wikipedia" oninput="
+              const replacement = this.cloneNode();
+              replacement.removeAttribute('oninput');
+              replacement.setAttribute('role', 'combobox');
+              this.replaceWith(replacement);
+              replacement.focus();
+            ">
+          </form>
+          <a href="/next?tracking=${"x".repeat(180)}">Follow link</a>
           <div style="height:1500px"></div>
           <h2>Lower heading</h2><button>Lower button</button>
           <iframe src="/frame" style="border:0"></iframe>
         `);
+          break;
+        case "/search":
+          assert.match(req.url!, /q=Model\+Context\+Protocol/);
+          res.writeHead(302, { Location: "/next" }).end();
           break;
         case "/frame":
           res.end(
@@ -379,6 +393,12 @@ test(
         "frame input",
       );
       const allControls = await snapshots.read({ scope: "page" });
+      assert.match(allControls, /textbox "Main field" value="main input"/);
+      assert.match(allControls, /textbox "Frame field" value="frame input"/);
+      assert.match(
+        allControls,
+        /link "Follow link" -> \/next\?tracking=x{80,90}…$/m,
+      );
       assert.match(allControls, /Lower heading/);
       assert.match(allControls, /Lower button/);
       assert.match(allControls, /button "Clicked"/);
@@ -412,7 +432,21 @@ test(
       assert.equal(blocked(), undefined);
       assert.equal(doc.status, 200);
       await captcha.wait(() => doc.mitigated);
-      assert.match(await snapshots.read(), /Fixture heading/);
+      const restored = await snapshots.read();
+      assert.match(restored, /Fixture heading/);
+      const ref = /^((?:f\d+)?e\d+) searchbox "Search Wikipedia"/m.exec(
+        restored,
+      )?.[1];
+      assert(ref);
+      const inputs = browserInputs(page);
+      await inputs.fill(snapshots.locator(ref), "Model Context Protocol", ref);
+      assert.match(
+        await snapshots.read(),
+        /combobox "Search Wikipedia" value="Model Context Protocol"/,
+      );
+      await inputs.press(snapshots.locator(ref), "Enter", ref);
+      assert.equal(new URL(page.url()).pathname, "/next");
+      assert.equal(blocked(), undefined);
     } finally {
       await browser.close();
     }
