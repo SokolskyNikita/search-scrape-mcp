@@ -38,7 +38,7 @@ test("authenticated MCP search uses a recorded Serper response", async (t) => {
       assert.equal(new Headers(init?.headers).get("X-API-KEY"), "fake-key");
       assert.deepEqual(JSON.parse(String(init?.body)), {
         q: "example",
-        num: 5,
+        num: 10,
         gl: "us",
         hl: "en",
       });
@@ -394,7 +394,7 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
       location,
       site: "tokio.rs",
       exclude_domains: ["spam.test", "other.test"],
-      limit: 5,
+      limit: 10,
     },
   ]);
 

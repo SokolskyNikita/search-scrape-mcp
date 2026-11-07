@@ -78,7 +78,7 @@ const fields = {
 };
 const input = toolInput({
   ...fields,
-  limit: z.number().int().min(1).max(10).default(5),
+  limit: z.number().int().min(1).max(10).default(10),
 });
 
 export function registerSearch(
