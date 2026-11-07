@@ -44,7 +44,7 @@ export function registerScrape(
       const target = await validatePublicUrl(url);
       const key = JSON.stringify([target.href, start ?? "datacenter"]);
       const hit = cache?.get(key, fresh);
-      const { markdown, check, hint } =
+      const { markdown, check, hint, binary, costWarning } =
         hit ??
         (await fallback(
           providers,
@@ -54,10 +54,20 @@ export function registerScrape(
           signal,
         ));
       signal.throwIfAborted();
-      if (!hit && check.code === "ok" && !check.warning && !check.next && !hint)
-        cache?.set(key, { markdown, check, tried });
+      if (
+        !hit &&
+        !binary &&
+        check.code === "ok" &&
+        !check.warning &&
+        !check.next &&
+        !hint
+      )
+        cache?.set(key, { markdown, check, tried, costWarning });
       return {
-        ...(files.spill(markdown, limit) ?? { markdown }),
+        ...(binary
+          ? files.saveBinary(binary)
+          : (files.spill(markdown, limit) ?? { markdown })),
+        ...(costWarning ? { costWarning } : {}),
         check,
         tried: hit?.tried ?? tried,
         ...(hit ? { cached: true } : {}),
@@ -79,7 +89,7 @@ export function registerScrape(
     "scrape",
     {
       description:
-        "Read a public web page as Markdown. Large results are saved to a local file.",
+        "Read a public web page as Markdown or save a binary download. Large results are saved to a local file.",
       inputSchema: toolInput({
         url: urlInput,
         start_rung: startRung,

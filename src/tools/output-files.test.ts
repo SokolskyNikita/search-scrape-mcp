@@ -77,3 +77,17 @@ test("cleanup expires old spills and evicts the oldest file to make room", (t) =
   assert(existsSync(newest.path));
   assert(existsSync(saved.path));
 });
+
+test("binary files have private permissions and share spill retention", (t) => {
+  const { files } = fixture(t);
+  const bytes = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+  const saved = files.saveBinary({ bytes, mimeType: "image/jpeg" });
+  assert.match(saved.path, /\.jpg$/);
+  assert.equal(saved.bytes, bytes.length);
+  assert.deepEqual(readFileSync(saved.path), bytes);
+  assert.equal(statSync(saved.path).mode & 0o777, 0o600);
+  const expired = new Date(Date.now() - 5 * 60 * 60_000);
+  utimesSync(saved.path, expired, expired);
+  files.cleanup();
+  assert(!existsSync(saved.path));
+});

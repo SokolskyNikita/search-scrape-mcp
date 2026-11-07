@@ -38,6 +38,8 @@ export type ScrapeResult = {
   markdown: string;
   check: PageCheck;
   hint?: string;
+  binary?: { bytes: Buffer; mimeType: string };
+  costWarning?: string;
 };
 export type ScrapeOptions = {
   start?: ScrapeRung;

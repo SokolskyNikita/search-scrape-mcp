@@ -99,11 +99,13 @@ The relay forwards requests to the shared HTTP process.
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `search`       | Find public sources by `query` or `q`. Returns organic links and snippets, up to 10.                                                                                                           |
 | `search_batch` | Pass `{"searches":[{"q":"example"}]}` for up to three searches, up to five hits each.                                                                                                          |
-| `scrape`       | Pass `{"url":"https://example.com/"}` for cleaned markdown, inline up to 48,000 characters.                                                                                                    |
+| `scrape`       | Pass `{"url":"https://example.com/"}` for cleaned markdown, inline up to 16,000 characters.                                                                                                    |
 | `scrape_batch` | Pass `{"urls":["https://example.com/"]}` for up to three pages, inline up to 20,000 characters per page.                                                                                       |
 | `browser`      | Pass `{"command":{"action":"navigate","url":"https://example.com/"}}` to open. Use `snapshot`, `find`, `click`, `fill`, `press`, `scroll`, `back`, `wait`, `screenshot` or `close` thereafter. |
 
-Short scrapes return a `markdown` field. Long scrapes and browser text or
+Short text scrapes return a `markdown` field. Binary scrapes return a private
+local file path, MIME type, and byte count. PDFs and common images get their
+usual extension. Binary downloads use the same 8 MB provider response limit. Long scrapes and browser text or
 snapshots (over 12,000 characters for browser output) save the complete
 output to a randomly named file in `/tmp/search-scrape-mcp/`. The result
 includes a short preview, the absolute path, character and line counts, and a
@@ -174,6 +176,7 @@ changing the schema. The test command checks that the table matches.
 | `serperTimeoutMs` | `12000` | Shared Serper primary and backup budget in milliseconds, within the tool deadline. |
 | `searchGl` | `"us"` | Default Serper country code. |
 | `searchHl` | `"en"` | Default Serper language code. |
+| `scrapflyCountry` | `"us"` | Scrapfly proxy country. Set null to let Scrapfly choose. |
 | `scrapflyDatacenterCost` | `5` | Datacenter request cost budget in credits. |
 | `scrapflyUnblockerCost` | `85` | Unblocker request cost budget in credits. |
 | `scrapflyRenderCost` | `40` | Rendering request cost budget in credits. |
@@ -188,7 +191,7 @@ changing the schema. The test command checks that the table matches.
 | `mcpSessionLimit` | `128` | Maximum number of MCP sessions. |
 | `mcpSessionInFlightLimit` | `8` | Maximum simultaneous MCP requests per session. |
 | `mcpConcurrentToolCalls` | `16` | Maximum simultaneous tool calls across all MCP sessions. |
-| `scrapeInlineChars` | `48000` | Inline character limit for a single scrape. |
+| `scrapeInlineChars` | `16000` | Inline character limit for a single scrape. |
 | `scrapeBatchInlineChars` | `20000` | Inline character limit per batch scrape. |
 | `browserInlineChars` | `12000` | Inline character limit for browser text output. |
 | `outputPreviewChars` | `600` | Preview character limit for saved outputs. |
@@ -248,7 +251,10 @@ Scrapfly starts with datacenter and escalates to the Unblocker when a page is
 blocked or challenged. Empty pages and JavaScript shells can jump straight
 to the render rung, which adds a one-second render wait by default. The default
 request cost budgets are 5, 85, and 40 credits for datacenter, Unblocker, and
-render. The Unblocker cap covers a measured 80-credit Cloudflare managed
+render. Scrapfly enforces its own billing. When its reported cost exceeds the
+requested budget, the server reports the overrun and stops automatic retries or
+escalation for that call. The default proxy country is `us`, configurable with
+`scrapflyCountry`. The Unblocker cap covers a measured 80-credit Cloudflare managed
 challenge scrape. A request-budget rejection advances to the next rung if available.
 This account's gateway rejected the newer `auto` and `unblocker` pool names
 during testing. All three pools default to `public_datacenter_pool`, with

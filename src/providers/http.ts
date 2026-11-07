@@ -6,7 +6,7 @@ export async function providerResponse(
   url: URL,
   init: RequestInit & { signal: AbortSignal },
   onHeaders?: (response: Response) => void,
-  format: "json" | "text" = "json",
+  format: "json" | "text" | "binary" = "json",
 ) {
   try {
     const response = await fetch(url, {
@@ -24,6 +24,7 @@ export async function providerResponse(
     const decoder = new TextDecoder();
     let size = 0;
     let body = "";
+    const chunks: Uint8Array[] = [];
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -35,8 +36,11 @@ export async function providerResponse(
           `${provider} response exceeded 8 MB.`,
         );
       }
-      body += decoder.decode(value, { stream: true });
+      if (format === "binary") chunks.push(value);
+      else body += decoder.decode(value, { stream: true });
     }
+    if (format === "binary")
+      return { response, body: Buffer.concat(chunks, size) };
     body += decoder.decode();
     if (format === "text") return { response, body };
     try {

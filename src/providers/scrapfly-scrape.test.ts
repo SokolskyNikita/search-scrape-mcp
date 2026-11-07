@@ -34,7 +34,7 @@ test("Scrapfly retrieves offloaded text without forwarding credentials to anothe
   content = "https://example.com/object";
   await assert.rejects(provider.scrape(target), { code: "provider_response" });
   format = "blob";
-  await assert.rejects(provider.scrape(target), { code: "provider_response" });
+  await assert.rejects(provider.scrape(target), { code: "binary_download" });
   assert.equal(downloads, 1);
 });
 
@@ -360,4 +360,116 @@ test("each Scrapfly rung must obtain its own provider permit", async (t) => {
   });
   assert.deepEqual(first.tried, ["datacenter"]);
   assert.equal(request.mock.callCount(), 1);
+});
+
+test("Scrapfly returns paid base64 PDFs and downloads BLOBs without following redirects", async (t) => {
+  const bytes = Buffer.from("%PDF-1.7 fixture");
+  let format = "binary";
+  let downloads = 0;
+  const request = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: URL, init: RequestInit) => {
+      assert.equal(url.origin, "https://api.scrapfly.io");
+      if (url.pathname === "/object") {
+        downloads++;
+        assert.equal(init.redirect, "error");
+        assert.equal(url.searchParams.get("key"), "fixture");
+        return new Response(Uint8Array.from(bytes), {
+          headers: { "content-type": "application/pdf" },
+        });
+      }
+      assert.equal(url.searchParams.get("country"), "us");
+      assert.equal(url.searchParams.get("cost_budget"), "5");
+      return Response.json({
+        context: { cost: { total: 37 } },
+        result: {
+          ...success(
+            format === "blob"
+              ? "https://api.scrapfly.io/object"
+              : bytes.toString("base64"),
+          ).result,
+          format,
+        },
+      });
+    },
+  );
+  const provider = scrapflyScrape("fixture");
+  for (const kind of ["binary", "blob"]) {
+    format = kind;
+    const result = await provider.scrape(target);
+    assert.deepEqual(result.binary, { bytes, mimeType: "application/pdf" });
+    assert.match(result.costWarning ?? "", /37 credits.*5-credit/);
+  }
+  assert.equal(downloads, 1);
+  assert.equal(request.mock.callCount(), 3);
+});
+
+test("Scrapfly halts after a reported budget overrun and validates failed redirect chains", async (t) => {
+  let unsafe = false;
+  const request = t.mock.method(globalThis, "fetch", async () =>
+    unsafe
+      ? Response.json(
+          {
+            context: {
+              redirects: [{ url: target, location: "http://169.254.169.254/" }],
+            },
+          },
+          { status: 500 },
+        )
+      : Response.json({
+          ...success("# Access denied", target, 403),
+          context: { cost: 25 },
+        }),
+  );
+  const provider = scrapflyScrape("fixture");
+  await assert.rejects(provider.scrape(target), {
+    code: "provider_cost_overrun",
+  });
+  assert.equal(request.mock.callCount(), 1);
+  unsafe = true;
+  await assert.rejects(provider.scrape(target), { code: "unsafe_url" });
+  assert.equal(request.mock.callCount(), 2);
+});
+
+test("title-only HTML renders with or without a Markdown heading", async (t) => {
+  let shell = "@bsky.app on Bluesky";
+  const request = t.mock.method(globalThis, "fetch", async (url: URL) => {
+    assert.equal(url.searchParams.has("country"), false);
+    const fixture = success(url.searchParams.has("render_js") ? body : shell);
+    return Response.json({
+      ...fixture,
+      result: { ...fixture.result, content_type: "text/html; charset=UTF-8" },
+    });
+  });
+  for (const title of ["@bsky.app on Bluesky", "# @bsky.app on Bluesky"]) {
+    shell = title;
+    const tried: string[] = [];
+    const result = await scrapflyScrape("fixture", {
+      ...defaults,
+      scrapflyCountry: null,
+    }).scrape(target, undefined, { tried });
+    assert.equal(result.check.code, "ok");
+    assert.deepEqual(tried, ["datacenter", "render"]);
+  }
+  assert.equal(request.mock.callCount(), 4);
+});
+
+test("the provider's HTTP 504 is identified separately from a local deadline", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      {},
+      {
+        status: 504,
+        headers: {
+          "X-Scrapfly-Reject-Code": "ERR::SCRAPE::OPERATION_TIMEOUT",
+          "X-Scrapfly-Reject-Retryable": "false",
+        },
+      },
+    ),
+  );
+  await assert.rejects(scrapflyScrape("fixture").scrape(target), {
+    code: "provider_down",
+    message: "Scrapfly returned an upstream operation timeout.",
+  });
 });

@@ -79,6 +79,7 @@ export function checkPage(
   requested: URL,
   final: URL,
   status: number,
+  contentType?: string,
 ): PageCheck {
   const lines = markdown
     .split("\n")
@@ -175,8 +176,17 @@ export function checkPage(
       line.prose &&
       line.text.replace(shell, "").trim().length >= PROSE_PARAGRAPH_CHARS,
   );
+  const titleOnly =
+    lines.length === 1 &&
+    (((!contentType || /^text\/html\b/i.test(contentType)) &&
+      /^#{1,6}\s/.test(markdown.trimStart())) ||
+      (/^text\/html\b/i.test(contentType ?? "") &&
+        opening.length < EMPTY_TEXT_CHARS &&
+        !lines[0]?.linked &&
+        !/[.!?…]$/.test(opening)));
   if (
     status === 204 ||
+    titleOnly ||
     !/[\p{L}\p{N}]/u.test(text) ||
     (text.length < EMPTY_TEXT_CHARS &&
       !lines.some(

@@ -112,6 +112,12 @@ export const tuningSchema = z.object({
     .max(35)
     .default("en")
     .describe("Default Serper language code."),
+  scrapflyCountry: z
+    .string()
+    .regex(/^[a-z]{2}$/)
+    .nullable()
+    .default("us")
+    .describe("Scrapfly proxy country. Set null to let Scrapfly choose."),
   scrapflyDatacenterCost: integer(
     1,
     10_000,
@@ -185,7 +191,7 @@ export const tuningSchema = z.object({
   scrapeInlineChars: integer(
     0,
     200_000,
-    48_000,
+    16_000,
     "Inline character limit for a single scrape.",
   ),
   scrapeBatchInlineChars: integer(

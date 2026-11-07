@@ -47,6 +47,9 @@ export function writeProviderAttempt(
     datacenterBlocked?: boolean;
     hedgeTrigger?: "delay" | "failure";
     credits: number | null;
+    costBudget?: number;
+    providerStatus?: number;
+    providerCode?: string;
     durationMs: number;
     errorCode: string | null;
   },
