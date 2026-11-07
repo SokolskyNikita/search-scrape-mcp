@@ -140,7 +140,8 @@ Use `MCP_CONFIG` and `MCP_KEYS_FILE` for absolute path overrides. The settings
 file requires the private bearer `token`. Omitted settings use the defaults
 below. Omitting `SCRAPFLY_API_KEY` leaves search enabled.
 Run `npm run config` to print the effective settings with the token omitted.
-This command reads only the settings file. Run `npm run config:docs` after
+The report includes the derived deadlines and uses defaults with a notice if
+the settings file is absent. It does not read the provider keys file. Run `npm run config:docs` after
 changing the schema. The test command checks that the table matches.
 
 <!-- settings:start -->
@@ -149,13 +150,13 @@ changing the schema. The test command checks that the table matches.
 | Setting | Default | Description |
 | --- | --- | --- |
 | `port` | `8765` | Local MCP HTTP port. |
-| `toolDeadlineSeconds` | `54` | Overall tool deadline in seconds. The relay allows three additional seconds. |
+| `toolDeadlineSeconds` | `54` | Overall tool deadline in seconds (35–55). The relay allows three additional seconds. |
 | `serperBackupDelayMs` | `4500` | Delay before hedging a slow Serper request. Transient failures can trigger an earlier backup. |
 | `serperTimeoutMs` | `12000` | Shared Serper primary and backup budget in milliseconds, within the tool deadline. |
 | `searchGl` | `"us"` | Default Serper country code. |
 | `searchHl` | `"en"` | Default Serper language code. |
 | `scrapflyDatacenterCost` | `5` | Datacenter request cost budget in credits. |
-| `scrapflyUnblockerCost` | `20` | Unblocker request cost budget in credits. |
+| `scrapflyUnblockerCost` | `30` | Unblocker request cost budget in credits. |
 | `scrapflyRenderCost` | `40` | Rendering request cost budget in credits. |
 | `scrapflyDatacenterPool` | `"public_datacenter_pool"` | Proxy pool sent on the datacenter rung. |
 | `scrapflyUnblockerPool` | `"public_datacenter_pool"` | Initial proxy pool sent on the Unblocker rung. |
@@ -194,7 +195,7 @@ against quota.
 Scrapfly starts with datacenter and escalates to the Unblocker when a page is
 blocked or challenged. Empty pages and JavaScript shells can jump straight
 to the render rung, which adds a one-second render wait by default. The default
-request cost budgets are 5, 20, and 40 credits for datacenter, Unblocker, and
+request cost budgets are 5, 30, and 40 credits for datacenter, Unblocker, and
 render. A request-budget rejection advances to the next rung if available.
 This account's gateway rejected the newer `auto` and `unblocker` pool names
 during testing. All three pools default to `public_datacenter_pool`, with
@@ -208,10 +209,14 @@ remembers what worked per hostname for four hours, up to 256 hostnames.
 A failed remembered rung is cleared. Sites seen blocking datacenter can
 skip it on later calls. Provider outages get at most one retry per scrape,
 when the remaining tool time covers the backoff and a full attempt. The
-scrape ladder reserves three seconds for completion or fallback, then splits
-the rest into 22%, 32%, and 46% for datacenter, Unblocker, and render. The same
-clipped per-request timeout goes to Scrapfly and the local HTTP request.
+scrape ladder reserves three seconds for completion or fallback, leaving
+51 seconds by default. Datacenter uses 15 seconds and either advanced rung
+uses 30 seconds, matching Scrapfly's minimums and the local HTTP timeouts.
+An unknown host can run datacenter and one advanced rung in 45 seconds.
+If a rung cannot fit or the next rung would switch between Unblocker and
+render, the tool returns a `start_rung` hint for a fresh call.
 Key and account credit rejections stop immediately.
+[Scrapfly timeout documentation](https://scrapfly.io/docs/scrape-api/understand-timeout)
 
 The browser can cost extra. To opt in to browser-backed scraping, set
 `"scrapeProviders": ["scrapfly", "scrapfly-browser"]` in settings.
@@ -264,9 +269,13 @@ npm run lint
 npm run format:check
 npm run smoke
 npm run smoke -- --challenge
+npm run smoke -- --unblocker https://your-protected-test-url.example/
 ```
 
 The offline suite uses fixtures and loopback only. The ordinary live smoke test
 makes one search (plus a hedge if needed), one scrape and one short browser
 session. The challenge smoke test separately uses one browser session against
 a real Cloudflare WAF challenge and fails if the gated page cannot be read.
+The optional Unblocker smoke test runs a single scrape tool call against a
+protected URL and checks that the request progressed from datacenter to
+Unblocker and returned readable content.

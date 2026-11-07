@@ -11,10 +11,10 @@ const pool = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
 
 export const tuningSchema = z.object({
   toolDeadlineSeconds: integer(
-    20,
+    35,
     55,
     54,
-    "Overall tool deadline in seconds. The relay allows three additional seconds.",
+    "Overall tool deadline in seconds (35–55). The relay allows three additional seconds.",
   ),
   serperBackupDelayMs: integer(
     1_000,
@@ -48,7 +48,7 @@ export const tuningSchema = z.object({
   scrapflyUnblockerCost: integer(
     1,
     10_000,
-    20,
+    30,
     "Unblocker request cost budget in credits.",
   ),
   scrapflyRenderCost: integer(

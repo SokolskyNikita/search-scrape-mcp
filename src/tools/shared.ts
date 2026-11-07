@@ -44,6 +44,8 @@ export async function fallback<T extends { name?: string }, R>(
   throw new AppError(
     errors.at(-1)!.code,
     errors.map((error) => error.message).join(" "),
+    errors.findLast((error) => error.details?.hint)?.details ??
+      errors.at(-1)?.details,
   );
 }
 

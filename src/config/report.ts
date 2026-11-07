@@ -1,6 +1,13 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import {
+  relayTimeoutMs,
+  scrapeBudgetMs,
+  scrapeReserveMs,
+  scrapflyTimeoutMs,
+  toolTimeoutMs,
+} from "./deadline.js";
+import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { AppError } from "../server/error.js";
-import { loadSettings, settingsSchema } from "./index.js";
+import { loadSettings, settingsFile, settingsSchema } from "./index.js";
 
 const publicSchema = settingsSchema.omit({ token: true }).strip();
 
@@ -38,8 +45,30 @@ try {
         "Run npm run config:docs to refresh the README settings.",
       );
   } else {
-    const settings = publicSchema.parse(loadSettings());
-    console.log(JSON.stringify(settings, null, 2));
+    const missing = !lstatSync(settingsFile(), { throwIfNoEntry: false });
+    if (missing) console.error("config.json is missing. Showing defaults.");
+    const settings = publicSchema.parse(missing ? {} : loadSettings());
+    console.log(
+      JSON.stringify(
+        {
+          ...settings,
+          derived: {
+            toolTimeoutMs: toolTimeoutMs(settings),
+            relayTimeoutMs: relayTimeoutMs(settings),
+            scrapeReserveMs,
+            scrapeBudgetMs: scrapeBudgetMs(settings),
+            scrapflyRungs: Object.fromEntries(
+              Object.entries(scrapflyTimeoutMs).map(([rung, ms]) => [
+                rung,
+                { requestTimeoutMs: ms, scrapflyTimeoutMs: ms },
+              ]),
+            ),
+          },
+        },
+        null,
+        2,
+      ),
+    );
   }
 } catch (error) {
   console.error(

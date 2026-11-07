@@ -1,4 +1,8 @@
-import { scrapeReserveMs, toolTimeoutMs } from "../config/deadline.js";
+import {
+  scrapeReserveMs,
+  scrapflyTimeoutMs,
+  toolTimeoutMs,
+} from "../config/deadline.js";
 import { defaults, type Tuning } from "../config/tuning.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
@@ -39,9 +43,6 @@ const envelope = z.object({
   code: z.string().optional(),
 });
 const blocked = new Set(["blocked", "challenge"]);
-// Shares of the scrape budget after the tool's completion reserve.
-const timeoutShares = [0.22, 0.32, 0.46];
-const minRungMs = 1_000;
 
 function retryDelay(response: Response): number | undefined {
   const value =
@@ -301,8 +302,6 @@ export function scrapflyScrape(
   key: string,
   settings = defaults,
 ): ScrapeProvider {
-  const budget = toolTimeoutMs(settings) - scrapeReserveMs;
-  const rungCaps = timeoutShares.map((share) => Math.floor(budget * share));
   const hosts = new Map<string, { rung: number; expires: number }>();
   function remember(host: string, rung: number) {
     hosts.delete(host);
@@ -327,19 +326,30 @@ export function scrapflyScrape(
       const previous = hosts.get(host)?.rung ?? 0;
       const start = options.start ? scrapeRungs.indexOf(options.start) : 0;
       let retryUsed = false;
+      let advancedRung: ScrapeRung | undefined;
+      let lastBudgetError: AppError | undefined;
       let lastThin: string | undefined;
       let protectedSite = false;
       for (let index = Math.max(previous, start); index < scrapeRungs.length;) {
         const rung = scrapeRungs[index]!;
-        const timeout = Math.min(rungCaps[index]!, remaining());
-        const minimum =
-          minRungMs +
-          (rung === "render" ? settings.scrapflyRenderingWaitMs : 0);
-        if (signal.aborted || timeout < minimum)
-          throw new AppError("provider_down", "Scrapfly ran out of time.", {
-            tried: options.tried,
-            hint: `Retry with start_rung: "${rung}".`,
-          });
+        const timeout = scrapflyTimeoutMs[rung];
+        const defer = advancedRung !== undefined && advancedRung !== rung;
+        if (signal.aborted || remaining() < timeout || defer) {
+          if (protectedSite && !hosts.has(host)) remember(host, 1);
+          throw new AppError(
+            lastBudgetError?.code ?? "provider_down",
+            lastBudgetError?.message ??
+              (defer
+                ? "Scrapfly needs another call for the next advanced rung."
+                : "Too little time remains for Scrapfly’s minimum request timeout."),
+            {
+              tried: options.tried,
+              hint: `Retry with start_rung: "${rung}".`,
+            },
+          );
+        }
+        if (rung !== "datacenter") advancedRung = rung;
+        lastBudgetError = undefined;
         options.tried.push(rung);
         const result = await requestPage(
           key,
@@ -353,7 +363,7 @@ export function scrapflyScrape(
           if (
             !retryUsed &&
             result.retryMs !== undefined &&
-            remaining() >= result.retryMs + rungCaps[index]! &&
+            remaining() >= result.retryMs + timeout &&
             !signal.aborted
           ) {
             retryUsed = true;
@@ -366,6 +376,7 @@ export function scrapflyScrape(
             result.error.code === "provider_cost_budget" &&
             index + 1 < scrapeRungs.length
           ) {
+            lastBudgetError = result.error;
             index++;
             continue;
           }

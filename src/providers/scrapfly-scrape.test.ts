@@ -87,11 +87,11 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
         : "datacenter";
     assert.equal(
       input.searchParams.get("cost_budget"),
-      { datacenter: "5", unblocker: "20", render: "40" }[rung],
+      { datacenter: "5", unblocker: "30", render: "40" }[rung],
     );
     assert.equal(
       input.searchParams.get("timeout"),
-      { datacenter: "11220", unblocker: "16320", render: "23460" }[rung],
+      { datacenter: "15000", unblocker: "30000", render: "30000" }[rung],
     );
     if (rung === "render")
       assert.equal(input.searchParams.get("rendering_wait"), "1000");
@@ -113,9 +113,12 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
   assert.equal(result.markdown, "# An article\n\nPublic content.");
   assert.deepEqual(first.tried, ["datacenter", "unblocker"]);
   mode = "shell";
-  const next = options();
+  await assert.rejects(provider.scrape(target), {
+    details: { tried: ["unblocker"], hint: 'Retry with start_rung: "render".' },
+  });
+  const next: ScrapeOptions = { start: "render", tried: [] };
   await provider.scrape(target, undefined, next);
-  assert.deepEqual(next.tried, ["unblocker", "render"]);
+  assert.deepEqual(next.tried, ["render"]);
   mode = "missing";
   await assert.rejects(provider.scrape(target), {
     code: "not_found",
@@ -257,9 +260,15 @@ test("a per-request budget rejection escalates but insufficient account credit s
   const budget = options();
   await assert.rejects(
     scrapflyScrape("fixture").scrape(target, undefined, budget),
-    { code: "provider_cost_budget" },
+    {
+      code: "provider_cost_budget",
+      details: {
+        tried: ["datacenter", "unblocker"],
+        hint: 'Retry with start_rung: "render".',
+      },
+    },
   );
-  assert.deepEqual(budget.tried, ["datacenter", "unblocker", "render"]);
+  assert.deepEqual(budget.tried, ["datacenter", "unblocker"]);
   assert.equal(
     JSON.parse(String(log.mock.calls[0]!.arguments[0])).datacenterBlocked,
     false,
@@ -268,22 +277,42 @@ test("a per-request budget rejection escalates but insufficient account credit s
   await assert.rejects(scrapflyScrape("fixture").scrape(target), {
     code: "provider_credit",
   });
-  assert.equal(request.mock.callCount(), 4);
+  assert.equal(request.mock.callCount(), 3);
 });
 
-test("the real tool deadline clips a late rung and prevents an unfunded retry", async (t) => {
+test("the real tool deadline prevents an unfunded retry", async (t) => {
   const request = t.mock.method(globalThis, "fetch", async (url: URL) => {
-    const timeout = Number(url.searchParams.get("timeout"));
-    assert(timeout > 1_000 && timeout <= 5_000);
-    return Response.json({}, { status: 503, headers: { "Retry-After": "0" } });
+    assert.equal(url.searchParams.get("timeout"), "15000");
+    return Response.json({}, { status: 503, headers: { "Retry-After": "6" } });
   });
-  const deadline = performance.now() + 8_000;
+  const deadline = performance.now() + 23_000;
   await assert.rejects(
     scrapflyScrape("fixture").scrape(target, undefined, {
       deadline,
       tried: [],
     }),
     { code: "provider_down" },
+  );
+  assert.equal(request.mock.callCount(), 1);
+});
+
+test("escalation stops with the stronger rung hint if its minimum cannot fit", async (t) => {
+  const request = t.mock.method(globalThis, "fetch", async () =>
+    Response.json(success("# Access denied", target, 403)),
+  );
+  const deadline = performance.now() + 32_000;
+  await assert.rejects(
+    scrapflyScrape("fixture").scrape(target, undefined, {
+      deadline,
+      tried: [],
+    }),
+    {
+      code: "provider_down",
+      details: {
+        tried: ["datacenter"],
+        hint: 'Retry with start_rung: "unblocker".',
+      },
+    },
   );
   assert.equal(request.mock.callCount(), 1);
 });

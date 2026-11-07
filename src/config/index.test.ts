@@ -60,10 +60,22 @@ test("tunable settings validate and the config report emits only public settings
   const settings = JSON.parse(output);
   assert.equal(settings.toolDeadlineSeconds, 42);
   assert.equal(settings.browserIdleMs, 150_000);
+  assert.deepEqual(settings.derived, {
+    toolTimeoutMs: 42_000,
+    relayTimeoutMs: 45_000,
+    scrapeReserveMs: 3_000,
+    scrapeBudgetMs: 39_000,
+    scrapflyRungs: {
+      datacenter: { requestTimeoutMs: 15_000, scrapflyTimeoutMs: 15_000 },
+      unblocker: { requestTimeoutMs: 30_000, scrapflyTimeoutMs: 30_000 },
+      render: { requestTimeoutMs: 30_000, scrapflyTimeoutMs: 30_000 },
+    },
+  });
   assert(!output.includes(token));
   assert(!output.includes("legacy-secret"));
   for (const invalid of [
     { toolDeadlineSeconds: 60 },
+    { toolDeadlineSeconds: 33 },
     { outputDirectory: "relative" },
     { browserSessionSeconds: 1801 },
     { scrapflyRenderCost: -1 },
@@ -71,4 +83,22 @@ test("tunable settings validate and the config report emits only public settings
     assert.throws(() => parseSettings({ token, ...invalid }), {
       code: "config",
     });
+});
+
+test("the config report uses defaults for a missing settings file", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "search-scrape-missing-"));
+  t.after(() => rmSync(dir, { recursive: true }));
+  const output = execFileSync(
+    process.execPath,
+    [fileURLToPath(new URL("report.js", import.meta.url))],
+    {
+      encoding: "utf8",
+      env: { ...process.env, MCP_CONFIG: join(dir, "config.json") },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  const settings = JSON.parse(output);
+  assert.equal(settings.toolDeadlineSeconds, 54);
+  assert.equal(settings.scrapflyUnblockerCost, 30);
+  assert.equal(settings.derived.scrapeBudgetMs, 51_000);
 });

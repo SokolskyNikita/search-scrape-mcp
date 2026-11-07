@@ -7,6 +7,7 @@ import { createApp } from "./app.js";
 import { AppError, safeError } from "./error.js";
 
 async function smoke() {
+  const unblocker = process.argv.includes("--unblocker");
   const challenge = process.argv.includes("--challenge");
   const browserOnly = challenge || process.argv.includes("--browser-only");
   const config = {
@@ -39,7 +40,7 @@ async function smoke() {
     async function call(
       name: string,
       args: Record<string, unknown>,
-      expected: RegExp,
+      expected: RegExp | undefined,
       label = name,
     ) {
       const result = await client.callTool(
@@ -59,14 +60,43 @@ async function smoke() {
           reason && /^[a-z_0-9]{1,30}$/.test(reason) ? reason : "tool_error";
         throw new AppError("smoke", `${label} failed (${code}).`);
       }
-      if (!expected.test(JSON.stringify(result)))
+      if (expected && !expected.test(JSON.stringify(result)))
         throw new AppError("smoke", `${label} returned unexpected content.`);
-      console.log(`${label}: OK`);
+      if (expected) console.log(`${label}: OK`);
       return result;
     }
     const url = challenge
       ? "https://zerocaptcha.io/captcha-test/cloudflare-managed-challenge"
       : "https://example.com/";
+    if (unblocker) {
+      const target = process.argv[process.argv.indexOf("--unblocker") + 1];
+      if (!target)
+        throw new AppError(
+          "smoke",
+          "Supply a protected URL after --unblocker.",
+        );
+      const result = await call(
+        "scrape",
+        { url: target },
+        /\\"code\\"\s*:\s*\\"ok\\"/i,
+        "scrape protected page",
+      );
+      const first = Array.isArray(result.content)
+        ? result.content[0]
+        : undefined;
+      const page = first?.type === "text" ? JSON.parse(first.text) : undefined;
+      if (
+        page?.check?.code !== "ok" ||
+        page?.tried?.[0] !== "datacenter" ||
+        !page.tried.includes("unblocker")
+      )
+        throw new AppError(
+          "smoke",
+          "Protected page did not return readable content after escalation to Unblocker.",
+        );
+      console.log("scrape protected page: OK");
+      return;
+    }
     if (!browserOnly) {
       await call(
         "search",
@@ -84,6 +114,12 @@ async function smoke() {
       challenge ? "browser real challenge" : "browser navigate",
     );
     if (!challenge) {
+      await call(
+        "browser",
+        { command: { action: "navigate", url: `${url}#smoke` } },
+        /Example Domain/i,
+        "browser fragment navigate",
+      );
       const snapshot = await call(
         "browser",
         { command: { action: "snapshot" } },
