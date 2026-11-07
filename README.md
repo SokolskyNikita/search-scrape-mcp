@@ -1,41 +1,40 @@
 # Search Scrape MCP
 
-One Node process serves all clients over Streamable HTTP at
-`http://127.0.0.1:8765/mcp`. Each MCP session has its own lazily opened
-Scrapfly Cloud Browser, with a fresh remote context and a single controlled tab.
+One Node process serves MCP clients over Streamable HTTP at
+`http://127.0.0.1:8765/mcp`. Each MCP session can open its own remote Scrapfly
+browser with one controlled tab.
 
-## Setup on macOS
+## Install or upgrade on macOS
 
-Use Node 22 or newer. Get API keys from [Serper](https://serper.dev/) and
-[Scrapfly](https://scrapfly.io/). The installer can read the existing
-`~/.config/search-scrape-mcp/env` file or prompt for the keys with input hidden.
-The env file uses Node's dotenv syntax and should be private.
+Use Node 22 or newer. Put your [Serper](https://serper.dev/) and
+[Scrapfly](https://scrapfly.io/) keys in the private dotenv file
+`~/.config/search-scrape-mcp/env`. The installer reuses this file if it exists.
 
 ```dotenv
 SERPER_API_KEY=your-serper-key
 SCRAPFLY_API_KEY=your-scrapfly-key
 ```
 
-From a logged-in macOS session:
-
 ```sh
+chmod 600 ~/.config/search-scrape-mcp/env
 cd ~/projects2/search-scrape-mcp
 ./scripts/install.sh
 ```
 
-The installer runs `npm ci` and builds the project. On first install it creates
-`~/.config/search-scrape-mcp/config.json` with mode 600, copies in the provider
-keys and generates a random local bearer token. launchd loads
-`local.search-scrape-mcp` in your GUI session. Re-run the installer after a
-code update. It preserves existing configuration.
+The installer builds the project and loads `local.search-scrape-mcp` in your
+GUI session. It creates a private `config.json` with a random bearer token on
+first run. Upgrading from phase 1 removes provider key fields from that file
+while preserving the token and settings. Edit the env file to change keys and
+restart the agent. Extra env entries are allowed. The server reads the keys it
+uses without exporting the file to the process environment.
 
 ```sh
 launchctl print "gui/$(id -u)/local.search-scrape-mcp"
-tail -n 30 ~/Library/Logs/search-scrape-mcp/stderr.log
+tail -n 30 ~/Library/Logs/search-scrape-mcp/tools.jsonl
 launchctl kickstart -k "gui/$(id -u)/local.search-scrape-mcp"
 ```
 
-To remove the LaunchAgent, run:
+To remove the agent, run:
 
 ```sh
 launchctl bootout "gui/$(id -u)/local.search-scrape-mcp"
@@ -44,33 +43,42 @@ rm ~/Library/LaunchAgents/local.search-scrape-mcp.plist
 
 ## Register clients
 
-For Claude Code and the Codex CLI, load only the local bearer token in the shell
-that starts the client. Re-run the `export` in new shells. The provider keys
-stay in the server config.
+From the repository directory, register Claude Code with a `headersHelper`.
+The helper reads the token from the private settings file and uses an absolute
+Node path, so it works without your shell environment. If upgrading an existing
+registration, first run `claude mcp remove --scope user search-scrape`.
+
+```sh
+claude mcp add-json --scope user search-scrape "$(node -p '
+  const quote = (s) => "\"" + s.replace(/["\\$`]/g, "\\$&") + "\"";
+  JSON.stringify({
+    type: "http",
+    url: "http://127.0.0.1:8765/mcp",
+    headersHelper: [process.execPath, process.cwd() + "/scripts/claude-headers.mjs"].map(quote).join(" ")
+  })
+')"
+```
+
+[Claude Code dynamic headers documentation](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication)
+
+For the Codex CLI, load the bearer token in each shell that starts Codex:
 
 ```sh
 export SEARCH_SCRAPE_TOKEN="$(node -p 'require(process.argv[1]).token' "$HOME/.config/search-scrape-mcp/config.json")"
-
-claude mcp add --scope user --transport http search-scrape http://127.0.0.1:8765/mcp \
-  --header 'Authorization: Bearer ${SEARCH_SCRAPE_TOKEN}'
-
 codex mcp add search-scrape --url http://127.0.0.1:8765/mcp \
   --bearer-token-env-var SEARCH_SCRAPE_TOKEN
 ```
 
-Restart any open client session. For slow scrape batches in Codex, set
-`tool_timeout_sec = 240` in the `[mcp_servers.search-scrape]` section of
-`~/.codex/config.toml`. For a GUI-launched Codex instance without the shell
-environment, replace the `bearer_token_env_var` line in that section with
-`http_headers = { Authorization = "Bearer YOUR_LOCAL_TOKEN" }` in your private
-user config. Keep that file private. [Claude Code MCP docs](https://code.claude.com/docs/en/mcp) · [Official OpenAI documentation for Codex MCP](https://developers.openai.com/codex/mcp)
+For GUI Codex without that environment variable, replace the
+`bearer_token_env_var` line in `[mcp_servers.search-scrape]` with
+`http_headers = { Authorization = "Bearer YOUR_LOCAL_TOKEN" }` in your
+private user config. [OpenAI documentation for Codex MCP](https://developers.openai.com/codex/mcp)
 
-Claude Desktop's local configuration uses stdio. Add this entry under
-`mcpServers` in `~/Library/Application Support/Claude/claude_desktop_config.json`,
-then fully quit and reopen Claude Desktop. Use the absolute Node path from
-`command -v node`. The relay is a small Node process for each Desktop
-connection. Provider work and browser state stay in the shared HTTP server.
-[Claude Desktop MCP docs](https://support.anthropic.com/en/articles/10949351-getting-started-with-local-mcp-servers)
+For Claude Desktop's local stdio configuration, add this entry under
+`mcpServers` in `~/Library/Application Support/Claude/claude_desktop_config.json`.
+Use the absolute Node path from `command -v node` and restart Claude Desktop.
+The relay forwards requests to the shared HTTP process.
+[Claude Desktop local MCP documentation](https://support.anthropic.com/en/articles/10949351-getting-started-with-local-mcp-servers)
 
 ```json
 {
@@ -79,10 +87,7 @@ connection. Provider work and browser state stay in the shared HTTP server.
       "command": "/opt/homebrew/bin/node",
       "args": [
         "/Users/YOU/projects2/search-scrape-mcp/dist/server/desktop-relay.js"
-      ],
-      "env": {
-        "MCP_CONFIG": "/Users/YOU/.config/search-scrape-mcp/config.json"
-      }
+      ]
     }
   }
 }
@@ -90,87 +95,77 @@ connection. Provider work and browser state stay in the shared HTTP server.
 
 ## Tools
 
-| Tool           | Use                                                                                                                                                                                                     |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search`       | Find public sources by `query` or `q`. Returns organic links and snippets, up to 10.                                                                                                                    |
-| `search_batch` | Pass `{"searches":[{"q":"example"}]}` for up to three searches, up to five hits each.                                                                                                                   |
-| `scrape`       | Pass `{"url":"https://example.com/"}` for cleaned markdown, capped at 12,000 characters.                                                                                                                |
-| `scrape_batch` | Pass `{"urls":["https://example.com/"]}` for up to three pages, capped at 4,000 characters each.                                                                                                        |
-| `browser`      | Pass `{"command":{"action":"navigate","url":"https://example.com/"}}` to open. Then use `snapshot`, `click`, `fill`, `press`, or `close`. Actions take a CSS or Playwright `selector` where applicable. |
+| Tool           | Use                                                                                                                                                                                    |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search`       | Find public sources by `query` or `q`. Returns organic links and snippets, up to 10.                                                                                                   |
+| `search_batch` | Pass `{"searches":[{"q":"example"}]}` for up to three searches, up to five hits each.                                                                                                  |
+| `scrape`       | Pass `{"url":"https://example.com/"}` for cleaned markdown, up to 48,000 characters per chunk.                                                                                         |
+| `scrape_batch` | Pass `{"urls":["https://example.com/"]}` for up to three pages, up to 20,000 characters per initial chunk.                                                                             |
+| `scrape_more`  | Pass the `pageId` and `nextOffset` from the previous chunk as `{"pageId":"…","offset":48000}` to read more.                                                                            |
+| `browser`      | Pass `{"command":{"action":"navigate","url":"https://example.com/"}}` to open. Use `snapshot`, `click`, `fill`, `press`, `scroll`, `back`, `wait`, `screenshot` or `close` thereafter. |
 
-Batches preserve input order and report errors per item. Browser snapshots
-show accessible roles and names for choosing selectors. Truncated page output
-has a marker. For omitted text, use the site's source or API. When a page
-remains blocked, try its official API or CLI, or ask the user to open it in
-their local browser.
+Scrapes return `markdown`, `pageId`, `offset`, `nextOffset` and `totalChars`.
+A null `nextOffset` marks the end. The shared memory cache stores full cleaned
+pages for up to 10 minutes, subject to eviction at 128 pages or 16 million
+UTF-16 code units. IDs are unguessable and usable by any authenticated client
+that has the ID. A continuation spends no provider credits.
 
-## Configuration and cost
+Batches run two items concurrently and preserve result order. Item failures
+include their original indices. Calls have a 54-second overall deadline.
+A deadline can interrupt a batch before all items have results.
 
-`MCP_CONFIG` points to one private JSON config file. In file mode the file
-takes precedence. Environment mode uses the variables below instead.
-For a foreground run with the installed config:
+For browser actions, use a ref from the latest snapshot, for example
+`{"command":{"action":"click","ref":"s2-e7"}}`. CSS and Playwright
+selectors still work via `selector`. Scroll takes signed `pixels`.
+Wait takes `ms` (up to 10,000) and optionally a selector to wait for.
+Screenshot returns a viewport JPEG as MCP image content. Navigation and back
+wait for provider CAPTCHA events or a clearing challenge page, bounded by
+40 seconds and the overall tool deadline. Browser lifetime is up to 30 minutes.
+After browser expiry, send a new navigate command to open a fresh browser.
 
-```sh
-MCP_CONFIG="$HOME/.config/search-scrape-mcp/config.json" npm start
-```
+## Settings, cost and logs
 
-| JSON               | Environment         | Default                                               |
-| ------------------ | ------------------- | ----------------------------------------------------- |
-| `port`             | `MCP_PORT`          | `8765`                                                |
-| `token`            | `MCP_TOKEN`         | Required. Use at least 32 random URL-safe characters. |
-| `serperKey`        | `SERPER_API_KEY`    | Required                                              |
-| `scrapflyKey`      | `SCRAPFLY_API_KEY`  | Required for scrape and browser tools                 |
-| `searchProviders`  | `SEARCH_PROVIDERS`  | `["serper"]`                                          |
-| `scrapeProviders`  | `SCRAPE_PROVIDERS`  | `["scrapfly"]`                                        |
-| `browserProviders` | `BROWSER_PROVIDERS` | `["scrapfly"]`                                        |
+The default settings file is `~/.config/search-scrape-mcp/config.json`.
+Use `MCP_CONFIG` and `MCP_KEYS_FILE` for absolute path overrides. The settings
+file accepts `port` (default 8765), `token`, and ordered arrays
+`searchProviders` (default `["serper"]`), `scrapeProviders` (default
+`["scrapfly"]`), and `browserProviders` (default `["scrapfly"]`).
+Omitting `SCRAPFLY_API_KEY` leaves search enabled.
 
-Provider lists are ordered arrays in JSON and comma-separated in the
-environment. To opt in to a paid browser fallback, set `"scrapeProviders":
-["scrapfly", "scrapfly-browser"]`. Browser-backed scraping opens and closes
-a separate session per page. Unsafe URLs, DNS verification errors and known
-credential or quota errors stop fallback. Browser actions are serialized per
-session and are never replayed on another browser. A remote session is capped
-at five minutes and also closes on MCP session deletion or explicit `close`.
+The Scrape API uses a datacenter proxy pool and a 30-credit cost budget.
+The browser can cost extra. To opt in to browser-backed scraping, set
+`"scrapeProviders": ["scrapfly", "scrapfly-browser"]` in settings.
+Serper starts at most one hedge per query, after a transient failure or
+900 ms without an answer. Both requests may count against your quota.
 
-The default scrape path uses Scrapfly's Unblocker (`asp=true`) and article
-markdown conversion. Cloud Browser requests `solve_captcha=true`. Scrapfly
-handles anti-bot checks and CAPTCHA solving, and unresolved challenges are
-returned as errors when detected. Search sends one request per query. Browser
-time, traffic, and CAPTCHA solves can incur extra charges. See the provider
-docs for [Scrapfly scrape options](https://scrapfly.io/docs/scrape-api/getting-started)
-and [Cloud Browser CAPTCHA solving](https://scrapfly.io/docs/cloud-browser-api/captcha-solver).
+Each tool log line contains its timestamp, name, provider, duration, outcome,
+error code and attempt count. The LaunchAgent writes `tools.jsonl` and rotates
+at 2 MiB, retaining one previous file. Arguments and fetched content are
+excluded. Launch startup and diagnostic messages go to separate stdout and
+stderr files.
 
-## Security trade-offs
+## Security and sessions
 
-- The HTTP server binds only to IPv4 loopback. It requires the exact
-  `127.0.0.1:<port>` Host, rejects every Origin, and checks the bearer token
-  on every request. The static token is intended for one local user. Processes
-  that can read your private files or client environment can obtain it. The
-  server uses neither CORS nor remote authentication. Keep it on loopback.
+- The server binds only to IPv4 loopback, checks the exact Host, rejects every
+  Origin, and requires the bearer token on every request. Other processes that
+  can read your private settings or client environment can obtain the token.
   [MCP transport security guidance](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
-- Session IDs isolate browser state. The shared token authorizes all clients,
-  so session IDs are not separate user credentials. The server caps request
-  bodies, active tool calls and session count. MCP sessions expire after 30
-  minutes idle. Reconnect the client after expiry.
-- Only HTTP(S) on standard ports is allowed. The server rejects credentials,
-  nonpublic address ranges and local hostnames, and checks both A and AAAA
-  answers. Only fixed provider hosts receive local connections. Scrapfly
-  controls DNS and follows redirects for its scrape API. The server checks
-  the reported redirects and final URL before returning content. These checks
-  happen after the remote fetch.
-- The browser guard checks intercepted requests, including redirect hops,
-  before allowing them to continue. Browser WebSockets are
-  blocked, downloads are canceled where possible, and the controlled page bypasses service workers. Local DNS checks
-  cannot pin the IP used by the cloud provider or cover every browser
-  networking channel. Provider egress isolation remains a trust boundary.
+- The server supports 128 MCP sessions and expires them after two hours idle.
+  Expired session IDs return HTTP 404. Reconnect the MCP server in the client or
+  reopen the conversation if automatic reconnection fails. Browser state has
+  its own 30-minute cap.
+- Only fixed provider endpoints receive local requests. Initial scrape
+  destinations must be public HTTP(S) on standard ports. Scrapfly follows
+  scrape redirects, and the server checks the reported hops and final URL
+  before releasing content.
+- The browser validates top-level HTTP(S) navigations, including intercepted
+  redirects. Public WebSocket hosts are allowed. Ordinary subresources and
+  iframe requests rely on Scrapfly's cloud egress. Local DNS checks cannot pin
+  the address resolved remotely. Downloads are canceled where possible.
   [OWASP SSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
-- Search queries go to Serper. Target URLs and browser input go to Scrapfly or
-  the target site as applicable. Fetched text is untrusted and may contain
-  prompt injection or information submitted to a website. There is no raw
-  JavaScript, file, cookie or CDP tool. Each tool logs its name,
-  duration, outcome and provider attempt count. Logs omit request arguments,
-  provider bodies and raw connection errors. Keep provider protocol debug
-  logging disabled.
+- Search queries go to Serper. Scrapfly or the target site receives URLs and
+  browser input as applicable. Fetched text and screenshots are untrusted.
+  The browser exposes no raw JavaScript, local file or CDP tool.
 
 ## Tests
 
@@ -179,14 +174,11 @@ npm ci
 npm test
 npm run lint
 npm run format:check
-```
-
-Fixtures use no keys or upstream network. The HTTP integration test uses
-loopback. A separate live smoke test reads the same env file and makes one
-Serper search, one Scrapfly scrape and one short browser session against
-`example.com`. It checks ordinary pages and session operations. It does
-not deliberately trigger a billable CAPTCHA solve.
-
-```sh
 npm run smoke
+npm run smoke -- --challenge
 ```
+
+The offline suite uses fixtures and loopback only. The ordinary live smoke test
+makes one search (plus a hedge if needed), one scrape and one short browser
+session. The challenge smoke test separately uses one browser session against
+a real Cloudflare WAF challenge and fails if the gated page cannot be read.
