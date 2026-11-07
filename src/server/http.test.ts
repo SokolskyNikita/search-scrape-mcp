@@ -29,6 +29,8 @@ test("authenticated MCP search uses a recorded Serper response", async (t) => {
       assert.deepEqual(JSON.parse(String(init?.body)), {
         q: "example",
         num: 5,
+        gl: "us",
+        hl: "en",
       });
       return Promise.resolve(Response.json(recorded));
     },

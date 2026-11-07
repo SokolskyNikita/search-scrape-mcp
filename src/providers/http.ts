@@ -57,21 +57,3 @@ export async function providerResponse(
     );
   }
 }
-
-export async function providerRequest(
-  provider: string,
-  url: URL,
-  init: RequestInit = {},
-  classifyError?: (response: Response) => AppError | undefined,
-): Promise<unknown> {
-  const { response, body } = await providerResponse(provider, url, init);
-  if (!response.ok)
-    throw (
-      classifyError?.(response) ??
-      new AppError(
-        "provider_http",
-        `${provider} returned HTTP ${response.status}.`,
-      )
-    );
-  return body;
-}

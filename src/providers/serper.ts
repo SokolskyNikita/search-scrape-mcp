@@ -1,7 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { AppError } from "../server/error.js";
-import { providerRequest } from "./http.js";
+import { writeProviderAttempt } from "../server/stats.js";
+import { AppError, safeError } from "../server/error.js";
+import { providerResponse } from "./http.js";
 import type { SearchProvider } from "./types.js";
 
 const responseSchema = z.object({
@@ -11,51 +12,93 @@ const responseSchema = z.object({
         title: z.string(),
         link: z.string(),
         snippet: z.string().optional(),
+        date: z.string().nullish(),
       }),
     )
     .default([]),
+  credits: z.number().finite().nonnegative().optional(),
 });
 
 export function serper(key: string): SearchProvider {
   return {
     name: "serper",
-    async search({ query, limit }, signal, retry) {
+    async search(
+      { query, limit, recency, site, exclude_domains = [] },
+      signal,
+      retry,
+    ) {
       const controller = new AbortController();
       const requestSignal = AbortSignal.any([
         controller.signal,
         AbortSignal.timeout(12_000),
         ...(signal ? [signal] : []),
       ]);
-      async function request() {
-        const response = responseSchema.safeParse(
-          await providerRequest(
+      const queryWithOperators = [
+        query,
+        ...(site ? [`site:${site}`] : []),
+        ...exclude_domains.map((host) => `-site:${host}`),
+      ].join(" ");
+      const freshness = { day: "d", week: "w", month: "m", year: "y" };
+      async function request(rung: "primary" | "hedge") {
+        const start = performance.now();
+        let credits: number | null = null;
+        let errorCode: string | null = null;
+        try {
+          const { response, body } = await providerResponse(
             "Serper",
             new URL("https://google.serper.dev/search"),
             {
               method: "POST",
               headers: { "X-API-KEY": key, "Content-Type": "application/json" },
-              body: JSON.stringify({ q: query, num: limit }),
+              body: JSON.stringify({
+                q: queryWithOperators,
+                num: limit,
+                gl: "us",
+                hl: "en",
+                ...(recency ? { tbs: `qdr:${freshness[recency]}` } : {}),
+              }),
               signal: requestSignal,
             },
-            ({ status }) => {
-              if (status === 401 || status === 403)
-                return new AppError(
-                  "provider_auth",
-                  "Serper rejected the API credential.",
-                );
-              if (status === 429)
-                return new AppError(
-                  "provider_limit",
-                  "Serper rate or quota limit reached.",
-                );
-            },
-          ),
-        );
-        if (!response.success)
-          throw new AppError("provider_response", "Invalid Serper response.");
-        return response;
+          );
+          const raw =
+            body && typeof body === "object" && "credits" in body
+              ? body.credits
+              : undefined;
+          if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0)
+            credits = raw;
+          if (response.status === 401 || response.status === 403)
+            throw new AppError(
+              "provider_auth",
+              "Serper rejected the API credential.",
+            );
+          if (response.status === 402 || response.status === 429)
+            throw new AppError(
+              "provider_limit",
+              "Serper rate or quota limit reached.",
+            );
+          if (!response.ok)
+            throw new AppError(
+              "provider_http",
+              `Serper returned HTTP ${response.status}.`,
+            );
+          const parsed = responseSchema.safeParse(body);
+          if (!parsed.success)
+            throw new AppError("provider_response", "Invalid Serper response.");
+          return parsed;
+        } catch (error) {
+          errorCode = safeError(error).code;
+          throw error;
+        } finally {
+          writeProviderAttempt({
+            provider: "serper",
+            rung,
+            credits,
+            durationMs: Math.round(performance.now() - start),
+            errorCode,
+          });
+        }
       }
-      const primary = request();
+      const primary = request("primary");
       const startBackup = Promise.race([
         delay(900, true, { signal: requestSignal }),
         primary.then(
@@ -72,7 +115,7 @@ export function serper(key: string): SearchProvider {
         if (!start) return primary;
         requestSignal.throwIfAborted();
         retry?.();
-        return request();
+        return request("hedge");
       });
       const response = await Promise.any([primary, backup])
         .catch((error: AggregateError) => {
@@ -80,12 +123,24 @@ export function serper(key: string): SearchProvider {
         })
         .finally(() => controller.abort());
       return response.data.organic
-        .filter(({ link }) => /^https?:\/\//i.test(link) && link.length <= 1024)
+        .filter(({ link }) => {
+          if (
+            !/^https?:\/\//i.test(link) ||
+            link.length > 1024 ||
+            !URL.canParse(link)
+          )
+            return false;
+          const host = new URL(link).hostname.replace(/\.$/, "");
+          return !exclude_domains.some(
+            (excluded) => host === excluded || host.endsWith(`.${excluded}`),
+          );
+        })
         .slice(0, limit)
-        .map(({ title, link, snippet }) => ({
+        .map(({ title, link, snippet, date }) => ({
           title: title.slice(0, 160),
           url: link,
           snippet: snippet?.slice(0, 320),
+          date: date?.slice(0, 80),
         }));
     },
   };
