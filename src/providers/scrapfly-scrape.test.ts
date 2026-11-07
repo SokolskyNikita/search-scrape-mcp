@@ -79,13 +79,20 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
       input.searchParams.get("proxy_pool"),
       "public_datacenter_pool",
     );
-    assert.equal(input.searchParams.get("cost_budget"), "30");
     assert.equal(init.redirect, "error");
     const rung = input.searchParams.has("render_js")
       ? "render"
       : input.searchParams.has("unblocker")
         ? "unblocker"
         : "datacenter";
+    assert.equal(
+      input.searchParams.get("cost_budget"),
+      { datacenter: "5", unblocker: "20", render: "40" }[rung],
+    );
+    assert.equal(
+      input.searchParams.get("timeout"),
+      { datacenter: "11220", unblocker: "16320", render: "23460" }[rung],
+    );
     if (rung === "render")
       assert.equal(input.searchParams.get("rendering_wait"), "1000");
     observed.push(rung);
@@ -236,4 +243,47 @@ test("menu and consent pages escalate once and keep the remaining rung visible",
   const hard: ScrapeOptions = { start: "render", tried: [] };
   await provider.scrape(target, undefined, hard);
   assert.deepEqual(hard.tried, ["render"]);
+});
+
+test("a per-request budget rejection escalates but insufficient account credit stops", async (t) => {
+  const log = t.mock.method(console, "log", () => {});
+  let code = "ERR::SCRAPE::COST_BUDGET_LIMIT";
+  const request = t.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      {},
+      { status: 422, headers: { "X-Scrapfly-Reject-Code": code } },
+    ),
+  );
+  const budget = options();
+  await assert.rejects(
+    scrapflyScrape("fixture").scrape(target, undefined, budget),
+    { code: "provider_cost_budget" },
+  );
+  assert.deepEqual(budget.tried, ["datacenter", "unblocker", "render"]);
+  assert.equal(
+    JSON.parse(String(log.mock.calls[0]!.arguments[0])).datacenterBlocked,
+    false,
+  );
+  code = "ERR::SCRAPE::BALANCE_REQUIRED_FOR_EXTRA";
+  await assert.rejects(scrapflyScrape("fixture").scrape(target), {
+    code: "provider_credit",
+  });
+  assert.equal(request.mock.callCount(), 4);
+});
+
+test("the real tool deadline clips a late rung and prevents an unfunded retry", async (t) => {
+  const request = t.mock.method(globalThis, "fetch", async (url: URL) => {
+    const timeout = Number(url.searchParams.get("timeout"));
+    assert(timeout > 1_000 && timeout <= 5_000);
+    return Response.json({}, { status: 503, headers: { "Retry-After": "0" } });
+  });
+  const deadline = performance.now() + 8_000;
+  await assert.rejects(
+    scrapflyScrape("fixture").scrape(target, undefined, {
+      deadline,
+      tried: [],
+    }),
+    { code: "provider_down" },
+  );
+  assert.equal(request.mock.callCount(), 1);
 });

@@ -1,3 +1,5 @@
+import { MAX_REQUEST_BODY_BYTES } from "../config/safety-limits.js";
+import { defaults } from "../config/tuning.js";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -29,7 +31,7 @@ async function readBody(req: AsyncIterable<Buffer>): Promise<unknown> {
   let bytes = 0;
   for await (const chunk of req) {
     bytes += chunk.length;
-    if (bytes > 64 * 1024)
+    if (bytes > MAX_REQUEST_BODY_BYTES)
       throw new AppError("body_size", "Request exceeds 64 KB.");
     chunks.push(chunk);
   }
@@ -39,6 +41,7 @@ async function readBody(req: AsyncIterable<Buffer>): Promise<unknown> {
 export function createMcpHttp(
   token: string,
   register: (mcp: McpServer) => (() => Promise<void>) | void,
+  settings = defaults,
 ) {
   const sessions = new Map<
     string,
@@ -53,7 +56,10 @@ export function createMcpHttp(
       used: number;
     },
   ) {
-    if (session.active || Date.now() - session.used < 2 * 60 * 60_000)
+    if (
+      session.active ||
+      Date.now() - session.used < settings.mcpSessionExpiryMs
+    )
       return false;
     sessions.delete(id);
     void session.transport
@@ -61,9 +67,12 @@ export function createMcpHttp(
       .catch(() => console.error("MCP session cleanup failed."));
     return true;
   }
-  const expire = setInterval(() => {
-    for (const [id, session] of sessions) expireSession(id, session);
-  }, 60_000).unref();
+  const expire = setInterval(
+    () => {
+      for (const [id, session] of sessions) expireSession(id, session);
+    },
+    Math.min(60_000, settings.mcpSessionExpiryMs),
+  ).unref();
   let pending = 0;
   let toolCalls = 0;
 
@@ -148,7 +157,7 @@ export function createMcpHttp(
         }
         if (!isInitializeRequest(body))
           return reject(res, 400, "Initialize an MCP session first.");
-        if (sessions.size + pending >= 128)
+        if (sessions.size + pending >= settings.mcpSessionLimit)
           return reject(res, 503, "MCP session limit reached.");
         pending++;
         const mcp = new McpServer(

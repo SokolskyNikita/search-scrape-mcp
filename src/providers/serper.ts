@@ -1,3 +1,5 @@
+import { defaults } from "../config/tuning.js";
+import { MAX_SEARCH_HIT_URL_CHARS } from "../config/safety-limits.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { writeProviderAttempt } from "../server/stats.js";
@@ -25,7 +27,7 @@ class SerperHttpError extends AppError {
   }
 }
 
-export function serper(key: string): SearchProvider {
+export function serper(key: string, settings = defaults): SearchProvider {
   return {
     name: "serper",
     async search(
@@ -36,8 +38,8 @@ export function serper(key: string): SearchProvider {
         site,
         exclude_domains = [],
         location,
-        gl = "us",
-        hl = "en",
+        gl = settings.searchGl,
+        hl = settings.searchHl,
         page,
         autocorrect,
         tbs,
@@ -48,7 +50,7 @@ export function serper(key: string): SearchProvider {
       const controller = new AbortController();
       const requestSignal = AbortSignal.any([
         controller.signal,
-        AbortSignal.timeout(12_000),
+        AbortSignal.timeout(settings.serperTimeoutMs),
         ...(signal ? [signal] : []),
       ]);
       const queryWithOperators = [
@@ -57,7 +59,7 @@ export function serper(key: string): SearchProvider {
         ...exclude_domains.map((host) => `-site:${host}`),
       ].join(" ");
       const freshness = { day: "d", week: "w", month: "m", year: "y" };
-      async function request(rung: "primary" | "hedge") {
+      async function request(hedgeTrigger?: "delay" | "failure") {
         const start = performance.now();
         let credits: number | null = null;
         let errorCode: string | null = null;
@@ -106,20 +108,26 @@ export function serper(key: string): SearchProvider {
           errorCode = safeError(error).code;
           throw error;
         } finally {
-          writeProviderAttempt({
-            provider: "serper",
-            rung,
-            credits,
-            durationMs: Math.round(performance.now() - start),
-            errorCode,
-          });
+          writeProviderAttempt(
+            {
+              provider: "serper",
+              rung: hedgeTrigger ? "hedge" : "primary",
+              hedgeTrigger,
+              credits,
+              durationMs: Math.round(performance.now() - start),
+              errorCode,
+            },
+            settings,
+          );
         }
       }
-      const primary = request("primary");
+      const primary = request();
       const startBackup = Promise.race([
-        delay(900, true, { signal: requestSignal }),
+        delay(settings.serperBackupDelayMs, "delay" as const, {
+          signal: requestSignal,
+        }),
         primary.then(
-          () => false,
+          () => undefined,
           (error: unknown) =>
             !requestSignal.aborted &&
             !(
@@ -130,14 +138,16 @@ export function serper(key: string): SearchProvider {
             !(
               error instanceof AppError &&
               ["provider_auth", "provider_limit"].includes(error.code)
-            ),
+            )
+              ? ("failure" as const)
+              : undefined,
         ),
       ]);
       const backup = startBackup.then((start) => {
         if (!start) return primary;
         requestSignal.throwIfAborted();
         retry?.();
-        return request("hedge");
+        return request(start);
       });
       const response = await Promise.any([primary, backup])
         .catch((error: AggregateError) => {
@@ -148,7 +158,7 @@ export function serper(key: string): SearchProvider {
         .filter(({ link }) => {
           if (
             !/^https?:\/\//i.test(link) ||
-            link.length > 1024 ||
+            link.length > MAX_SEARCH_HIT_URL_CHARS ||
             !URL.canParse(link)
           )
             return false;

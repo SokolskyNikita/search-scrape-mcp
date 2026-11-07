@@ -40,6 +40,7 @@ test("Serper hedges transient failures and keeps the first usable answer", async
   const logged = logger.mock.calls.map(({ arguments: [line] }) =>
     JSON.parse(String(line)),
   );
+  assert.equal(logged[1]?.hedgeTrigger, "failure");
   assert.deepEqual(
     logged.map(({ rung, credits }) => [rung, credits]),
     [

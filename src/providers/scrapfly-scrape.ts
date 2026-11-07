@@ -1,3 +1,5 @@
+import { scrapeReserveMs, toolTimeoutMs } from "../config/deadline.js";
+import { defaults, type Tuning } from "../config/tuning.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { AppError, safeError } from "../server/error.js";
@@ -37,7 +39,9 @@ const envelope = z.object({
   code: z.string().optional(),
 });
 const blocked = new Set(["blocked", "challenge"]);
-const timeouts = { datacenter: 12_000, unblocker: 17_000, render: 24_000 };
+// Shares of the scrape budget after the tool's completion reserve.
+const timeoutShares = [0.22, 0.32, 0.46];
+const minRungMs = 1_000;
 
 function retryDelay(response: Response): number | undefined {
   const value =
@@ -52,17 +56,20 @@ function retryDelay(response: Response): number | undefined {
 }
 
 function providerError(status: number, code: string) {
+  if (code.includes("COST_BUDGET"))
+    return new AppError(
+      "provider_cost_budget",
+      "Scrapfly exceeded this rung’s request cost budget.",
+    );
   if (status === 401 || status === 403)
     return new AppError("provider_auth", "Scrapfly rejected the API key.");
   if (
     status === 402 ||
-    /COST_BUDGET|CREDIT|QUOTA|BALANCE_REQUIRED|USAGE_LIMIT|PAYMENT_REQUIRED/.test(
-      code,
-    )
+    /CREDIT|QUOTA|BALANCE_REQUIRED|USAGE_LIMIT|PAYMENT_REQUIRED/.test(code)
   )
     return new AppError(
       "provider_credit",
-      "Scrapfly rejected the request for cost or insufficient credit.",
+      "Scrapfly rejected the request for insufficient credit or account quota.",
     );
   if (status === 429)
     return new AppError("provider_rate", "Scrapfly is rate-limiting requests.");
@@ -103,23 +110,35 @@ async function requestPage(
   key: string,
   target: URL,
   rung: ScrapeRung,
+  timeout: number,
+  settings: Tuning,
   signal: AbortSignal,
 ) {
   const endpoint = new URL("https://api.scrapfly.io/scrape");
+  const [pool, budget] = {
+    datacenter: [
+      settings.scrapflyDatacenterPool,
+      settings.scrapflyDatacenterCost,
+    ],
+    unblocker: [settings.scrapflyUnblockerPool, settings.scrapflyUnblockerCost],
+    render: [settings.scrapflyRenderPool, settings.scrapflyRenderCost],
+  }[rung];
   endpoint.search = new URLSearchParams({
     key,
     url: target.href,
-    proxy_pool: "public_datacenter_pool",
-    cost_budget: "30",
-    timeout: "30000",
+    proxy_pool: String(pool),
+    cost_budget: String(budget),
+    timeout: String(timeout),
     retry: "false",
     format: "markdown:no_images",
   }).toString();
-  // This account's gateway rejects the newer named pools.
   if (rung !== "datacenter") endpoint.searchParams.set("unblocker", "true");
   if (rung === "render") {
     endpoint.searchParams.set("render_js", "true");
-    endpoint.searchParams.set("rendering_wait", "1000");
+    endpoint.searchParams.set(
+      "rendering_wait",
+      String(settings.scrapflyRenderingWaitMs),
+    );
   }
   const start = performance.now();
   let credits: number | null = null;
@@ -127,10 +146,7 @@ async function requestPage(
   let retryMs: number | undefined;
   let retryable = true;
   let headerFailure: AppError | undefined;
-  const requestSignal = AbortSignal.any([
-    signal,
-    AbortSignal.timeout(timeouts[rung]),
-  ]);
+  const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(timeout)]);
   try {
     const { response, body } = await providerResponse(
       "Scrapfly",
@@ -265,29 +281,44 @@ async function requestPage(
           : undefined,
     };
   } finally {
-    writeProviderAttempt({
-      provider: "scrapfly",
-      rung,
-      credits,
-      durationMs: Math.round(performance.now() - start),
-      errorCode,
-    });
+    writeProviderAttempt(
+      {
+        provider: "scrapfly",
+        rung,
+        credits,
+        durationMs: Math.round(performance.now() - start),
+        errorCode,
+        ...(rung === "datacenter"
+          ? { datacenterBlocked: errorCode !== null && blocked.has(errorCode) }
+          : {}),
+      },
+      settings,
+    );
   }
 }
 
-export function scrapflyScrape(key: string): ScrapeProvider {
+export function scrapflyScrape(
+  key: string,
+  settings = defaults,
+): ScrapeProvider {
+  const budget = toolTimeoutMs(settings) - scrapeReserveMs;
+  const rungCaps = timeoutShares.map((share) => Math.floor(budget * share));
   const hosts = new Map<string, { rung: number; expires: number }>();
   function remember(host: string, rung: number) {
     hosts.delete(host);
-    if (hosts.size >= 256) hosts.delete(hosts.keys().next().value!);
-    hosts.set(host, { rung, expires: Date.now() + 4 * 60 * 60_000 });
+    if (!settings.siteMemoryMs || !settings.siteMemorySize) return;
+    if (hosts.size >= settings.siteMemorySize)
+      hosts.delete(hosts.keys().next().value!);
+    hosts.set(host, { rung, expires: Date.now() + settings.siteMemoryMs });
   }
   return {
     name: "scrapfly",
     async scrape(url, outer, options = { tried: [] }) {
-      const deadline = Date.now() + 50_000;
-      const timer = AbortSignal.timeout(50_000);
-      const signal = outer ? AbortSignal.any([outer, timer]) : timer;
+      const deadline =
+        (options.deadline ?? performance.now() + toolTimeoutMs(settings)) -
+        scrapeReserveMs;
+      const remaining = () => Math.floor(deadline - performance.now());
+      const signal = outer ?? AbortSignal.timeout(toolTimeoutMs(settings));
       const target = await validatePublicUrl(url);
       target.hash = "";
       const host = target.hostname;
@@ -300,18 +331,29 @@ export function scrapflyScrape(key: string): ScrapeProvider {
       let protectedSite = false;
       for (let index = Math.max(previous, start); index < scrapeRungs.length;) {
         const rung = scrapeRungs[index]!;
-        if (signal.aborted)
+        const timeout = Math.min(rungCaps[index]!, remaining());
+        const minimum =
+          minRungMs +
+          (rung === "render" ? settings.scrapflyRenderingWaitMs : 0);
+        if (signal.aborted || timeout < minimum)
           throw new AppError("provider_down", "Scrapfly ran out of time.", {
             tried: options.tried,
             hint: `Retry with start_rung: "${rung}".`,
           });
         options.tried.push(rung);
-        const result = await requestPage(key, target, rung, signal);
+        const result = await requestPage(
+          key,
+          target,
+          rung,
+          timeout,
+          settings,
+          signal,
+        );
         if (result.error) {
           if (
             !retryUsed &&
             result.retryMs !== undefined &&
-            Date.now() + result.retryMs + 1500 < deadline &&
+            remaining() >= result.retryMs + rungCaps[index]! &&
             !signal.aborted
           ) {
             retryUsed = true;
@@ -320,6 +362,13 @@ export function scrapflyScrape(key: string): ScrapeProvider {
           }
           if (index === previous) hosts.delete(host);
           if (protectedSite && !hosts.has(host)) remember(host, 1);
+          if (
+            result.error.code === "provider_cost_budget" &&
+            index + 1 < scrapeRungs.length
+          ) {
+            index++;
+            continue;
+          }
           throw new AppError(result.error.code, result.error.message, {
             tried: options.tried,
           });

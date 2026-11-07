@@ -1,3 +1,4 @@
+import { defaults } from "../config/tuning.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SearchInput, SearchProvider } from "../providers/types.js";
@@ -30,7 +31,7 @@ const input = z
       .trim()
       .regex(/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i)
       .optional(),
-    page: z.number().int().min(1).optional(),
+    page: z.number().int().min(1).max(10).optional(),
     autocorrect: z.boolean().optional(),
     tbs: z.string().trim().min(1).max(256).optional(),
     site: domain.optional(),
@@ -39,7 +40,11 @@ const input = z
   })
   .strict();
 
-export function registerSearch(server: McpServer, providers: SearchProvider[]) {
+export function registerSearch(
+  server: McpServer,
+  providers: SearchProvider[],
+  settings = defaults,
+) {
   async function search(
     { query, q, ...options }: z.infer<typeof input>,
     attempt: Attempt,
@@ -67,7 +72,11 @@ export function registerSearch(server: McpServer, providers: SearchProvider[]) {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     (args) =>
-      toolResult("search", (attempt, signal) => search(args, attempt, signal)),
+      toolResult(
+        "search",
+        (attempt, signal) => search(args, attempt, signal),
+        settings,
+      ),
   );
   server.registerTool(
     "search_batch",
@@ -88,12 +97,16 @@ export function registerSearch(server: McpServer, providers: SearchProvider[]) {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ searches }) =>
-      toolResult("search_batch", (attempt, signal) =>
-        batch(
-          searches,
-          (args) => search(args, attempt, signal),
-          (args) => args.site,
-        ),
+      toolResult(
+        "search_batch",
+        (attempt, signal) =>
+          batch(
+            searches,
+            (args, itemAttempt) => search(args, itemAttempt, signal),
+            (args) => args.site,
+            { tool: "search_batch", attempt, settings },
+          ),
+        settings,
       ),
   );
 }

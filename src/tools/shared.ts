@@ -1,3 +1,5 @@
+import { defaults } from "../config/tuning.js";
+import { toolTimeoutMs } from "../config/deadline.js";
 import type { BrowserImage } from "../providers/types.js";
 import { writeToolStats } from "../server/stats.js";
 import { AppError, safeError } from "../server/error.js";
@@ -47,7 +49,12 @@ export async function fallback<T extends { name?: string }, R>(
 
 export async function toolResult(
   name: string,
-  run: (attempt: Attempt, signal: AbortSignal) => Promise<unknown>,
+  run: (
+    attempt: Attempt,
+    signal: AbortSignal,
+    deadline: number,
+  ) => Promise<unknown>,
+  settings = defaults,
 ) {
   const start = performance.now();
   let attempts = 0;
@@ -56,7 +63,7 @@ export async function toolResult(
   const controller = new AbortController();
   const timeoutError = new AppError(
     "tool_timeout",
-    "Tool exceeded its 54-second deadline.",
+    `Tool exceeded its ${settings.toolDeadlineSeconds}-second deadline.`,
   );
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -64,22 +71,19 @@ export async function toolResult(
       timer = setTimeout(() => {
         reject(timeoutError);
         controller.abort(timeoutError);
-      }, 54_000);
+      }, toolTimeoutMs(settings));
     });
     const result = await Promise.race([
-      run((provider) => {
-        attempts++;
-        if (provider) providers.add(provider);
-      }, controller.signal),
+      run(
+        (provider) => {
+          attempts++;
+          if (provider) providers.add(provider);
+        },
+        controller.signal,
+        start + toolTimeoutMs(settings),
+      ),
       deadline,
     ]);
-    if (Array.isArray(result)) {
-      const failed = result.find(
-        (item: unknown): item is { error: { code: string } } =>
-          item !== null && typeof item === "object" && "error" in item,
-      );
-      errorCode = failed?.error.code ?? null;
-    }
     if (
       result &&
       typeof result === "object" &&
@@ -116,20 +120,24 @@ export async function toolResult(
     };
   } finally {
     clearTimeout(timer);
-    writeToolStats({
-      tool: name,
-      durationMs: Math.round(performance.now() - start),
-      attempts,
-      provider: providers.size ? [...providers].join(",") : null,
-      errorCode,
-    });
+    writeToolStats(
+      {
+        tool: name,
+        durationMs: Math.round(performance.now() - start),
+        attempts,
+        provider: providers.size ? [...providers].join(",") : null,
+        errorCode,
+      },
+      settings,
+    );
   }
 }
 
 export async function batch<I, O>(
   inputs: I[],
-  run: (input: I) => Promise<O>,
+  run: (input: I, attempt: Attempt) => Promise<O>,
   group?: (input: I) => string | undefined,
+  stats?: { tool: string; attempt: Attempt; settings: typeof defaults },
 ) {
   const results: (
     | { index: number; result: O }
@@ -148,15 +156,37 @@ export async function batch<I, O>(
         if (next < 0) return;
         const { input, index, key } = pending.splice(next, 1)[0]!;
         if (key) busy.add(key);
+        const start = performance.now();
+        let attempts = 0;
+        let errorCode: string | null = null;
+        const providers = new Set<string>();
         try {
-          results[index] = { index, result: await run(input) };
+          const result = await run(input, (provider) => {
+            stats?.attempt(provider);
+            attempts++;
+            if (provider) providers.add(provider);
+          });
+          results[index] = { index, result };
         } catch (error) {
           const { code, message, details } = safeError(error);
+          errorCode = code;
           if (code === "internal")
             console.error("Unexpected batch item error.");
           results[index] = { index, error: { code, message, ...details } };
         } finally {
           if (key) busy.delete(key);
+          if (stats)
+            writeToolStats(
+              {
+                tool: stats.tool,
+                itemIndex: index,
+                durationMs: Math.round(performance.now() - start),
+                attempts,
+                provider: providers.size ? [...providers].join(",") : null,
+                errorCode,
+              },
+              stats.settings,
+            );
         }
       }
     }),

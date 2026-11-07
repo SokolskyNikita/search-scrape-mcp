@@ -37,7 +37,11 @@ export type ScrapeResult = {
   check: PageCheck;
   hint?: string;
 };
-export type ScrapeOptions = { start?: ScrapeRung; tried: string[] };
+export type ScrapeOptions = {
+  start?: ScrapeRung;
+  tried: string[];
+  deadline?: number;
+};
 
 export interface ScrapeProvider {
   readonly name?: string;
@@ -48,6 +52,12 @@ export interface ScrapeProvider {
   ): Promise<ScrapeResult>;
 }
 
+export type BrowserNavigation = {
+  url: URL;
+  status: number;
+  title: string;
+  text: string;
+};
 export type BrowserTarget = { selector?: string; ref?: string };
 export type BrowserImage = {
   type: "image";
@@ -71,7 +81,7 @@ export interface BrowserSession {
   run(
     action: Exclude<BrowserAction, { action: "close" }>,
     signal?: AbortSignal,
-  ): Promise<string | BrowserImage>;
+  ): Promise<string | BrowserImage | BrowserNavigation>;
   close(): Promise<void>;
 }
 

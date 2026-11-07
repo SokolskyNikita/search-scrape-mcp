@@ -1,3 +1,4 @@
+import { relayTimeoutMs } from "../config/deadline.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -10,7 +11,8 @@ import { loadSettings } from "../config/index.js";
 import { AppError } from "./error.js";
 
 try {
-  const { port, token } = loadSettings();
+  const settings = loadSettings();
+  const { port, token } = settings;
   const identity = { name: "search-scrape-desktop", version: "1.0.0" };
   const client = new Client(identity);
   const upstream = new StreamableHTTPClientTransport(
@@ -28,7 +30,10 @@ try {
     client.listTools(request.params, { signal }),
   );
   relay.setRequestHandler(CallToolRequestSchema, (request, { signal }) =>
-    client.callTool(request.params, undefined, { signal, timeout: 58_000 }),
+    client.callTool(request.params, undefined, {
+      signal,
+      timeout: relayTimeoutMs(settings),
+    }),
   );
 
   let closing = false;

@@ -1,21 +1,17 @@
+import { MAX_PROVIDER_RESPONSE_BYTES } from "../config/safety-limits.js";
 import { AppError } from "../server/error.js";
 
 export async function providerResponse(
   provider: string,
   url: URL,
-  init: RequestInit = {},
+  init: RequestInit & { signal: AbortSignal },
   onHeaders?: (response: Response) => void,
   format: "json" | "text" = "json",
 ) {
   try {
-    const timeout = AbortSignal.timeout(32_000);
-    const signal = init.signal
-      ? AbortSignal.any([init.signal, timeout])
-      : timeout;
     const response = await fetch(url, {
       ...init,
       redirect: "error",
-      signal,
     });
     onHeaders?.(response);
     const reader = response.body?.getReader();
@@ -32,7 +28,7 @@ export async function providerResponse(
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > 8_000_000) {
+      if (size > MAX_PROVIDER_RESPONSE_BYTES) {
         await reader.cancel();
         throw new AppError(
           "provider_response",

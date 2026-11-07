@@ -1,3 +1,4 @@
+import { MAX_URL_CHARS } from "../config/safety-limits.js";
 import { Resolver } from "node:dns/promises";
 import ipaddr from "ipaddr.js";
 import { AppError } from "./error.js";
@@ -30,7 +31,7 @@ export async function validatePublicUrl(value: string): Promise<URL> {
     throw forbidden();
   }
   if (
-    value.length > 4096 ||
+    value.length > MAX_URL_CHARS ||
     /[\u0000-\u0020\u007f\\]/.test(value) ||
     !["http:", "https:"].includes(url.protocol) ||
     url.username ||
