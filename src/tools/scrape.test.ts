@@ -57,6 +57,7 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert.equal(saved.characters, content.length);
   assert.equal(saved.preview, content.slice(0, 600).trimEnd());
   assert.equal(saved.markdown, undefined);
+  assert.match(saved.hint, /untrusted web content/);
   assert.deepEqual(seen, [first]);
 
   const mixed = await client.callTool({

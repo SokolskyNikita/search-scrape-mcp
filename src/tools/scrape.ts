@@ -43,7 +43,7 @@ export function registerScrape(
         ...(files.spill(markdown, limit) ?? { markdown }),
         check,
         tried,
-        hint,
+        ...(hint ? { nextHint: hint } : {}),
       };
     } catch (error) {
       const failure = signal.aborted
