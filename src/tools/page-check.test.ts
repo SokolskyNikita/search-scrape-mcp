@@ -53,13 +53,7 @@ test("recorded page shapes classify walls, completeness and retry strategy", () 
     ],
     ["not_found", "# Page not found\nTry our search.", page, 200, undefined],
     ["not_found", article, page, 404, undefined],
-    [
-      "sign_in",
-      "# Welcome back\nEmail\nPassword\nSign in",
-      page,
-      200,
-      undefined,
-    ],
+    ["sign_in", "# Sign in\nEmail\nPassword", page, 200, undefined],
     [
       "sign_in",
       article,
@@ -91,6 +85,7 @@ test("recorded page shapes classify walls, completeness and retry strategy", () 
 test("short, rendered and index pages and articles that mention walls pass", () => {
   const cases = [
     "# Contact\nEmail help@example.com.",
+    "# Account help\nPassword and sign in assistance is available.",
     "# Working notes\nUse three spaces here",
     `# Rendered content\n${article}\nEnable JavaScript to run this app.`,
     `# Security check for your repo\n${(article + " The documentation discusses why sites ask you to sign in and verify you are human.\n").repeat(18)}`,
@@ -105,4 +100,21 @@ test("short navigation shells are distinguished from a legitimate short page", (
   const shell =
     "# Quotes to Scrape\n[Quotes to Scrape](https://example.com/)\n[Login](https://example.com/login)\n[Next →](https://example.com/page/2)\nQuotes by [GoodReads](https://example.com/quotes)\nMade with love by [Zyte](https://example.com/about)";
   assert.equal(checkPage(shell, page, page, 200).code, "menus_only");
+});
+
+test("a newsletter prompt inside a full article does not mark it as paywalled", () => {
+  const paragraphs = (article + "\n").repeat(25);
+  const markdown = `# Full article\n${paragraphs}Subscribe to our newsletter and read the latest updates.\n${paragraphs}`;
+  assert.equal(checkPage(markdown, page, page, 200).code, "ok");
+});
+
+test("only redirects to the same site's home page count as moved content", () => {
+  assert.equal(
+    checkPage(article, page, new URL("https://www.example.com/"), 200).code,
+    "content_moved",
+  );
+  assert.equal(
+    checkPage(article, page, new URL("https://example.org/"), 200).code,
+    "ok",
+  );
 });
