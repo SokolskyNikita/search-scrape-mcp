@@ -1,4 +1,10 @@
-import { readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import { z } from "zod";
 import { AppError } from "../server/error.js";
 
@@ -24,7 +30,7 @@ const schema = z
       .min(1)
       .max(2)
       .refine((values) => new Set(values).size === values.length)
-      .default(["scrapfly", "scrapfly-browser"]),
+      .default(["scrapfly"]),
     browserProviders: z
       .array(z.literal("scrapfly"))
       .min(1)
@@ -35,11 +41,35 @@ const schema = z
 
 export type Config = z.infer<typeof schema>;
 
+function readPrivateConfig(file: string): unknown {
+  const fd = openSync(
+    file,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const stat = fstatSync(fd);
+    if (
+      !stat.isFile() ||
+      stat.size > 16_384 ||
+      (stat.mode & 0o077) !== 0 ||
+      stat.uid !== process.getuid?.()
+    ) {
+      throw new AppError(
+        "config",
+        "MCP_CONFIG must be a private file owned by this user (chmod 600).",
+      );
+    }
+    return JSON.parse(readFileSync(fd, "utf8")) as unknown;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function loadConfig(env = process.env): Config {
   let input: unknown;
   try {
     input = env.MCP_CONFIG
-      ? JSON.parse(readFileSync(env.MCP_CONFIG, "utf8"))
+      ? readPrivateConfig(env.MCP_CONFIG)
       : {
           port: env.MCP_PORT,
           token: env.MCP_TOKEN,
@@ -49,7 +79,8 @@ export function loadConfig(env = process.env): Config {
           scrapeProviders: env.SCRAPE_PROVIDERS?.split(","),
           browserProviders: env.BROWSER_PROVIDERS?.split(","),
         };
-  } catch {
+  } catch (error) {
+    if (error instanceof AppError) throw error;
     throw new AppError("config", "Cannot read or parse MCP_CONFIG.");
   }
   const result = schema.safeParse(input);
