@@ -236,10 +236,13 @@ Search defaults to US English. Both search tools accept a country code (`gl`),
 language code (`hl`), geographic `location`, result `page` (1 through 10),
 and a boolean `autocorrect`. Use either `recency` (`day`, `week`, `month`, or
 `year`) or a Google time filter such as `tbs: "qdr:h"`. You can also specify
-`site` and up to five `exclude_domains`. Hits include dates when Serper supplies
-them. A query starts at most one hedge after a transient
-failure or 4.5 seconds without an answer by default. Both requests may count
-against quota.
+`site` and up to five `exclude_domains`. Both filters accept domains and URLs,
+use only the hostname, and drop a leading `www.` and trailing dot. Serper may
+ignore `location`. Put the place name in the query, such as
+`best pizza in Seattle`. Hits preserve Serper’s original date and include
+`dateIso` for recognized absolute dates. A query starts at most one hedge after
+a transient failure or 4.5 seconds without an answer by default. Both requests
+may count against quota.
 
 Scrapfly starts with datacenter and escalates to the Unblocker when a page is
 blocked or challenged. Empty pages and JavaScript shells can jump straight

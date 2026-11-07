@@ -1,3 +1,4 @@
+import { toolInput } from "./input.js";
 import type { ResultCache } from "./result-cache.js";
 import { defaults } from "../config/tuning.js";
 import { MAX_URL_CHARS } from "../config/safety-limits.js";
@@ -79,9 +80,11 @@ export function registerScrape(
     {
       description:
         "Read a public web page as Markdown. Large results are saved to a local file.",
-      inputSchema: z
-        .object({ url: urlInput, start_rung: startRung, fresh: freshInput })
-        .strict(),
+      inputSchema: toolInput({
+        url: urlInput,
+        start_rung: startRung,
+        fresh: freshInput,
+      }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ url, start_rung, fresh }) =>
@@ -104,13 +107,11 @@ export function registerScrape(
     "scrape_batch",
     {
       description: "Read up to three public web pages in order.",
-      inputSchema: z
-        .object({
-          urls: z.array(urlInput).min(1).max(3),
-          start_rung: startRung,
-          fresh: freshInput,
-        })
-        .strict(),
+      inputSchema: toolInput({
+        urls: z.array(urlInput).min(1).max(3),
+        start_rung: startRung,
+        fresh: freshInput,
+      }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ urls, start_rung, fresh }) =>

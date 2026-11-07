@@ -1,3 +1,5 @@
+import { registerBrowser } from "../tools/browser.js";
+import type { SearchInput } from "../providers/types.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -330,4 +332,124 @@ test("an empty search is retried and a later hit can be cached", async (t) => {
     { type: "text", text: '{"cached":true}' },
   ]);
   assert.equal(attempts, 2);
+});
+
+test("MCP tools explain unknown fields and normalize search filters", async (t) => {
+  const token = "d".repeat(40);
+  const dir = mkdtempSync(join(tmpdir(), "tool-input-"));
+  const files = new OutputFiles(join(dir, "spills"));
+  const searches: SearchInput[] = [];
+  const server = createMcpHttp(token, (mcp) => {
+    registerSearch(mcp, [
+      {
+        async search(args) {
+          searches.push(args);
+          return [];
+        },
+      },
+    ]);
+    registerScrape(mcp, [], files);
+    return registerBrowser(mcp, [], files);
+  });
+  server.listen(0, "127.0.0.1");
+  t.after(() => {
+    server.close();
+    server.closeAllConnections();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const client = new Client({ name: "tool-input-test", version: "1.0.0" });
+  t.after(() => client.close());
+  await client.connect(
+    new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${address.port}/mcp`),
+      {
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      },
+    ),
+  );
+  const tools = (await client.listTools()).tools;
+  const search = tools.find(({ name }) => name === "search");
+  assert.match(search?.description ?? "", /put the place name in the query/i);
+  assert.match(
+    JSON.stringify(search?.inputSchema.properties?.location),
+    /Serper may ignore this/,
+  );
+  const location = "Seattle, Washington, United States";
+  const result = await client.callTool({
+    name: "search",
+    arguments: {
+      q: "best pizza in Seattle",
+      location,
+      site: " https://WWW.TOKIO.RS./guide?x=1 ",
+      exclude_domains: ["https://WWW.SPAM.TEST:8443/path", " WWW.OTHER.TEST. "],
+    },
+  });
+  assert(!result.isError);
+  assert.deepEqual(searches, [
+    {
+      query: "best pizza in Seattle",
+      location,
+      site: "tokio.rs",
+      exclude_domains: ["spam.test", "other.test"],
+      limit: 5,
+    },
+  ]);
+
+  const failures = [
+    [
+      "search",
+      { q: "test", recent: "week" },
+      /Unknown field "recent". Valid fields are .*recency/,
+    ],
+    [
+      "search_batch",
+      { searches: [{ q: "test", recent: "week" }] },
+      /Unknown field "recent". Valid fields are .*recency.* at searches\[0\]/,
+    ],
+    [
+      "search_batch",
+      { searches: [{ q: "test" }], fresh: true },
+      /Unknown field "fresh". Valid fields are searches\./,
+    ],
+    [
+      "scrape",
+      { url: "https://1.1.1.1/", format: "text" },
+      /Unknown field "format". Valid fields are url, start_rung, fresh/,
+    ],
+    [
+      "scrape_batch",
+      { urls: ["https://1.1.1.1/"], format: "text" },
+      /Unknown field "format". Valid fields are urls, start_rung, fresh/,
+    ],
+    [
+      "browser",
+      { command: { action: "close" }, extra: true },
+      /Unknown field "extra". Valid fields are command\./,
+    ],
+    [
+      "browser",
+      { command: { action: "scroll", pixel: 200 } },
+      /Unknown field "pixel". Valid fields are action, pixels\. at command/,
+    ],
+    [
+      "search",
+      { q: "test", site: "invalid_domain" },
+      /site must be a domain like tokio\.rs/,
+    ],
+    [
+      "search",
+      { q: "test", exclude_domains: ["https://127.0.0.1/"] },
+      /Each exclude_domains entry must be a domain like tokio\.rs.* at exclude_domains\[0\]/,
+    ],
+  ] as const;
+  for (const [name, args, message] of failures) {
+    const failure = await client.callTool({ name, arguments: args });
+    assert.equal(failure.isError, true);
+    assert(Array.isArray(failure.content));
+    assert.match(failure.content[0].text, message);
+  }
+  assert.equal(searches.length, 1);
 });
