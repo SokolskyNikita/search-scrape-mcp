@@ -1,0 +1,30 @@
+{
+  "name": "search-scrape-mcp",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "npm run build && node --test \"dist/**/*.test.js\"",
+    "build": "tsc",
+    "start": "node dist/server/main.js",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ipaddr.js": "^2.5.0",
+    "playwright-core": "^1.65.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "eslint": "^9.39.5",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1"
+  }
+}
