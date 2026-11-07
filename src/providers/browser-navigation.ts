@@ -28,9 +28,13 @@ export async function guardNavigations(
   }
   cdp.on("Fetch.requestPaused", (event) => {
     void (async () => {
-      const main =
-        event.frameId === frameTree.frame.id &&
-        (!pace || event.resourceType === "Document");
+      if (
+        event.frameId !== frameTree.frame.id ||
+        (event.resourceType && event.resourceType !== "Document")
+      ) {
+        await cdp.send("Fetch.continueRequest", { requestId: event.requestId });
+        return;
+      }
       const networkId = event.networkId;
       const controller = new AbortController();
       if (pace && networkId) {
@@ -40,10 +44,8 @@ export async function guardNavigations(
       }
       let release: (() => void) | undefined;
       try {
-        const url = main
-          ? await validatePublicUrl(event.request.url)
-          : new URL(event.request.url);
-        if (pace && (url.protocol === "https:" || url.protocol === "http:")) {
+        const url = await validatePublicUrl(event.request.url);
+        if (pace) {
           disconnected?.throwIfAborted();
           controller.signal.throwIfAborted();
           release = await pace(url.hostname, controller.signal);
@@ -63,7 +65,7 @@ export async function guardNavigations(
         if (networkId && pending.get(networkId) === controller)
           finish(networkId);
         if (cancelled) return;
-        if (main) blocked = safeError(error);
+        blocked = safeError(error);
         await cdp.send("Fetch.failRequest", {
           requestId: event.requestId,
           errorReason: "BlockedByClient",
@@ -87,7 +89,7 @@ export async function guardNavigations(
   if (onDocumentResponse || pace) await cdp.send("Network.enable");
   // A separate CDP session keeps Playwright's own request interception disabled.
   await cdp.send("Fetch.enable", {
-    patterns: pace ? [{}] : [{ resourceType: "Document" }],
+    patterns: [{ resourceType: "Document" }],
   });
   return () => {
     const error = blocked;

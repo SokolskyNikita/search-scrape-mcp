@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
-import type { CDPSession } from "playwright-core";
+import { chromium, type CDPSession } from "playwright-core";
+import { existsSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   documentResponseState,
   guardNavigations,
@@ -139,7 +142,7 @@ test("fragment changes retain status but a new document starts with no response"
   assert.equal(doc.mitigated, false);
 });
 
-test("browser HTTP requests share scrape hostname slots until network completion", async () => {
+test("browser main-frame navigations share scrape hostname slots until network completion", async () => {
   const handlers = new Map<string, (event: unknown) => void>();
   const commands: [string, unknown][] = [];
   const cdp = {
@@ -167,7 +170,10 @@ test("browser HTTP requests share scrape hostname slots until network completion
       limits.acquire(requestSignal, Infinity, undefined, host),
     signal,
   );
-  assert.deepEqual(commands.at(-1), ["Fetch.enable", { patterns: [{}] }]);
+  assert.deepEqual(commands.at(-1), [
+    "Fetch.enable",
+    { patterns: [{ resourceType: "Document" }] },
+  ]);
   const pause = (networkId: string, resourceType: string) =>
     handlers.get("Fetch.requestPaused")!({
       networkId,
@@ -188,13 +194,68 @@ test("browser HTTP requests share scrape hostname slots until network completion
   assert.equal(commands.at(-1)?.[0], "Fetch.failRequest");
   releaseScrape();
 
-  pause("asset", "Script");
+  pause("allowed", "Document");
   await setImmediate();
   assert.equal(commands.at(-1)?.[0], "Fetch.continueRequest");
   await assert.rejects(limits.acquire(signal, Infinity, undefined, "1.1.1.1"), {
     code: "local_site_limit",
   });
-  handlers.get("Network.loadingFinished")!({ requestId: "asset" });
+  handlers.get("Network.loadingFinished")!({ requestId: "allowed" });
   (await limits.acquire(signal, Infinity, undefined, "1.1.1.1"))();
   connection.abort();
 });
+
+const chromeExecutable =
+  process.env.MCP_TEST_CHROME ?? chromium.executablePath();
+test(
+  "a browser page loads 32 same-host files under navigation pacing",
+  {
+    skip:
+      !existsSync(chromeExecutable) &&
+      "Set MCP_TEST_CHROME to a Chromium executable",
+  },
+  async (t) => {
+    const count = 32;
+    const server = createServer((req, res) => {
+      const url = new URL(req.url!, "http://1.1.1.1");
+      if (url.pathname === "/fixture") {
+        res.setHeader("Content-Type", "text/html");
+        res.end(
+          Array.from(
+            { length: count },
+            (_, index) => `<script src="/asset-${index}.js"></script>`,
+          ).join(""),
+        );
+      } else if (/^\/asset-\d+\.js$/.test(url.pathname)) {
+        res.setHeader("Content-Type", "text/javascript");
+        res.end("window.loaded = (window.loaded || 0) + 1;");
+      } else {
+        res.writeHead(404).end();
+      }
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    t.after(() => server.close());
+    const address = server.address() as AddressInfo;
+    const browser = await chromium.launch({
+      executablePath: chromeExecutable,
+      proxy: { server: `http://127.0.0.1:${address.port}` },
+    });
+    try {
+      const page = await browser.newPage();
+      const cdp = await page.context().newCDPSession(page);
+      const limits = new RequestLimits({ ...defaults, localLimitWaitMs: 0 });
+      let paced = 0;
+      await guardNavigations(cdp, undefined, (host, signal) => {
+        paced++;
+        return limits.acquire(signal, Infinity, undefined, host);
+      });
+      await page.goto("http://1.1.1.1/fixture", { timeout: 10_000 });
+      assert.equal(await page.evaluate("window.loaded"), count);
+      assert.equal(paced, 1);
+    } finally {
+      await browser.close();
+    }
+  },
+);
