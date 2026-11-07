@@ -66,6 +66,7 @@ export function watchCaptcha(cdp: CDPSession, page: Page) {
           );
         if (
           view &&
+          !challenged() &&
           !pending.size &&
           (!view.widget || solved || view.answered)
         ) {

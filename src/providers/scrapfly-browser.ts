@@ -10,7 +10,11 @@ import { pageContent } from "../tools/page-content.js";
 import { watchCaptcha } from "./browser-captcha.js";
 import { guardNavigations } from "./browser-navigation.js";
 import { scrapflyTransport } from "./scrapfly-browser-transport.js";
-import type { BrowserProvider, ScrapeProvider } from "./types.js";
+import type {
+  BrowserProvider,
+  BrowserTarget,
+  ScrapeProvider,
+} from "./types.js";
 
 const actionTimeout = 15_000;
 
@@ -120,6 +124,23 @@ export function scrapflyBrowser(key: string): BrowserProvider {
               );
             }
 
+            let generation = 0;
+            const refs = new Map<string, string>();
+            page.on("framenavigated", (frame) => {
+              if (frame === page.mainFrame()) refs.clear();
+            });
+
+            function locator(target: BrowserTarget) {
+              if (target.selector) return page.locator(target.selector);
+              const ref = target.ref && refs.get(target.ref);
+              if (!ref)
+                throw new AppError(
+                  "browser_ref",
+                  "Unknown or stale element ref. Take a fresh snapshot.",
+                );
+              return page.getByRef(ref);
+            }
+
             async function snapshot(): Promise<string> {
               if (page.url() === "about:blank")
                 throw new AppError(
@@ -127,14 +148,27 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                   "The browser is on a blank page.",
                 );
               await content();
-              const tree = (await page.ariaSnapshot({ timeout: actionTimeout }))
+              const tree = (
+                await page.ariaSnapshot({ mode: "ai", timeout: actionTimeout })
+              )
                 .split("\n")
                 .filter(
                   (line) =>
                     !/^\s*- (?:generic|group|separator):?\s*$/.test(line),
                 )
                 .join("\n");
-              return pageContent(tree);
+              refs.clear();
+              const version = ++generation;
+              const snapshot = pageContent(
+                tree.replace(
+                  /\[ref=(e\d+)\]/g,
+                  (_, ref: string) => `[ref=s${version}-${ref}]`,
+                ),
+              );
+              for (const match of snapshot.matchAll(/\[ref=(s\d+-(e\d+))\]/g)) {
+                if (match[1] && match[2]) refs.set(match[1], match[2]);
+              }
+              return snapshot;
             }
 
             async function content(fullPage = false): Promise<string> {
@@ -180,12 +214,45 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                     await captcha.wait(() => mitigated);
                     return await within(content(fullPage), actionTimeout);
                   }
-                  if (action.action === "click")
-                    await page.locator(action.selector).click();
+                  if (action.action === "back") {
+                    lastStatus = undefined;
+                    mitigated = false;
+                    captcha.reset();
+                    await page.goBack({ waitUntil: "domcontentloaded" });
+                    await captcha.wait(() => mitigated);
+                  }
+                  if (action.action === "click") await locator(action).click();
                   if (action.action === "fill")
-                    await page.locator(action.selector).fill(action.text);
+                    await locator(action).fill(action.text);
                   if (action.action === "press")
-                    await page.locator(action.selector).press(action.key);
+                    await locator(action).press(action.key);
+                  if (action.action === "scroll")
+                    await page.mouse.wheel(0, action.pixels);
+                  if (action.action === "wait") {
+                    if (action.selector)
+                      await page
+                        .locator(action.selector)
+                        .waitFor({ timeout: Math.max(1, action.ms) });
+                    else await delay(action.ms);
+                  }
+                  if (action.action === "screenshot") {
+                    await content();
+                    const image = await page.screenshot({
+                      type: "jpeg",
+                      quality: 65,
+                      timeout: actionTimeout,
+                    });
+                    if (image.byteLength > 1_000_000)
+                      throw new AppError(
+                        "image_size",
+                        "Viewport screenshot exceeds 1 MB.",
+                      );
+                    return {
+                      type: "image",
+                      mimeType: "image/jpeg",
+                      data: image.toString("base64"),
+                    };
+                  }
                   return await within(snapshot(), actionTimeout);
                 } catch (error) {
                   if (isClosed()) throw closedError();
@@ -223,10 +290,13 @@ export function browserScraper(provider: BrowserProvider): ScrapeProvider {
       const target = await validatePublicUrl(url);
       const session = await provider.open();
       try {
-        return await session.run(
+        const result = await session.run(
           { action: "navigate", url: target.href },
           true,
         );
+        if (typeof result !== "string")
+          throw new AppError("internal", "Expected browser page text.");
+        return result;
       } finally {
         await session.close();
       }

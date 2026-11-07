@@ -1,3 +1,4 @@
+import type { BrowserImage } from "../providers/types.js";
 import { AppError, safeError } from "../server/error.js";
 
 export async function fallback<T, R>(
@@ -47,6 +48,13 @@ export async function toolResult(
         (item: unknown) =>
           item !== null && typeof item === "object" && "error" in item,
       );
+    if (
+      result &&
+      typeof result === "object" &&
+      "type" in result &&
+      result.type === "image"
+    )
+      return { content: [result as BrowserImage] };
     return {
       content: [
         {
