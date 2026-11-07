@@ -5,9 +5,11 @@ export async function fallback<T, R>(
   providers: readonly T[],
   run: (provider: T) => Promise<R>,
   attempt: () => void,
+  signal: AbortSignal,
 ): Promise<R> {
   const errors: AppError[] = [];
   for (const provider of providers) {
+    signal.throwIfAborted();
     try {
       attempt();
       return await run(provider);
@@ -33,15 +35,30 @@ export async function fallback<T, R>(
 
 export async function toolResult(
   name: string,
-  run: (attempt: () => void) => Promise<unknown>,
+  run: (attempt: () => void, signal: AbortSignal) => Promise<unknown>,
 ) {
   const start = performance.now();
   let attempts = 0;
   let ok = false;
+  const controller = new AbortController();
+  const timeoutError = new AppError(
+    "tool_timeout",
+    "Tool exceeded its 54-second deadline.",
+  );
+  let timer: NodeJS.Timeout | undefined;
   try {
-    const result = await run(() => {
-      attempts++;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(timeoutError);
+        controller.abort(timeoutError);
+      }, 54_000);
     });
+    const result = await Promise.race([
+      run(() => {
+        attempts++;
+      }, controller.signal),
+      deadline,
+    ]);
     ok =
       !Array.isArray(result) ||
       !result.some(
@@ -73,6 +90,7 @@ export async function toolResult(
       ],
     };
   } finally {
+    clearTimeout(timer);
     console.log(
       JSON.stringify({
         tool: name,
@@ -85,15 +103,25 @@ export async function toolResult(
 }
 
 export async function batch<I, O>(inputs: I[], run: (input: I) => Promise<O>) {
-  const results = [];
-  for (const [index, input] of inputs.entries()) {
-    try {
-      results.push({ index, result: await run(input) });
-    } catch (error) {
-      const { code, message } = safeError(error);
-      if (code === "internal") console.error("Unexpected batch item error.");
-      results.push({ index, error: { code, message } });
-    }
-  }
+  const results: (
+    | { index: number; result: O }
+    | { index: number; error: { code: string; message: string } }
+  )[] = [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(2, inputs.length) }, async () => {
+      while (next < inputs.length) {
+        const index = next++;
+        try {
+          results[index] = { index, result: await run(inputs[index]!) };
+        } catch (error) {
+          const { code, message } = safeError(error);
+          if (code === "internal")
+            console.error("Unexpected batch item error.");
+          results[index] = { index, error: { code, message } };
+        }
+      }
+    }),
+  );
   return results;
 }

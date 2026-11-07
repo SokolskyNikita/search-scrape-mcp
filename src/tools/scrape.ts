@@ -13,14 +13,23 @@ export function registerScrape(
   providers: readonly ScrapeProvider[],
   cache = new PageCache(),
 ) {
-  async function scrape(url: string, limit: number, attempt: () => void) {
+  async function scrape(
+    url: string,
+    limit: number,
+    attempt: () => void,
+    signal: AbortSignal,
+  ) {
     const target = await validatePublicUrl(url);
     const markdown = await fallback(
       providers,
       async (provider) =>
-        pageContent(await provider.scrape(target.href), { limit: Infinity }),
+        pageContent(await provider.scrape(target.href, signal), {
+          limit: Infinity,
+        }),
       attempt,
+      signal,
     );
+    signal.throwIfAborted();
     return cache.read(cache.put(markdown), 0, limit);
   }
 
@@ -32,7 +41,9 @@ export function registerScrape(
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ url }) =>
-      toolResult("scrape", (attempt) => scrape(url, 48_000, attempt)),
+      toolResult("scrape", (attempt, signal) =>
+        scrape(url, 48_000, attempt, signal),
+      ),
   );
   server.registerTool(
     "scrape_batch",
@@ -42,8 +53,8 @@ export function registerScrape(
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ urls }) =>
-      toolResult("scrape_batch", (attempt) =>
-        batch(urls, (url) => scrape(url, 20_000, attempt)),
+      toolResult("scrape_batch", (attempt, signal) =>
+        batch(urls, (url) => scrape(url, 20_000, attempt, signal)),
       ),
   );
   server.registerTool(

@@ -26,7 +26,7 @@ const challenge = () =>
 
 export function scrapflyScrape(key: string): ScrapeProvider {
   return {
-    async scrape(url) {
+    async scrape(url, signal) {
       const target = await validatePublicUrl(url);
       target.hash = "";
       const endpoint = new URL("https://api.scrapfly.io/scrape");
@@ -43,6 +43,7 @@ export function scrapflyScrape(key: string): ScrapeProvider {
           endpoint,
           {
             headers: { Accept: "application/json" },
+            signal,
           },
           (response) => {
             const code = response.headers.get("X-Scrapfly-Reject-Code");
@@ -71,6 +72,7 @@ export function scrapflyScrape(key: string): ScrapeProvider {
       // Scrapfly controls redirect fetching and DNS on its infrastructure.
       // Check its reported hops and final URL before releasing the response.
       for (const hop of new Set([...(context?.redirects ?? []), result.url])) {
+        signal?.throwIfAborted();
         if (hop !== target.href) await validatePublicUrl(hop);
       }
       if (result.error?.code.startsWith("ERR::ASP::")) {

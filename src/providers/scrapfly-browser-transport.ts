@@ -3,13 +3,17 @@ import WebSocket from "ws";
 import { AppError } from "../server/error.js";
 export async function scrapflyTransport(
   endpoint: URL,
+  signal?: AbortSignal,
 ): Promise<ConnectOverCDPTransport> {
+  signal?.throwIfAborted();
   const socket = new WebSocket(endpoint, {
     handshakeTimeout: 15_000,
     maxPayload: 8_000_000,
     perMessageDeflate: false,
   });
   const transport = cdpTransport(socket);
+  const abort = () => socket.terminate();
+  signal?.addEventListener("abort", abort, { once: true });
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);
     socket.on("error", () => {
@@ -39,7 +43,8 @@ export async function scrapflyTransport(
         ),
       ),
     );
-  });
+  }).finally(() => signal?.removeEventListener("abort", abort));
+  signal?.throwIfAborted();
   return transport;
 }
 

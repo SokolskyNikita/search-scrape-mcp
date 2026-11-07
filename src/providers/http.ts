@@ -7,10 +7,14 @@ export async function providerRequest(
   classifyError?: (response: Response) => AppError | undefined,
 ): Promise<unknown> {
   try {
+    const timeout = AbortSignal.timeout(32_000);
+    const signal = init.signal
+      ? AbortSignal.any([init.signal, timeout])
+      : timeout;
     const response = await fetch(url, {
       ...init,
       redirect: "error",
-      signal: AbortSignal.timeout(60_000),
+      signal,
     });
     if (!response.ok) {
       await response.body?.cancel();

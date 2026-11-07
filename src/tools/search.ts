@@ -17,12 +17,18 @@ export function registerSearch(server: McpServer, providers: SearchProvider[]) {
   async function search(
     { query, q, limit }: z.infer<typeof input>,
     attempt: () => void,
+    signal: AbortSignal,
   ) {
     if ((query === undefined) === (q === undefined)) {
       throw new AppError("input", "Provide exactly one of query or q.");
     }
     const args: SearchInput = { query: (query ?? q)!, limit };
-    return fallback(providers, (provider) => provider.search(args), attempt);
+    return fallback(
+      providers,
+      (provider) => provider.search(args, signal, attempt),
+      attempt,
+      signal,
+    );
   }
   server.registerTool(
     "search",
@@ -31,7 +37,8 @@ export function registerSearch(server: McpServer, providers: SearchProvider[]) {
       inputSchema: input,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    (args) => toolResult("search", (attempt) => search(args, attempt)),
+    (args) =>
+      toolResult("search", (attempt, signal) => search(args, attempt, signal)),
   );
   server.registerTool(
     "search_batch",
@@ -52,8 +59,8 @@ export function registerSearch(server: McpServer, providers: SearchProvider[]) {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ searches }) =>
-      toolResult("search_batch", (attempt) =>
-        batch(searches, (args) => search(args, attempt)),
+      toolResult("search_batch", (attempt, signal) =>
+        batch(searches, (args) => search(args, attempt, signal)),
       ),
   );
 }

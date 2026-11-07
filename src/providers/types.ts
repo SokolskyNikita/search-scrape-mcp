@@ -10,11 +10,15 @@ export interface SearchHit {
 }
 
 export interface SearchProvider {
-  search(input: SearchInput): Promise<SearchHit[]>;
+  search(
+    input: SearchInput,
+    signal?: AbortSignal,
+    retry?: () => void,
+  ): Promise<SearchHit[]>;
 }
 
 export interface ScrapeProvider {
-  scrape(url: string): Promise<string>;
+  scrape(url: string, signal?: AbortSignal): Promise<string>;
 }
 
 export type BrowserTarget = { selector?: string; ref?: string };
@@ -40,10 +44,11 @@ export interface BrowserSession {
   run(
     action: Exclude<BrowserAction, { action: "close" }>,
     fullPage?: boolean,
+    signal?: AbortSignal,
   ): Promise<string | BrowserImage>;
   close(): Promise<void>;
 }
 
 export interface BrowserProvider {
-  open(): Promise<BrowserSession>;
+  open(signal?: AbortSignal): Promise<BrowserSession>;
 }

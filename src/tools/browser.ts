@@ -88,7 +88,7 @@ export function registerBrowser(
       annotations: { openWorldHint: true },
     },
     ({ command }) =>
-      toolResult("browser", async (attempt) => {
+      toolResult("browser", async (attempt, signal) => {
         if (closed || active)
           throw new AppError(
             "browser_busy",
@@ -112,13 +112,17 @@ export function registerBrowser(
           else
             browser = await fallback(
               providers,
-              (provider) => provider.open(),
+              (provider) => provider.open(signal),
               attempt,
+              signal,
             );
           try {
-            return await browser.run(command);
+            return await browser.run(command, false, signal);
           } catch (error) {
-            if (error instanceof AppError && error.code === "browser_closed")
+            if (
+              signal.aborted ||
+              (error instanceof AppError && error.code === "browser_closed")
+            )
               await close();
             throw error;
           }

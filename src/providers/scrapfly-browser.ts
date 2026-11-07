@@ -33,7 +33,7 @@ function within<T>(operation: Promise<T>, ms: number): Promise<T> {
 
 export function scrapflyBrowser(key: string): BrowserProvider {
   return {
-    async open() {
+    async open(signal) {
       const endpoint = new URL("wss://browser.scrapfly.io");
       endpoint.searchParams.set("key", key);
       endpoint.searchParams.set("timeout", "1800");
@@ -55,8 +55,10 @@ export function scrapflyBrowser(key: string): BrowserProvider {
         })());
       }
 
+      const abort = () => transport?.close();
+      signal?.addEventListener("abort", abort, { once: true });
       try {
-        transport = await scrapflyTransport(endpoint);
+        transport = await scrapflyTransport(endpoint, signal);
         browser = await chromium.connectOverCDP(transport, {
           timeout: 8_000,
           noDefaults: true,
@@ -199,7 +201,9 @@ export function scrapflyBrowser(key: string): BrowserProvider {
             }
 
             return {
-              async run(action, fullPage) {
+              async run(action, fullPage, runSignal) {
+                runSignal?.throwIfAborted();
+                runSignal?.addEventListener("abort", abort, { once: true });
                 navigationError();
                 try {
                   if (isClosed()) throw closedError();
@@ -211,7 +215,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                     await page.goto(target.href, {
                       waitUntil: "domcontentloaded",
                     });
-                    await captcha.wait(() => mitigated);
+                    await captcha.wait(() => mitigated, runSignal);
                     return await within(content(fullPage), actionTimeout);
                   }
                   if (action.action === "back") {
@@ -219,7 +223,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                     mitigated = false;
                     captcha.reset();
                     await page.goBack({ waitUntil: "domcontentloaded" });
-                    await captcha.wait(() => mitigated);
+                    await captcha.wait(() => mitigated, runSignal);
                   }
                   if (action.action === "click") await locator(action).click();
                   if (action.action === "fill")
@@ -233,7 +237,8 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                       await page
                         .locator(action.selector)
                         .waitFor({ timeout: Math.max(1, action.ms) });
-                    else await delay(action.ms);
+                    else
+                      await delay(action.ms, undefined, { signal: runSignal });
                   }
                   if (action.action === "screenshot") {
                     await content();
@@ -263,6 +268,8 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                     "browser_action",
                     "Scrapfly Cloud Browser action failed or timed out.",
                   );
+                } finally {
+                  runSignal?.removeEventListener("abort", abort);
                 }
               },
               close,
@@ -279,6 +286,8 @@ export function scrapflyBrowser(key: string): BrowserProvider {
             ? "Could not initialize an isolated Scrapfly browser page."
             : "Could not attach Playwright to the Scrapfly browser.",
         );
+      } finally {
+        signal?.removeEventListener("abort", abort);
       }
     },
   };
@@ -286,13 +295,14 @@ export function scrapflyBrowser(key: string): BrowserProvider {
 
 export function browserScraper(provider: BrowserProvider): ScrapeProvider {
   return {
-    async scrape(url) {
+    async scrape(url, signal) {
       const target = await validatePublicUrl(url);
-      const session = await provider.open();
+      const session = await provider.open(signal);
       try {
         const result = await session.run(
           { action: "navigate", url: target.href },
           true,
+          signal,
         );
         if (typeof result !== "string")
           throw new AppError("internal", "Expected browser page text.");
