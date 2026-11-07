@@ -9,7 +9,13 @@ export async function fallback<T, R>(
     try {
       return await run(provider);
     } catch (error) {
-      if (!(error instanceof AppError)) throw error;
+      if (
+        !(error instanceof AppError) ||
+        ["unsafe_url", "dns", "provider_auth", "provider_limit"].includes(
+          error.code,
+        )
+      )
+        throw error;
       errors.push(error);
     }
   }

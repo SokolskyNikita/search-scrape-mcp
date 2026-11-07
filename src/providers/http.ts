@@ -4,6 +4,7 @@ export async function providerRequest(
   provider: string,
   url: URL,
   init: RequestInit = {},
+  classifyError?: (response: Response) => AppError | undefined,
 ): Promise<unknown> {
   try {
     const response = await fetch(url, {
@@ -12,6 +13,9 @@ export async function providerRequest(
       signal: AbortSignal.timeout(60_000),
     });
     if (!response.ok) {
+      await response.body?.cancel();
+      const classified = classifyError?.(response);
+      if (classified) throw classified;
       throw new AppError(
         "provider_http",
         `${provider} returned HTTP ${response.status}.`,
