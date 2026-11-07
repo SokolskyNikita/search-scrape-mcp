@@ -2,17 +2,17 @@ import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { loadConfig } from "../config/index.js";
+import { loadProviderKeys, parseSettings } from "../config/index.js";
 import { createApp } from "./app.js";
 import { AppError, safeError } from "./error.js";
 
 async function smoke() {
   const challenge = process.argv.includes("--challenge");
   const browserOnly = challenge || process.argv.includes("--browser-only");
-  const config = loadConfig({
-    ...process.env,
-    MCP_TOKEN: randomBytes(32).toString("base64url"),
-  });
+  const config = {
+    ...parseSettings({ token: randomBytes(32).toString("base64url") }),
+    ...loadProviderKeys(),
+  };
   if (!config.scrapflyKey)
     throw new AppError(
       "config",

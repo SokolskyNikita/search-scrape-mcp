@@ -6,8 +6,9 @@ cd "$(dirname "$0")/.."
 repo="$PWD"
 node_bin="$(command -v node)"
 config="${MCP_CONFIG:-$HOME/.config/search-scrape-mcp/config.json}"
-if [[ "$config" != /* ]]; then
-  printf 'MCP_CONFIG must be an absolute file path.\n' >&2
+key_file="${MCP_KEYS_FILE:-$HOME/.config/search-scrape-mcp/env}"
+if [[ "$config" != /* || "$key_file" != /* ]]; then
+  printf 'MCP_CONFIG and MCP_KEYS_FILE must be absolute file paths.\n' >&2
   exit 1
 fi
 
@@ -25,25 +26,13 @@ if (Number(process.versions.node.split('.')[0]) < 22) {
 JS
 npm ci
 npm run build
-if [[ ! -e "$config" ]]; then
-  MCP_CONFIG="$config" ./scripts/configure.sh
-fi
-MCP_CONFIG="$config" "$node_bin" --input-type=module - <<'JS'
-import { loadConfig } from './dist/config/index.js';
-import { safeError } from './dist/server/error.js';
-try {
-  loadConfig();
-} catch (error) {
-  console.error(safeError(error).message);
-  process.exitCode = 1;
-}
-JS
+MCP_CONFIG="$config" MCP_KEYS_FILE="$key_file" ./scripts/configure.sh
 
 mkdir -p "$agent_dir" "$logs"
 temp_plist="$(mktemp "$agent_dir/.$label.XXXXXX")"
 trap 'rm -f "$temp_plist"' EXIT
-"$node_bin" --input-type=module - "$label" "$node_bin" "$repo" "$config" "$logs" > "$temp_plist" <<'JS'
-const [label, node, repo, config, logs] = process.argv.slice(2);
+"$node_bin" --input-type=module - "$label" "$node_bin" "$repo" "$config" "$logs" "$key_file" > "$temp_plist" <<'JS'
+const [label, node, repo, config, logs, keys] = process.argv.slice(2);
 const xml = (value) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 console.log(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -55,6 +44,7 @@ console.log(`<?xml version="1.0" encoding="UTF-8"?>
   <key>WorkingDirectory</key><string>${xml(repo)}</string>
   <key>EnvironmentVariables</key><dict>
     <key>MCP_CONFIG</key><string>${xml(config)}</string>
+    <key>MCP_KEYS_FILE</key><string>${xml(keys)}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

@@ -8,7 +8,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "smoke": "npm run build && node --env-file=\"$HOME/.config/search-scrape-mcp/env\" dist/server/smoke.js"
+    "smoke": "npm run build && node dist/server/smoke.js"
   },
   "type": "module",
   "engines": {

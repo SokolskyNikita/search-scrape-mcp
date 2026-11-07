@@ -6,11 +6,11 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loadConfig } from "../config/index.js";
+import { loadSettings } from "../config/index.js";
 import { AppError } from "./error.js";
 
 try {
-  const { port, token } = loadConfig();
+  const { port, token } = loadSettings();
   const identity = { name: "search-scrape-desktop", version: "1.0.0" };
   const client = new Client(identity);
   const upstream = new StreamableHTTPClientTransport(
@@ -28,7 +28,7 @@ try {
     client.listTools(request.params, { signal }),
   );
   relay.setRequestHandler(CallToolRequestSchema, (request, { signal }) =>
-    client.callTool(request.params, undefined, { signal, timeout: 240_000 }),
+    client.callTool(request.params, undefined, { signal, timeout: 58_000 }),
   );
 
   let closing = false;
