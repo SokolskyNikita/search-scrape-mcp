@@ -6,6 +6,9 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { defaults } from "../config/tuning.js";
+import type { ScrapeResult } from "../providers/types.js";
+import { ResultCache } from "./result-cache.js";
 import { AppError } from "../server/error.js";
 import { OutputFiles } from "./output-files.js";
 import { registerScrape } from "./scrape.js";
@@ -99,4 +102,72 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
     tried: [],
   });
   assert.equal(busyItems[1].result.check.code, "ok");
+});
+
+test("main and full use separate caches and batch forwards content mode", async (t) => {
+  const mcp = new McpServer({ name: "scrape-test", version: "1.0.0" });
+  const dir = mkdtempSync(join(tmpdir(), "scrape-mode-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const settings = { ...defaults, cacheTtlMs: 60_000 };
+  const seen: (string | undefined)[] = [];
+  let browserAttempts = 0;
+  registerScrape(
+    mcp,
+    [
+      {
+        name: "scrapfly-browser",
+        scrape: async () => {
+          browserAttempts++;
+          throw new AppError("blocked", "Page was blocked.");
+        },
+      },
+      {
+        name: "scrapfly",
+        scrape: async (_url, _signal, options) => {
+          seen.push(options?.contentMode);
+          return {
+            markdown: options?.contentMode ?? "missing",
+            check: { code: "ok", reason: "Readable page." },
+          };
+        },
+      },
+    ],
+    new OutputFiles(join(dir, "spills")),
+    settings,
+    new ResultCache<ScrapeResult & { tried: string[] }>(settings),
+  );
+
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "1.0.0" });
+  await mcp.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await mcp.close();
+  });
+
+  const url = "https://8.8.8.8/article";
+  const call = async (name: string, args: Record<string, unknown>) => {
+    const result = await client.callTool({ name, arguments: args });
+    assert(Array.isArray(result.content));
+    return JSON.parse(result.content[0].text);
+  };
+  assert.equal((await call("scrape", { url })).markdown, "main");
+  assert.equal(
+    (await call("scrape", { url, content_mode: "main" })).cached,
+    true,
+  );
+  assert.equal(
+    (await call("scrape", { url, content_mode: "full" })).markdown,
+    "full",
+  );
+  const batch = await call("scrape_batch", {
+    urls: [url, "https://1.1.1.1/article"],
+    content_mode: "full",
+  });
+  assert.equal(batch[0].result.cached, true);
+  assert.equal(batch[1].result.markdown, "full");
+  assert.deepEqual(seen, ["main", "full", "full"]);
+  assert.equal(browserAttempts, 1);
 });

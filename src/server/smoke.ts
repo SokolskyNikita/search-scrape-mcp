@@ -194,7 +194,11 @@ async function smoke() {
         { query: "example.com Example Domain", limit: 1 },
         /https?:\/\//,
       );
-      await call("scrape", { url }, /Example Domain/i);
+      await call(
+        "scrape",
+        { url: "https://www.iana.org/domains/reserved" },
+        /\[RFC 2606\]\(https:\/\//i,
+      );
     }
     await call(
       "browser",
@@ -225,11 +229,13 @@ async function smoke() {
       );
       const snapshot = await call(
         "browser",
-        { command: { action: "snapshot" } },
-        /- (?:heading|link|paragraph|text|generic)\b/i,
+        { command: { action: "snapshot", scope: "page" } },
+        /\b(?:f\d+)?e\d+ (?:heading|link)\b/i,
         "browser snapshot",
       );
-      const ref = JSON.stringify(snapshot).match(/\[ref=(s\d+-e\d+)\]/)?.[1];
+      const ref = JSON.stringify(snapshot).match(
+        /\b((?:f\d+)?e\d+) link\b/,
+      )?.[1];
       if (!ref)
         throw new AppError(
           "smoke",
@@ -238,7 +244,7 @@ async function smoke() {
       await call(
         "browser",
         { command: { action: "press", ref, key: "Tab" } },
-        /\[ref=s\d+-e\d+\]/,
+        /outside the viewport/,
         "browser ref press",
       );
       await call(

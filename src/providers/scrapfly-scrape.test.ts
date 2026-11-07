@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { FileHosts } from "../config/file-hosts.js";
 import { defaults } from "../config/tuning.js";
 import { RequestLimits } from "../server/request-limits.js";
+import { todayUsage, Usage } from "../server/usage.js";
 import { scrapflyScrape } from "./scrapfly-scrape.js";
 import type { ScrapeOptions } from "./types.js";
 
@@ -413,7 +414,7 @@ test("Scrapfly halts after a reported budget overrun and validates failed redire
   assert.equal(request.mock.callCount(), 2);
 });
 
-test("title-only HTML renders with or without a Markdown heading", async (t) => {
+test("full mode renders title-only Scrapfly Markdown with or without a heading", async (t) => {
   let shell = "@bsky.app on Bluesky";
   const request = t.mock.method(globalThis, "fetch", async (url: URL) => {
     assert.equal(url.searchParams.has("country"), false);
@@ -429,7 +430,7 @@ test("title-only HTML renders with or without a Markdown heading", async (t) => 
     const result = await scrapflyScrape("fixture", {
       ...defaults,
       scrapflyCountry: null,
-    }).scrape(target, undefined, { tried });
+    }).scrape(target, undefined, { tried, contentMode: "full" });
     assert.equal(result.check.code, "ok");
     assert.deepEqual(tried, ["datacenter", "render"]);
   }
@@ -860,4 +861,139 @@ test("provider 429 logs unknown cost and prevents new calls during Retry-After",
     assert.equal(row.remainingCredits, null);
     assert.equal(row.proxyPool, null);
   }
+});
+
+const article = `<!doctype html><html><head><title>Weather station report</title></head><body>
+<nav>Sitewide navigation marker</nav>
+<main><article><h1>Weather station report</h1>
+<p>The weather station recorded a steady increase in wind speed throughout the afternoon. Read the <a href="details">station notes</a> for the complete observations.</p>
+<p>Measurements were recorded every ten minutes and checked for consistency before being published in this report.</p>
+<img src="station.jpg" alt="Station photo"></article></main>
+<footer>Sitewide footer marker</footer></body></html>`;
+
+function htmlResponse(content: string, url = target, format = "raw") {
+  const fixture = success(content, url);
+  return Response.json({
+    ...fixture,
+    result: {
+      ...fixture.result,
+      format,
+      content_type: "text/html; charset=UTF-8",
+    },
+  });
+}
+
+test("default and explicit full mode request different formats, including raw HTML clob", async (t) => {
+  const formats: string[] = [];
+  const whole =
+    "# Weather station report\n\nSitewide navigation marker\n\nWhole-page Markdown from Scrapfly.";
+  const clob = "https://api.scrapfly.io/object";
+  t.mock.method(globalThis, "fetch", async (url: URL) => {
+    if (url.pathname === "/object") return new Response(article);
+    assert.equal(url.pathname, "/scrape");
+    const format = url.searchParams.get("format");
+    formats.push(format!);
+    return format === "raw"
+      ? htmlResponse(clob, "https://1.1.1.1/archive/article", "clob")
+      : htmlResponse(whole, target, "markdown");
+  });
+  const provider = scrapflyScrape("fixture");
+  const main = await provider.scrape(target);
+  assert.equal(main.check.code, "ok");
+  assert.match(main.markdown, /recorded a steady increase/);
+  assert.match(
+    main.markdown,
+    /\[station notes\]\(https:\/\/1\.1\.1\.1\/archive\/details\)/,
+  );
+  assert.doesNotMatch(main.markdown, /Sitewide|station\.jpg/);
+  const full = await provider.scrape(target, undefined, {
+    tried: [],
+    contentMode: "full",
+  });
+  assert.equal(full.markdown, whole);
+  assert.deepEqual(formats, ["raw", "markdown:no_images"]);
+});
+
+test("a challenge in the original HTML cannot become a successful extraction", async (t) => {
+  const formats: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: URL) => {
+    formats.push(url.searchParams.get("format")!);
+    return htmlResponse(
+      url.searchParams.has("unblocker")
+        ? article
+        : article.replace(
+            "<title>Weather station report</title>",
+            "<title>Just a moment...</title>",
+          ),
+    );
+  });
+  const tried: string[] = [];
+  const result = await scrapflyScrape("fixture").scrape(target, undefined, {
+    tried,
+  });
+  assert.equal(result.check.code, "ok");
+  assert.deepEqual(tried, ["datacenter", "unblocker"]);
+  assert.deepEqual(formats, ["raw", "raw"]);
+});
+
+test("empty extraction falls back once at the same rung and records both charges", async (t) => {
+  const file = fileState(t);
+  const usage = new Usage(defaults, file);
+  const formats: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: URL) => {
+    const format = url.searchParams.get("format");
+    formats.push(format!);
+    assert.equal(url.searchParams.get("cost_budget"), "5");
+    assert.equal(url.searchParams.has("unblocker"), false);
+    return format === "raw"
+      ? htmlResponse(
+          "<html><head></head><body><img src='station.jpg'></body></html>",
+        )
+      : htmlResponse(body, target, "markdown");
+  });
+  const provider = scrapflyScrape("fixture", defaults, undefined, usage);
+  const tried: string[] = [];
+  const result = await provider.scrape(target, undefined, { tried });
+  assert.equal(result.markdown, "# An article\n\nPublic content.");
+  assert.equal(result.check.code, "extraction_fallback");
+  assert.equal(result.check.warning, true);
+  assert.deepEqual(tried, ["datacenter", "datacenter_full"]);
+  assert.deepEqual(formats, ["raw", "markdown:no_images"]);
+  assert.equal(todayUsage(file).scrapflyCredits, 2);
+});
+
+test("full-page fallback stops when the same rung cannot fit the deadline", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const request = t.mock.method(globalThis, "fetch", async () => {
+    now = 12_000;
+    return htmlResponse("<html><head></head><body></body></html>");
+  });
+  await assert.rejects(
+    scrapflyScrape("fixture").scrape(target, undefined, {
+      start: "render",
+      tried: [],
+      deadline: 42_000,
+    }),
+    {
+      code: "extraction_failed",
+      details: { hint: 'Retry with content_mode: "full".' },
+    },
+  );
+  assert.equal(request.mock.callCount(), 1);
+});
+
+test("a failed extraction fallback does not escalate to a stronger rung", async (t) => {
+  const request = t.mock.method(globalThis, "fetch", async (url: URL) =>
+    url.searchParams.get("format") === "raw"
+      ? htmlResponse("<html><head></head><body></body></html>")
+      : Response.json(success("# Access denied", target, 403)),
+  );
+  const tried: string[] = [];
+  await assert.rejects(
+    scrapflyScrape("fixture").scrape(target, undefined, { tried }),
+    { code: "blocked" },
+  );
+  assert.equal(request.mock.callCount(), 2);
+  assert.deepEqual(tried, ["datacenter", "datacenter_full"]);
 });

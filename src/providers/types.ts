@@ -34,6 +34,8 @@ export interface SearchProvider {
 
 export const scrapeRungs = ["datacenter", "unblocker", "render"] as const;
 export type ScrapeRung = (typeof scrapeRungs)[number];
+export const scrapeContentModes = ["main", "full"] as const;
+export type ScrapeContentMode = (typeof scrapeContentModes)[number];
 export type ScrapeResult = {
   markdown: string;
   check: PageCheck;
@@ -43,6 +45,7 @@ export type ScrapeResult = {
   costWarning?: string;
 };
 export type ScrapeOptions = {
+  contentMode?: ScrapeContentMode;
   start?: ScrapeRung;
   allowHigherCost?: boolean;
   tried: string[];

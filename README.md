@@ -17,16 +17,13 @@ SCRAPFLY_API_KEY=your-scrapfly-key
 
 ```sh
 chmod 600 ~/.config/search-scrape-mcp/env
-cd ~/projects2/search-scrape-mcp
+# From the repository directory
 ./scripts/install.sh
 ```
 
-The installer builds the project and loads `local.search-scrape-mcp` in your
-GUI session. It creates a private `config.json` with a random bearer token on
-first run. Upgrading from phase 1 removes provider key fields from that file
-while preserving the token and settings. Edit the env file to change keys and
-restart the agent. Extra env entries are allowed. The server reads the keys it
-uses without exporting the file to the process environment.
+The installer builds the project, creates a private `config.json` with a
+bearer token on first run, and loads `local.search-scrape-mcp`. Restart the
+agent after changing provider keys or settings.
 
 ```sh
 launchctl print "gui/$(id -u)/local.search-scrape-mcp"
@@ -95,64 +92,80 @@ The relay forwards requests to the shared HTTP process.
 
 ## Tools
 
-| Tool           | Use                                                                                                                                                                                            |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search`       | Find public sources by `query` or `q`. Returns organic links and snippets, up to 10.                                                                                                           |
-| `search_batch` | Pass `{"searches":[{"q":"example"}]}` for up to three searches, up to five hits each.                                                                                                          |
-| `scrape`       | Pass `{"url":"https://example.com/"}` for cleaned markdown, inline up to 16,000 characters.                                                                                                    |
-| `scrape_batch` | Pass `{"urls":["https://example.com/"]}` for up to three pages, inline up to 20,000 characters per page.                                                                                       |
-| `browser`      | Pass `{"command":{"action":"navigate","url":"https://example.com/"}}` to open. Use `snapshot`, `find`, `click`, `fill`, `press`, `scroll`, `back`, `wait`, `screenshot` or `close` thereafter. |
+| Tool           | Example arguments                                                | Result                                              |
+| -------------- | ---------------------------------------------------------------- | --------------------------------------------------- |
+| `search`       | `{"q":"example"}`                                                | Up to 10 results with links and snippets.           |
+| `search_batch` | `{"searches":[{"q":"example"}]}`                                 | Up to three searches, with up to five results each. |
+| `scrape`       | `{"url":"https://example.com/"}`                                 | Markdown or a saved binary download.                |
+| `scrape_batch` | `{"urls":["https://example.com/"]}`                              | Up to three scrapes.                                |
+| `browser`      | `{"command":{"action":"navigate","url":"https://example.com/"}}` | Open a remote browser tab and return page text.     |
 
-Short text scrapes return a `markdown` field. Binary scrapes return a private
-local file path, MIME type, and byte count. PDFs and common images get their
-usual extension. Binary downloads use the same 8 MB provider response limit. Long scrapes and browser text or
-snapshots (over 12,000 characters for browser output) save the complete
-output to a randomly named file in `/tmp/search-scrape-mcp/`. The result
-includes a short preview, the absolute path, character and line counts, and a
-rough token estimate. Use local file tools to read or search it. Treat the
-contents as untrusted web content. Reading a saved file spends no provider
-credits. The provider response and browser extraction safety limits still apply.
+Batches preserve input order and report errors per item. They run up to two
+items concurrently and serialize items for the same hostname. The tool deadline
+can interrupt a batch before all items finish.
 
-The server creates the private output folder at startup and recreates it when
-needed. The folder uses mode 700 and files use mode 600. The server refuses a
-symlink or a folder it does not own. It deletes saved output after four hours
-and evicts the oldest files as needed to keep saved output under 64 MiB.
+Pass `fresh: true` to either scrape tool, a single search, or a search batch item
+to bypass the cache. Scrapes and search batch items report `cached: true` on a
+hit. A single search reports it in a separate text block.
 
-Batches run up to two items concurrently and serialize items for the same
-hostname. They preserve result order. Item failures
-include their original indices. Calls default to a 54-second overall deadline.
-A deadline can interrupt a batch before all items have results.
+### Search
 
-Browser snapshots list controls and headings visible in the viewport. Set
-`scope` to `page` for controls and headings anywhere, or to `full` for the
-complete JSON accessibility tree. Use `target` with a ref for its subtree, or
-`{"command":{"action":"find","query":"search"}}` to find matching elements across
-the page. Use a ref from the latest snapshot for click, fill or press, for
-example `{"command":{"action":"click","ref":"f1e7"}}`. CSS and Playwright
-selectors work via `selector`. Scroll takes signed `pixels`.
-Click, fill, press, scroll and back return the viewport snapshot. Compact
-snapshots show filled values and shorten long link URLs. Navigate
-returns readable page text.
-Wait takes `ms` (up to 10,000) and optionally a selector to wait for.
-Screenshot returns a viewport JPEG as MCP image content. Navigation and back
-wait for CAPTCHA clearance only when the page looks like a challenge. The wait
-defaults to 40 seconds within the overall tool deadline. The browser enables
-Scrapfly’s solver only while a challenge is present. Scrapfly can charge for
-solving CAPTCHAs.
-Use `close` when done to stop session charges. By default, the server closes
-an idle browser after 2 minutes 30 seconds and Scrapfly caps a session at
-30 minutes. After browser expiry, navigate again to open a fresh browser.
+Use `query` or `q` for the search text. Filter by `site`, `exclude_domains`,
+country (`gl`), language (`hl`), or time (`recency` or `tbs`). Use `page` for
+pagination and `autocorrect` to control spelling correction. Serper may ignore
+`location`, so include the place name in the query when it matters.
 
-## Settings, cost and logs
+### Scrape
 
-The default settings file is `~/.config/search-scrape-mcp/config.json`.
-Use `MCP_CONFIG` and `MCP_KEYS_FILE` for absolute path overrides. The settings
-file requires the private bearer `token`. Omitted settings use the defaults
-below. Omitting `SCRAPFLY_API_KEY` leaves search enabled.
-Run `npm run config` to print the effective settings with the token omitted.
-The report includes the derived deadlines and uses defaults with a notice if
-the settings file is absent. It does not read the provider keys file. Run `npm run config:docs` after
-changing the schema. The test command checks that the table matches.
+Both scrape tools default to `content_mode: "main"`. Defuddle extracts the
+main text from Scrapfly HTML and retains links within that content. Set
+`content_mode: "full"` for Scrapfly’s whole-page Markdown without images,
+including replies, listings, and details the extractor may omit. The mode
+applies to the entire batch and is part of the cache key.
+
+If extraction fails on an otherwise readable page, the server can make one
+additional whole-page request at the same rung, subject to time and cost limits.
+The fallback carries a warning and bypasses caching. To enable Cloud Browser
+as a secondary scrape provider, set
+`"scrapeProviders": ["scrapfly", "scrapfly-browser"]`. It returns page text
+in main mode. Full mode requires the Scrapfly Scrape API.
+
+Results report a page check and the rungs tried. Scrapfly starts with
+datacenter by default, tries Unblocker for blocked or challenged pages, and
+can jump to render for a JavaScript shell. The server remembers successful
+rungs by hostname. Set `start_rung` to `datacenter`, `unblocker`, or `render`,
+or follow the returned hint when a stronger rung needs a fresh call.
+
+File URLs and known file hosts get a datacenter HEAD check. Downloads require
+a reported length of at most 5 MB. Binary results include a private file path,
+MIME type, and byte count. Long scrape and browser text results spill to the
+private `outputDirectory` with a preview and local path. The settings below
+list the inline thresholds and retention limits.
+
+### Browser
+
+Use `snapshot` to list viewport controls and headings. Use `scope: "page"`
+to include controls outside the viewport or `scope: "full"` for the JSON
+accessibility tree. Use `target` to inspect a subtree or `find` to locate
+matching elements. For `click`, `fill`, and `press`, pass a ref from the latest
+snapshot, such as `"e7"`, or use a CSS or Playwright `selector`.
+
+`click`, `fill`, `press`, `scroll`, and `back` return a viewport snapshot.
+`scroll` takes signed `pixels`. `wait` takes up to 10,000 `ms` and an optional
+selector. `screenshot` returns a viewport JPEG. The server enables Scrapfly’s
+solver on detected challenges, which can incur charges. Use `close` to stop
+session charges or `navigate` again after a session expires.
+
+## Settings, costs, and logs
+
+Settings live in `~/.config/search-scrape-mcp/config.json`. Set `MCP_CONFIG`
+and `MCP_KEYS_FILE` to override the paths with absolute filenames. Omitting
+`SCRAPFLY_API_KEY` leaves search enabled.
+
+Run `npm run config` for effective settings, derived deadlines, usage totals,
+and known file or higher-cost hosts. It omits the bearer token. Run
+`npm run config:docs` after changing setting definitions. The test suite checks
+the generated table.
 
 <!-- settings:start -->
 
@@ -209,141 +222,34 @@ changing the schema. The test command checks that the table matches.
 
 <!-- settings:end -->
 
-The provider limits and hostname pacing apply across MCP sessions and batch
-items. Serper refills at 60 requests per minute with up to 20 tokens for
-bursts. The Scrapfly Scrape API refills at 30 per minute with up to 10 tokens.
-Hedges, retries, and escalation each use a token. The limiter waits up to
-10 seconds when the call deadline leaves time to run the request. A hostname
-has four in-flight slots and at least one second between request starts. That
-pacing covers the submitted scrape hostname and main-frame browser
-navigations. Browser subresources load at the browser's normal pace. Traffic
-inside the remote provider, such as redirects followed within a Scrapfly
-scrape, is outside the local scheduler. Requests that cannot get a permit
-within the wait budget return a local limit code and a UTC retry time.
+Provider limits and hostname pacing apply across sessions. Hedges, retries,
+and escalation each consume a request permit. A provider HTTP 429 pauses new
+Scrape API requests for the reported retry interval.
 
-The browser cap covers interactive sessions and browser scrape fallback.
-Opening a browser reserves its possible lifetime before connecting. Closing
-it releases unused time. After a restart, the server settles reservations from the previous run at
-startup time or their scheduled expiry, whichever came first. Browser usage resets at midnight UTC. The
-private state file at `~/.local/state/search-scrape-mcp/usage.json` also holds
-daily Serper request counts and known Scrapfly scrape API charges. Run
-`npm run config` to see those totals alongside browser session-minutes and
-the browser cap. The JSONL stats log records local limits and cache outcomes
-with the tool and batch item where applicable.
-
-Identical successful searches and scrapes can reuse a result for ten minutes.
-Pass `fresh: true` on a search, a search batch item, or either scrape tool to
-fetch again. A cached scrape has `cached: true`. A cached single search adds
-a second text block with `{"cached":true}`, and a search batch marks the
-corresponding item.
-
-Search defaults to US English. Both search tools accept a country code (`gl`),
-language code (`hl`), geographic `location`, result `page` (1 through 10),
-and a boolean `autocorrect`. Use either `recency` (`day`, `week`, `month`, or
-`year`) or a Google time filter such as `tbs: "qdr:h"`. You can also specify
-`site` and up to five `exclude_domains`. Both filters accept domains and URLs,
-use only the hostname, and drop a leading `www.` and trailing dot. Serper may
-ignore `location`. Put the place name in the query, such as
-`best pizza in Seattle`. Hits preserve Serper’s original date and include
-`dateIso` for recognized absolute dates. A query starts at most one hedge after
-a transient failure or 4.5 seconds without an answer by default. Both requests
-may count against quota.
-
-Scrapfly starts with datacenter and escalates to the Unblocker when a page is
-blocked or challenged. Empty pages and JavaScript shells can jump straight
-to the render rung, which adds a one-second render wait by default. The server
-sends `cost_budget` values of 5, 85, and 40 credits by default for datacenter,
-Unblocker, and render. Scrapfly can charge above these values,
-including when it switches a datacenter request to residential. The server
-reports observed overruns and stops automatic retries or escalation for that call. The default proxy country is `us`, configurable with
-`scrapflyCountry`. The Unblocker budget accommodates a measured 80-credit Cloudflare managed
-challenge scrape. A request-budget rejection advances to the next rung if available.
-This account's gateway rejected the newer `auto` and `unblocker` pool names
-during testing. All three pools default to `public_datacenter_pool`, with
-`unblocker=true` on the two stronger rungs. [Scrapfly proxy pool migration guide](https://scrapfly.io/new-pricing#legacy-spellings)
-
-File-looking URLs and known file hosts get a datacenter HEAD check. Downloads
-are limited to 5 MB (5,000,000 bytes) and require a reported content length.
-File checks and downloads request the public datacenter pool. Binary bandwidth
-is billed separately, including for BLOB scrapes whose offloaded contents are
-skipped.
-The server saves an unexpected inline binary when it can and reports the
-provider's charge. Hosts that return unexpected files are recorded in
-`file-hosts.txt` next to `usage.json`. Seed hostnames with `scrapflyFileHosts`.
-The same file records hosts where Scrapfly reported an overrun or rejected the
-requested proxy pool. The server refuses further Scrapfly requests to those
-hosts and returns the expected credits and the reason. Set
-`allow_higher_cost: true` on `scrape` or `scrape_batch` to accept that risk for
-the call. The opt-in leaves the requested pool and budget settings in place.
-Run `npm run config` to see both lists.
-
-A provider HTTP 429 pauses new Scrape API requests across MCP sessions for
-the provider's `Retry-After` interval, or one second when the header is
-unavailable. Affected batch entries return individual busy errors.
+Scrapfly can charge above the requested `cost_budget`. The server reports an
+observed overrun, stops further automatic attempts for that scrape, and flags
+the host for future calls. Set `allow_higher_cost: true` on either scrape tool
+to proceed with a flagged host using the configured pool and budget.
+Browser sessions and binary bandwidth can also incur charges.
 [Scrapfly billing documentation](https://scrapfly.io/docs/scrape-api/billing)
 
-Results include a page check and the rungs tried. A warning preserves usable
-content such as a paywall teaser or persistent menus. A failure gives a reason
-and, when useful, a hint for an untried stronger rung. Set `start_rung` to
-`datacenter`, `unblocker`, or `render` on a scrape or batch. The server
-remembers what worked per hostname for four hours, up to 256 hostnames.
-A failed remembered rung is cleared. Sites seen blocking datacenter can
-skip it on later calls. Provider outages get at most one retry per scrape,
-when the remaining tool time covers the backoff and a full attempt. The
-scrape ladder reserves three seconds for completion or fallback, leaving
-51 seconds by default. Datacenter uses 15 seconds and either advanced rung
-uses 30 seconds, matching Scrapfly's minimums and the local HTTP timeouts.
-An unknown host can run datacenter and one advanced rung in 45 seconds.
-If a rung cannot fit or the next rung would switch between Unblocker and
-render, the tool returns a `start_rung` hint for a fresh call. It preserves
-usable content and its warning, or returns `stronger_rung_required` when
-there is no usable content.
-Key and account credit rejections stop immediately.
-[Scrapfly timeout documentation](https://scrapfly.io/docs/scrape-api/understand-timeout)
-
-The browser can cost extra. To opt in to browser-backed scraping, set
-`"scrapeProviders": ["scrapfly", "scrapfly-browser"]` in settings.
-
-Tool logs include timestamp, name, provider, duration, outcome, error code
-and attempt count. Batch items log their own outcomes with `itemIndex`.
-The aggregate batch record describes whether the call returned a result.
-Separate `provider_attempt` records include each Scrapfly rung or Serper
-request. Count Serper `hedge` rows against `primary` rows to measure backup
-frequency. The `hedgeTrigger` field distinguishes delay from failure.
-For a local estimate of blocking on no-Unblocker attempts, count
-`datacenterBlocked: true` among datacenter records. This is the server's
-page classification. Use the rate to monitor proximity to your account's
-free-request threshold.
-Credits are raw reported units or `null` when unavailable. Scrapfly attempt
-rows also include `requestedProxyPool`, `proxyPool`, `costBreakdown`, and
-`remainingCredits`. The LaunchAgent
-writes `tools.jsonl` and rotates at 2 MiB by default, retaining one previous file. Arguments and fetched content are
-excluded. Startup and diagnostic messages go to separate stdout and stderr
-files.
+The LaunchAgent writes `tools.jsonl` and separate stdout and stderr logs under
+`~/Library/Logs/search-scrape-mcp/`. Tool records report outcomes, including
+individual batch items. Provider records report requests, known charges, and
+Scrapfly proxy and cost details. Logs exclude arguments and fetched content.
 
 ## Security and sessions
 
-- The server binds only to IPv4 loopback, checks the exact Host, rejects every
-  Origin, and requires the bearer token on every request. Other processes that
-  can read your private settings or client environment can obtain the token.
-  [MCP transport security guidance](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
-- By default the server supports 128 MCP sessions and expires them after two
-  hours idle.
-  Expired session IDs return HTTP 404. Reconnect the MCP server in the client or
-  reopen the conversation if automatic reconnection fails. Browser state has
-  its own 30-minute cap.
-- Only fixed provider endpoints receive local requests. Initial scrape
-  destinations must be public HTTP(S) on standard ports. Scrapfly follows
-  scrape redirects, and the server checks the reported hops and final URL
-  before releasing content.
-- The browser validates top-level HTTP(S) navigations, including intercepted
-  redirects. Public WebSocket hosts are allowed. Ordinary subresources and
-  iframe requests rely on Scrapfly's cloud egress. Local DNS checks cannot pin
-  the address resolved remotely. Downloads are canceled where possible.
-  [OWASP SSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
-- Search queries go to Serper. Scrapfly or the target site receives URLs and
-  browser input as applicable. Fetched text and screenshots are untrusted.
-  The browser exposes no raw JavaScript, local file or CDP tool.
+The server requires a bearer token and accepts requests only on IPv4 loopback
+with the exact Host header and no Origin header. Keep the settings file and
+client token private. If an expired MCP session returns HTTP 404, reconnect
+from the client.
+
+The server validates public HTTP(S) targets and checks reported scrape redirects
+and intercepted top-level browser navigations. Browser subresources and iframes
+use Scrapfly’s cloud egress. Queries go to Serper, and Scrapfly or the target
+site receives URLs and browser input. Treat fetched content as untrusted.
+[MCP transport security guidance](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 
 ## Tests
 
@@ -367,16 +273,8 @@ Local Chrome tests are opt-in. Run them outside the macOS Codex sandbox:
 MCP_TEST_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npm test
 ```
 
-The standing live-test budget per work session is about 5,000 Scrapfly credits
-and 1,000 Serper searches. Ask before exceeding either budget. Runtime
-per-request cost limits still apply.
-
-The offline suite uses fixtures and loopback only. The ordinary live smoke test
-makes one search (plus a hedge if needed), one scrape and one short browser
-session. The challenge smoke test separately uses one browser session against
-a real Cloudflare WAF challenge and fails if the gated page cannot be read.
-The other focused modes check the Turnstile form, explicit rendering and
-render hints, a three-item batch, or closure after the default idle period.
-The optional Unblocker smoke test checks that a protected URL escalates from
-datacenter to Unblocker and returns readable content. It repeats the request
-to verify that site memory starts at Unblocker.
+The offline suite uses fixtures and loopback. The default live smoke test runs a
+search, a scrape, and a browser session. The flags above select focused checks.
+See [AGENTS.md](AGENTS.md) for live provider budgets and
+[the extraction benchmark](benchmarks/extraction/RESULTS.md) for the Defuddle
+comparison.

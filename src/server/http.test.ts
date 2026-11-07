@@ -417,12 +417,12 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     [
       "scrape",
       { url: "https://1.1.1.1/", format: "text" },
-      /Unknown field "format". Valid fields are url, start_rung, fresh, allow_higher_cost/,
+      /Unknown field "format". Valid fields are url, content_mode, start_rung, fresh, allow_higher_cost/,
     ],
     [
       "scrape_batch",
       { urls: ["https://1.1.1.1/"], format: "text" },
-      /Unknown field "format". Valid fields are urls, start_rung, fresh, allow_higher_cost/,
+      /Unknown field "format". Valid fields are urls, content_mode, start_rung, fresh, allow_higher_cost/,
     ],
     [
       "browser",

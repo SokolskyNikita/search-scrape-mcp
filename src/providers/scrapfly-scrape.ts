@@ -24,10 +24,12 @@ import { AppError, safeError } from "../server/error.js";
 import { writeProviderAttempt } from "../server/stats.js";
 import { validatePublicUrl } from "../server/target.js";
 import { checkPage, type PageCheck } from "../tools/page-check.js";
+import { mainContent } from "../tools/main-content.js";
 import { cleanPage } from "../tools/page-content.js";
 import { providerResponse } from "./http.js";
 import {
   scrapeRungs,
+  type ScrapeContentMode,
   type ScrapeProvider,
   type ScrapeResult,
   type ScrapeRung,
@@ -250,6 +252,7 @@ async function requestPage(
   fileHosts: FileHosts,
   checkBackoff: () => void,
   rateLimited: (ms: number) => number,
+  contentMode: ScrapeContentMode,
   operation?: "head" | FileHeaders,
 ): Promise<
   ScrapeResult | { head: FileHeaders } | { error: AppError; retryMs?: number }
@@ -270,6 +273,7 @@ async function requestPage(
     } as const
   )[rung];
   const requestedProxyPool = operation ? datacenterFilePool : pool;
+  const raw = contentMode === "main" && !operation;
   endpoint.search = new URLSearchParams({
     key,
     url: target.href,
@@ -277,7 +281,7 @@ async function requestPage(
     cost_budget: String(budget),
     timeout: String(timeout),
     retry: "false",
-    format: "markdown:no_images",
+    format: raw ? "raw" : "markdown:no_images",
   }).toString();
   if (settings.scrapflyCountry)
     endpoint.searchParams.set("country", settings.scrapflyCountry);
@@ -555,14 +559,30 @@ async function requestPage(
         checkBackoff,
         rateLimited,
       );
-    const markdown = cleanPage(content);
-    const check = checkPage(
-      markdown,
-      target,
-      final,
-      result.status_code,
-      contentType,
-    );
+    const html =
+      isHtml(fileHeaders(contentType).type) ||
+      (!contentType && /^\s*(?:<!doctype html\b|<html[\s>])/i.test(content));
+    let markdown: string;
+    let check: PageCheck;
+    if (raw && html) {
+      ({ markdown, check } = await mainContent(
+        content,
+        target,
+        final,
+        result.status_code,
+        contentType,
+        result.success,
+      ));
+    } else {
+      markdown = cleanPage(content);
+      check = checkPage(
+        markdown,
+        target,
+        final,
+        result.status_code,
+        contentType,
+      );
+    }
     if (operation && check.code === "ok")
       throw new AppError(
         "binary_download",
@@ -702,6 +722,7 @@ export function scrapflyScrape(
       async function attempt(
         rung: ScrapeRung,
         operation?: "head" | FileHeaders,
+        fullFallback = false,
       ) {
         checkBackoff();
         const timeout = scrapflyTimeoutMs[rung];
@@ -715,7 +736,13 @@ export function scrapflyScrape(
           signal.throwIfAborted();
           checkBackoff();
           checkCost();
-          options.tried.push(operation === "head" ? "datacenter_head" : rung);
+          options.tried.push(
+            operation === "head"
+              ? "datacenter_head"
+              : fullFallback
+                ? `${rung}_full`
+                : rung,
+          );
           return await requestPage(
             key,
             target,
@@ -727,6 +754,7 @@ export function scrapflyScrape(
             fileHosts,
             checkBackoff,
             rateLimited,
+            fullFallback ? "full" : (options.contentMode ?? "main"),
             operation,
           );
         } finally {
@@ -817,6 +845,39 @@ export function scrapflyScrape(
         if (rung !== "datacenter") advancedRung = rung;
         lastBudgetError = undefined;
         const result = await attempt(rung, file);
+        if ("error" in result && result.error.code === "extraction_failed") {
+          signal.throwIfAborted();
+          if (remaining() < timeout)
+            throw new AppError(
+              "extraction_failed",
+              "Defuddle found no usable main content and too little time remains for a full-page fetch.",
+              { hint: 'Retry with content_mode: "full".' },
+            );
+          const full = await attempt(rung, undefined, true);
+          if ("error" in full) throw full.error;
+          if ("head" in full)
+            throw new AppError(
+              "internal",
+              "Unexpected Scrapfly HEAD metadata.",
+            );
+          if (full.check.code !== "ok" && !full.check.warning)
+            throw new AppError(
+              full.costWarning ? "provider_cost_overrun" : full.check.code,
+              full.costWarning
+                ? `${full.costWarning} ${full.check.reason}`
+                : full.check.reason,
+            );
+          if (full.binary || full.check.warning) return full;
+          return {
+            ...full,
+            check: {
+              code: "extraction_fallback",
+              reason:
+                "Defuddle found no usable main content. Returned whole-page Markdown.",
+              warning: true,
+            },
+          };
+        }
         if ("head" in result)
           throw new AppError("internal", "Unexpected Scrapfly HEAD metadata.");
         if ("error" in result) {
