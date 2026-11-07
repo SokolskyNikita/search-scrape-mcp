@@ -93,8 +93,18 @@ export function scrapflyBrowser(
               );
             const page = context.pages()[0] ?? (await context.newPage());
             const cdp = await context.newCDPSession(page);
-            const navigationError = await guardNavigations(cdp);
             const captcha = watchCaptcha(cdp, page, settings.captchaWaitMs);
+            // Same-document navigations have no new response. Keep the document status.
+            let lastStatus: number | undefined;
+            let mitigated = false;
+            const navigationError = await guardNavigations(
+              cdp,
+              (status, challenge) => {
+                captcha.reset();
+                lastStatus = status;
+                mitigated = challenge;
+              },
+            );
             await page.routeWebSocket("**/*", async (socket) => {
               try {
                 await validatePublicUrl(socket.url().replace(/^ws/, "http"));
@@ -119,18 +129,6 @@ export function scrapflyBrowser(
                 .catch(() =>
                   console.error("Could not close a remote browser popup."),
                 );
-            });
-            let lastStatus: number | undefined;
-            let mitigated = false;
-            page.on("response", (response) => {
-              const request = response.request();
-              if (
-                request.isNavigationRequest() &&
-                request.frame() === page.mainFrame()
-              ) {
-                lastStatus = response.status();
-                mitigated = response.headers()["cf-mitigated"] === "challenge";
-              }
             });
 
             function isClosed(): boolean {
@@ -208,10 +206,15 @@ export function scrapflyBrowser(
                   "page_size",
                   "Browser page exceeds 2 million characters.",
                 );
-              if (page.url() !== location || lastStatus === undefined)
+              if (page.url() !== location)
                 throw new AppError(
                   "browser_navigation",
                   "The browser page changed while reading its content.",
+                );
+              if (lastStatus === undefined)
+                throw new AppError(
+                  "browser_navigation",
+                  "The browser did not report the document’s response status.",
                 );
               return { url, status: lastStatus, title, text: cleanPage(body) };
             }
@@ -225,19 +228,15 @@ export function scrapflyBrowser(
                   if (isClosed()) throw closedError();
                   if (action.action === "navigate") {
                     const target = await validatePublicUrl(action.url);
-                    lastStatus = undefined;
-                    mitigated = false;
-                    captcha.reset();
-                    await page.goto(target.href, {
+                    const response = await page.goto(target.href, {
                       waitUntil: "domcontentloaded",
                     });
+                    if (lastStatus === undefined && response)
+                      lastStatus = response.status();
                     await captcha.wait(() => mitigated, runSignal);
                     return await within(content(), actionTimeout);
                   }
                   if (action.action === "back") {
-                    lastStatus = undefined;
-                    mitigated = false;
-                    captcha.reset();
                     await page.goBack({ waitUntil: "domcontentloaded" });
                     await captcha.wait(() => mitigated, runSignal);
                   }

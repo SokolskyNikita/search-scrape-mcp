@@ -2,7 +2,10 @@ import type { CDPSession } from "playwright-core";
 import { safeError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
 
-export async function guardNavigations(cdp: CDPSession) {
+export async function guardNavigations(
+  cdp: CDPSession,
+  onDocumentResponse?: (status: number, mitigated: boolean) => void,
+) {
   const { frameTree } = await cdp.send("Page.getFrameTree");
   let blocked: ReturnType<typeof safeError> | undefined;
   cdp.on("Fetch.requestPaused", (event) => {
@@ -22,6 +25,18 @@ export async function guardNavigations(cdp: CDPSession) {
       await cdp.send("Fetch.continueRequest", { requestId: event.requestId });
     })().catch(() => console.error("Browser navigation interception failed."));
   });
+  if (onDocumentResponse) {
+    cdp.on("Network.responseReceived", ({ frameId, type, response }) => {
+      if (frameId === frameTree.frame.id && type === "Document") {
+        const mitigated = Object.entries(response.headers).some(
+          ([name, value]) =>
+            name.toLowerCase() === "cf-mitigated" && value === "challenge",
+        );
+        onDocumentResponse(response.status, mitigated);
+      }
+    });
+    await cdp.send("Network.enable");
+  }
   // A separate CDP session keeps Playwright's own request interception disabled.
   await cdp.send("Fetch.enable", { patterns: [{ resourceType: "Document" }] });
   return () => {

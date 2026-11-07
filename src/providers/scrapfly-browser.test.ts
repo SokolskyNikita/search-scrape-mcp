@@ -9,9 +9,13 @@ test("browser guard checks top-level redirects and leaves iframe requests to clo
   const commands: { method: string; params: unknown }[] = [];
   let paused: (event: unknown) => void = () =>
     assert.fail("No request handler");
+  let received: (event: unknown) => void = () =>
+    assert.fail("No response handler");
+  const statuses: [number, boolean][] = [];
   const cdp = {
-    on(_event: string, listener: typeof paused) {
-      paused = listener;
+    on(event: string, listener: typeof paused) {
+      if (event === "Fetch.requestPaused") paused = listener;
+      if (event === "Network.responseReceived") received = listener;
     },
     async send(method: string, params: unknown) {
       commands.push({ method, params });
@@ -19,8 +23,11 @@ test("browser guard checks top-level redirects and leaves iframe requests to clo
         return { frameTree: { frame: { id: "main" } } };
     },
   } as unknown as CDPSession;
-  const error = await guardNavigations(cdp);
-  assert.deepEqual(commands[1], {
+  const error = await guardNavigations(cdp, (status, mitigated) =>
+    statuses.push([status, mitigated]),
+  );
+  assert.equal(commands[1]?.method, "Network.enable");
+  assert.deepEqual(commands[2], {
     method: "Fetch.enable",
     params: { patterns: [{ resourceType: "Document" }] },
   });
@@ -52,6 +59,19 @@ test("browser guard checks top-level redirects and leaves iframe requests to clo
     2,
   );
   assert.equal(error()?.code, "unsafe_url");
+  const challenge = { status: 403, headers: { "CF-Mitigated": "challenge" } };
+  received({ frameId: "iframe", type: "Document", response: challenge });
+  received({ frameId: "main", type: "Fetch", response: challenge });
+  received({ frameId: "main", type: "Document", response: challenge });
+  received({
+    frameId: "main",
+    type: "Document",
+    response: { status: 200, headers: {} },
+  });
+  assert.deepEqual(statuses, [
+    [403, true],
+    [200, false],
+  ]);
 });
 
 test("browser scraper releases the session when navigation fails", async () => {
