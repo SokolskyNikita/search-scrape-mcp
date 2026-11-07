@@ -52,6 +52,24 @@ export const tuningSchema = z.object({
     120,
     "Daily Cloud Browser session-minutes across all sessions. Resets at midnight UTC.",
   ),
+  cacheTtlMs: integer(
+    0,
+    3_600_000,
+    600_000,
+    "Successful search and scrape cache lifetime in milliseconds. Zero disables caching.",
+  ),
+  cacheMaxEntries: integer(
+    1,
+    10_000,
+    128,
+    "Maximum entries in each of the search and scrape caches.",
+  ),
+  cacheMaxBytes: integer(
+    1,
+    100_000_000,
+    16_000_000,
+    "Maximum serialized bytes in each of the search and scrape caches.",
+  ),
 
   toolDeadlineSeconds: integer(
     35,

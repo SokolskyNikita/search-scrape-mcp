@@ -1,5 +1,7 @@
 import { RequestLimits } from "./request-limits.js";
 import { Usage } from "./usage.js";
+import { ResultCache } from "../tools/result-cache.js";
+import type { SearchHit, ScrapeResult } from "../providers/types.js";
 import type { Config } from "../config/index.js";
 import {
   browserScraper,
@@ -16,6 +18,10 @@ import { createMcpHttp } from "./http.js";
 export function createApp(config: Config) {
   const limits = new RequestLimits(config);
   const usage = new Usage(config);
+  const searchCache = new ResultCache<SearchHit[]>(config);
+  const scrapeCache = new ResultCache<ScrapeResult & { tried: string[] }>(
+    config,
+  );
   const search = { serper: serper(config.serperKey, config, limits, usage) };
   const browser = config.scrapflyKey
     ? { scrapfly: scrapflyBrowser(config.scrapflyKey, config, limits, usage) }
@@ -37,6 +43,7 @@ export function createApp(config: Config) {
         mcp,
         config.searchProviders.map((name) => search[name]),
         config,
+        searchCache,
       );
       if (scrape)
         registerScrape(
@@ -44,6 +51,7 @@ export function createApp(config: Config) {
           config.scrapeProviders.map((name) => scrape[name]),
           files,
           config,
+          scrapeCache,
         );
       if (browser)
         return registerBrowser(

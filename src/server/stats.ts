@@ -10,7 +10,7 @@ export const statsContext = new AsyncLocalStorage<{
 export function writeLimitEvent(
   event: {
     code: string;
-    outcome: "wait" | "rejected" | "shortened";
+    outcome: "wait" | "rejected" | "hit" | "miss" | "bypass" | "shortened";
     provider?: string;
     retryAt?: string;
     seconds?: number;

@@ -1,9 +1,20 @@
+import type { ResultCache } from "./result-cache.js";
 import { defaults } from "../config/tuning.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { SearchInput, SearchProvider } from "../providers/types.js";
+import type {
+  SearchHit,
+  SearchInput,
+  SearchProvider,
+} from "../providers/types.js";
 import { AppError } from "../server/error.js";
-import { batch, fallback, toolResult, type Attempt } from "./shared.js";
+import {
+  batch,
+  cachedSearch,
+  fallback,
+  toolResult,
+  type Attempt,
+} from "./shared.js";
 
 const query = z.string().trim().min(1).max(500);
 const domain = z
@@ -36,6 +47,7 @@ const input = z
     tbs: z.string().trim().min(1).max(256).optional(),
     site: domain.optional(),
     exclude_domains: z.array(domain).max(5).optional(),
+    fresh: z.boolean().optional().describe("Bypass the local cache."),
     limit: z.number().int().min(1).max(10).default(5),
   })
   .strict();
@@ -44,9 +56,10 @@ export function registerSearch(
   server: McpServer,
   providers: SearchProvider[],
   settings = defaults,
+  cache?: ResultCache<SearchHit[]>,
 ) {
   async function search(
-    { query, q, ...options }: z.infer<typeof input>,
+    { query, q, fresh, ...options }: z.infer<typeof input>,
     attempt: Attempt,
     signal: AbortSignal,
     deadline: number,
@@ -58,13 +71,24 @@ export function registerSearch(
       throw new AppError("input", "Provide either recency or tbs.");
     }
     const args: SearchInput = { query: (query ?? q)!, ...options };
-    return fallback(
+    const key = JSON.stringify({
+      ...args,
+      gl: args.gl ?? settings.searchGl,
+      hl: args.hl ?? settings.searchHl,
+      exclude_domains: args.exclude_domains ?? [],
+    });
+    const hit = cache?.get(key, fresh);
+    if (hit) return cachedSearch(hit);
+    const result = await fallback(
       providers,
       (provider) =>
         provider.search(args, signal, () => attempt(provider.name), deadline),
       attempt,
       signal,
     );
+    signal.throwIfAborted();
+    cache?.set(key, result);
+    return result;
   }
   server.registerTool(
     "search",

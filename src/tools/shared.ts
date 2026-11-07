@@ -6,6 +6,18 @@ import { AppError, safeError } from "../server/error.js";
 
 export type Attempt = (provider?: string) => void;
 
+const cacheMarker = Symbol("cachedSearch");
+type CachedSearch<T> = { [cacheMarker]: true; value: T };
+export const cachedSearch = <T>(value: T): CachedSearch<T> => ({
+  [cacheMarker]: true as const,
+  value,
+});
+function isCachedSearch<T>(
+  value: T | CachedSearch<T>,
+): value is CachedSearch<T> {
+  return !!value && typeof value === "object" && cacheMarker in value;
+}
+
 export async function fallback<T extends { name?: string }, R>(
   providers: readonly T[],
   run: (provider: T) => Promise<R>,
@@ -97,12 +109,15 @@ export async function toolResult(
       result.type === "image"
     )
       return { content: [result as BrowserImage] };
+    const cached = isCachedSearch(result);
+    const value = cached ? result.value : result;
     return {
       content: [
         {
           type: "text" as const,
-          text: typeof result === "string" ? result : JSON.stringify(result),
+          text: typeof value === "string" ? value : JSON.stringify(value),
         },
+        ...(cached ? [{ type: "text" as const, text: '{"cached":true}' }] : []),
       ],
     };
   } catch (error) {
@@ -141,12 +156,12 @@ export async function toolResult(
 
 export async function batch<I, O>(
   inputs: I[],
-  run: (input: I, attempt: Attempt) => Promise<O>,
+  run: (input: I, attempt: Attempt) => Promise<O | CachedSearch<O>>,
   group?: (input: I) => string | undefined,
   stats?: { tool: string; attempt: Attempt; settings: typeof defaults },
 ) {
   const results: (
-    | { index: number; result: O }
+    | { index: number; result: O; cached?: true }
     | { index: number; error: { code: string; message: string } }
   )[] = [];
   const pending = inputs.map((input, index) => ({
@@ -176,7 +191,9 @@ export async function batch<I, O>(
                 if (provider) providers.add(provider);
               }),
           );
-          results[index] = { index, result };
+          results[index] = isCachedSearch(result)
+            ? { index, result: result.value, cached: true }
+            : { index, result };
         } catch (error) {
           const { code, message, details } = safeError(error);
           errorCode = code;

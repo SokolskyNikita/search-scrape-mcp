@@ -158,6 +158,9 @@ changing the schema. The test command checks that the table matches.
 | `siteGapMs` | `1000` | Minimum time between request starts for the same target hostname. |
 | `browserConcurrency` | `4` | Maximum simultaneous Cloud Browser sessions, including scrape fallback. |
 | `browserDailyMinutes` | `120` | Daily Cloud Browser session-minutes across all sessions. Resets at midnight UTC. |
+| `cacheTtlMs` | `600000` | Successful search and scrape cache lifetime in milliseconds. Zero disables caching. |
+| `cacheMaxEntries` | `128` | Maximum entries in each of the search and scrape caches. |
+| `cacheMaxBytes` | `16000000` | Maximum serialized bytes in each of the search and scrape caches. |
 | `toolDeadlineSeconds` | `54` | Overall tool deadline in seconds (35–55). The relay allows three additional seconds. |
 | `serperBackupDelayMs` | `4500` | Delay before hedging a slow Serper request. Transient failures can trigger an earlier backup. |
 | `serperTimeoutMs` | `12000` | Shared Serper primary and backup budget in milliseconds, within the tool deadline. |
@@ -208,8 +211,14 @@ in effect through its expiry. Browser usage resets at midnight UTC. The
 private state file at `~/.local/state/search-scrape-mcp/usage.json` also holds
 daily Serper request counts and known Scrapfly scrape API charges. Run
 `npm run config` to see those totals alongside browser session-minutes and
-the browser cap. The JSONL stats log records local limits
+the browser cap. The JSONL stats log records local limits and cache outcomes
 with the tool and batch item where applicable.
+
+Identical successful searches and scrapes can reuse a result for ten minutes.
+Pass `fresh: true` on a search, a search batch item, or either scrape tool to
+fetch again. A cached scrape has `cached: true`. A cached single search adds
+a second text block with `{"cached":true}`, and a search batch marks the
+corresponding item.
 
 Search defaults to US English. Both search tools accept a country code (`gl`),
 language code (`hl`), geographic `location`, result `page` (1 through 10),
