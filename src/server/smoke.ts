@@ -7,7 +7,8 @@ import { createApp } from "./app.js";
 import { AppError, safeError } from "./error.js";
 
 async function smoke() {
-  const browserOnly = process.argv.includes("--browser-only");
+  const challenge = process.argv.includes("--challenge");
+  const browserOnly = challenge || process.argv.includes("--browser-only");
   const config = loadConfig({
     ...process.env,
     MCP_TOKEN: randomBytes(32).toString("base64url"),
@@ -62,7 +63,9 @@ async function smoke() {
         throw new AppError("smoke", `${label} returned unexpected content.`);
       console.log(`${label}: OK`);
     }
-    const url = "https://example.com/";
+    const url = challenge
+      ? "https://zerocaptcha.io/captcha-test/cloudflare-interactive-challenge"
+      : "https://example.com/";
     if (!browserOnly) {
       await call(
         "search",
@@ -74,15 +77,18 @@ async function smoke() {
     await call(
       "browser",
       { command: { action: "navigate", url } },
-      /Example Domain/i,
-      "browser navigate",
+      challenge
+        ? /Cloudflare WAF interactive challenge test page/i
+        : /Example Domain/i,
+      challenge ? "browser real challenge" : "browser navigate",
     );
-    await call(
-      "browser",
-      { command: { action: "snapshot" } },
-      /- (?:heading|link|paragraph|text|generic)\b/i,
-      "browser snapshot",
-    );
+    if (!challenge)
+      await call(
+        "browser",
+        { command: { action: "snapshot" } },
+        /- (?:heading|link|paragraph|text|generic)\b/i,
+        "browser snapshot",
+      );
     await call(
       "browser",
       { command: { action: "close" } },

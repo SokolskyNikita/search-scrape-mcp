@@ -7,6 +7,7 @@ import {
 import { AppError } from "../server/error.js";
 import { validatePublicUrl } from "../server/target.js";
 import { pageContent } from "../tools/page-content.js";
+import { watchCaptcha } from "./browser-captcha.js";
 import { guardNavigations } from "./browser-navigation.js";
 import { scrapflyTransport } from "./scrapfly-browser-transport.js";
 import type { BrowserProvider, ScrapeProvider } from "./types.js";
@@ -69,6 +70,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
             const page = context.pages()[0] ?? (await context.newPage());
             const cdp = await context.newCDPSession(page);
             const navigationError = await guardNavigations(cdp);
+            const captcha = watchCaptcha(cdp, page);
             await page.routeWebSocket("**/*", async (socket) => {
               try {
                 await validatePublicUrl(socket.url().replace(/^ws/, "http"));
@@ -95,6 +97,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                 );
             });
             let lastStatus: number | undefined;
+            let mitigated = false;
             page.on("response", (response) => {
               const request = response.request();
               if (
@@ -102,6 +105,7 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                 request.frame() === page.mainFrame()
               ) {
                 lastStatus = response.status();
+                mitigated = response.headers()["cf-mitigated"] === "challenge";
               }
             });
 
@@ -168,9 +172,12 @@ export function scrapflyBrowser(key: string): BrowserProvider {
                   if (action.action === "navigate") {
                     const target = await validatePublicUrl(action.url);
                     lastStatus = undefined;
+                    mitigated = false;
+                    captcha.reset();
                     await page.goto(target.href, {
                       waitUntil: "domcontentloaded",
                     });
+                    await captcha.wait(() => mitigated);
                     return await within(content(fullPage), actionTimeout);
                   }
                   if (action.action === "click")

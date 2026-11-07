@@ -23,3 +23,16 @@ test("page checker bounds content and classifies challenge, block and empty page
     "# CAPTCHA guide\n\nHow to use a CAPTCHA.",
   );
 });
+
+test("ordinary headings do not look like blocks or challenges", () => {
+  for (const heading of [
+    "Security check for your repo",
+    "Access denied errors explained",
+    "Just a moment of reflection",
+  ]) {
+    assert.equal(
+      pageContent(`# ${heading}\n\nArticle body`),
+      `# ${heading}\n\nArticle body`,
+    );
+  }
+});

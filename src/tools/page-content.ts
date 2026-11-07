@@ -16,7 +16,7 @@ export function pageContent(
   const beginning = clean.slice(0, 2200);
   const titleOrLead = `${title}\n${beginning.split("\n").find((line) => line.trim()) ?? ""}`;
   if (
-    /(?:^|\n)\s*(?:#+\s*)?(?:just a moment|attention required|verify (?:that )?you are (?:a )?human|checking your browser|robot check|security check|pardon our interruption)(?:[.!… ]|$)/im.test(
+    /(?:^|\n)\s*(?:#+\s*)?(?:just a moment|attention required|verify (?:that )?you are (?:a )?human|checking your browser|robot check|security check|pardon our interruption)[.!…]*[ \t]*$/im.test(
       titleOrLead,
     ) ||
     /(?:enable javascript and cookies to continue|complete the security check|verify (?:that )?you are (?:a )?human to continue|cf-chl-|challenges\.cloudflare\.com\/turnstile)/i.test(
@@ -31,7 +31,7 @@ export function pageContent(
     status === 401 ||
     status === 403 ||
     status === 429 ||
-    /(?:^|\n)\s*(?:#+\s*)?(?:access denied|request blocked|forbidden|too many requests)(?:[.! ]|$)/im.test(
+    /(?:^|\n)\s*(?:#+\s*)?(?:access denied|request blocked|forbidden|too many requests)[.!…]*[ \t]*$/im.test(
       titleOrLead,
     )
   )
