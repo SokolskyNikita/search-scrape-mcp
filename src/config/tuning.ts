@@ -1,0 +1,165 @@
+import { isAbsolute } from "node:path";
+import { z } from "zod";
+
+const integer = (
+  min: number,
+  max: number,
+  value: number,
+  description: string,
+) => z.number().int().min(min).max(max).default(value).describe(description);
+const pool = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
+
+export const tuningSchema = z.object({
+  toolDeadlineSeconds: integer(
+    20,
+    55,
+    54,
+    "Overall tool deadline in seconds. The relay allows three additional seconds.",
+  ),
+  serperBackupDelayMs: integer(
+    1_000,
+    15_000,
+    4_500,
+    "Delay before hedging a slow Serper request. Transient failures can trigger an earlier backup.",
+  ),
+  serperTimeoutMs: integer(
+    2_000,
+    30_000,
+    12_000,
+    "Shared Serper primary and backup budget in milliseconds, within the tool deadline.",
+  ),
+  searchGl: z
+    .string()
+    .regex(/^[a-z]{2}$/)
+    .default("us")
+    .describe("Default Serper country code."),
+  searchHl: z
+    .string()
+    .regex(/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i)
+    .max(35)
+    .default("en")
+    .describe("Default Serper language code."),
+  scrapflyDatacenterCost: integer(
+    1,
+    10_000,
+    5,
+    "Datacenter request cost budget in credits.",
+  ),
+  scrapflyUnblockerCost: integer(
+    1,
+    10_000,
+    20,
+    "Unblocker request cost budget in credits.",
+  ),
+  scrapflyRenderCost: integer(
+    1,
+    10_000,
+    40,
+    "Rendering request cost budget in credits.",
+  ),
+  scrapflyDatacenterPool: pool
+    .default("public_datacenter_pool")
+    .describe("Proxy pool sent on the datacenter rung."),
+  scrapflyUnblockerPool: pool
+    .default("public_datacenter_pool")
+    .describe("Initial proxy pool sent on the Unblocker rung."),
+  scrapflyRenderPool: pool
+    .default("public_datacenter_pool")
+    .describe("Initial proxy pool sent on the rendering rung."),
+  scrapflyRenderingWaitMs: integer(
+    0,
+    5_000,
+    1_000,
+    "Scrapfly rendering wait in milliseconds.",
+  ),
+  captchaWaitMs: integer(
+    0,
+    50_000,
+    40_000,
+    "Maximum CAPTCHA challenge wait in milliseconds, within the tool deadline.",
+  ),
+  browserSessionSeconds: integer(
+    30,
+    1_800,
+    1_800,
+    "Maximum remote browser session length in seconds.",
+  ),
+  browserIdleMs: integer(
+    1_000,
+    3_600_000,
+    150_000,
+    "Close a browser after this many idle milliseconds.",
+  ),
+  mcpSessionExpiryMs: integer(
+    1_000,
+    86_400_000,
+    7_200_000,
+    "Expire idle MCP sessions after this many milliseconds.",
+  ),
+  mcpSessionLimit: integer(1, 1_024, 128, "Maximum number of MCP sessions."),
+  scrapeInlineChars: integer(
+    0,
+    200_000,
+    48_000,
+    "Inline character limit for a single scrape.",
+  ),
+  scrapeBatchInlineChars: integer(
+    0,
+    200_000,
+    20_000,
+    "Inline character limit per batch scrape.",
+  ),
+  browserInlineChars: integer(
+    0,
+    200_000,
+    12_000,
+    "Inline character limit for browser text output.",
+  ),
+  outputPreviewChars: integer(
+    0,
+    5_000,
+    600,
+    "Preview character limit for saved outputs.",
+  ),
+  outputDirectory: z
+    .string()
+    .max(1_024)
+    .refine((value) => isAbsolute(value) && !value.includes("\0"))
+    .default("/tmp/search-scrape-mcp")
+    .describe(
+      "Absolute local spill directory. It must be private and owned by the server user.",
+    ),
+  outputMaxAgeMs: integer(
+    1_000,
+    604_800_000,
+    14_400_000,
+    "Saved output retention in milliseconds.",
+  ),
+  outputMaxBytes: integer(
+    1,
+    1_073_741_824,
+    67_108_864,
+    "Total saved output size cap in bytes.",
+  ),
+  siteMemoryMs: integer(
+    0,
+    604_800_000,
+    14_400_000,
+    "How long a hostname's successful rung or protection is remembered in milliseconds.",
+  ),
+  siteMemorySize: integer(
+    0,
+    65_536,
+    256,
+    "Maximum remembered hostnames. Zero disables memory.",
+  ),
+  statsLogMaxBytes: integer(
+    1_024,
+    1_073_741_824,
+    2_097_152,
+    "Rotate the JSONL stats file at this size in bytes.",
+  ),
+});
+
+export type Tuning = z.infer<typeof tuningSchema>;
+export const defaults = tuningSchema.parse({});

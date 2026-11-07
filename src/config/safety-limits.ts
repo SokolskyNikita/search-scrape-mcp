@@ -1,0 +1,7 @@
+export const MAX_REQUEST_BODY_BYTES = 64 * 1024;
+export const MAX_PROVIDER_RESPONSE_BYTES = 8_000_000;
+export const MAX_BROWSER_PAGE_CHARS = 2_000_000;
+export const MAX_BROWSER_IMAGE_BYTES = 1_000_000;
+export const MAX_URL_CHARS = 4_096;
+export const MAX_SEARCH_HIT_URL_CHARS = 1_024;
+export const MAX_PRIVATE_CONFIG_BYTES = 16_384;

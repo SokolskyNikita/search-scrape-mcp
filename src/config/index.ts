@@ -1,3 +1,4 @@
+import { MAX_PRIVATE_CONFIG_BYTES } from "./safety-limits.js";
 import {
   closeSync,
   constants,
@@ -11,33 +12,45 @@ import { parseEnv } from "node:util";
 import { z } from "zod";
 import { AppError } from "../server/error.js";
 
+import { tuningSchema } from "./tuning.js";
+
 const key = z
   .string()
   .min(1)
   .max(256)
   .regex(/^[!-~]+$/);
 const token = z.string().regex(/^[a-zA-Z0-9_-]{32,256}$/);
-const settingsSchema = z
+export const settingsSchema = z
   .object({
-    port: z.coerce.number().int().min(1024).max(65535).default(8765),
+    port: z.coerce
+      .number()
+      .int()
+      .min(1024)
+      .max(65535)
+      .default(8765)
+      .describe("Local MCP HTTP port."),
     token,
+    ...tuningSchema.shape,
 
     searchProviders: z
       .array(z.literal("serper"))
       .min(1)
       .max(1)
-      .default(["serper"]),
+      .default(["serper"])
+      .describe("Search provider order."),
     scrapeProviders: z
       .array(z.enum(["scrapfly", "scrapfly-browser"]))
       .min(1)
       .max(2)
       .refine((values) => new Set(values).size === values.length)
-      .default(["scrapfly"]),
+      .default(["scrapfly"])
+      .describe("Scrape provider order."),
     browserProviders: z
       .array(z.literal("scrapfly"))
       .min(1)
       .max(1)
-      .default(["scrapfly"]),
+      .default(["scrapfly"])
+      .describe("Interactive browser provider order."),
   })
   .strict();
 
@@ -64,7 +77,7 @@ function readPrivateFile(file: string, label: string): string {
       const stat = fstatSync(fd);
       if (
         !stat.isFile() ||
-        stat.size > 16_384 ||
+        stat.size > MAX_PRIVATE_CONFIG_BYTES ||
         (stat.mode & 0o077) !== 0 ||
         stat.uid !== process.getuid?.()
       )
