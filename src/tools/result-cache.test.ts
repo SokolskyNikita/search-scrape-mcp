@@ -104,19 +104,19 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
 
   const first = await session();
   const second = await session();
-  await first("search", { q: "fixture", limit: 3 });
+  await first("search", { q: "fixture", limit: 10 });
   const [batch] = await second("search_batch", {
     searches: [{ query: "fixture" }],
   });
   assert.equal(batch[0].cached, true);
   assert.equal(batch[0].result[0].title, "1");
-  assert.deepEqual((await second("search", { q: "fixture", limit: 3 }))[1], {
+  assert.deepEqual((await second("search", { q: "fixture", limit: 10 }))[1], {
     cached: true,
   });
-  await second("search", { q: "fixture", limit: 3, fresh: true });
-  const [hits] = await first("search", { q: "fixture", limit: 3 });
+  await second("search", { q: "fixture", limit: 10, fresh: true });
+  const [hits] = await first("search", { q: "fixture", limit: 10 });
   assert.equal(hits[0].title, "2");
-  await second("search", { q: "fixture", limit: 3, recency: "week" });
+  await second("search", { q: "fixture", limit: 10, recency: "week" });
   // Batch errors have structured content and must never populate the cache.
   for (let i = 0; i < 2; i++) {
     const [failed] = await first("search_batch", { searches: [{ q: "fail" }] });

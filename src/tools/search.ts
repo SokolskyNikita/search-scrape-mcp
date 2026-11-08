@@ -136,17 +136,9 @@ export function registerSearch(
   server.registerTool(
     "search_batch",
     {
-      description: `Search up to three queries in order. The location field is a hint. ${locationHint}`,
+      description: `Search up to five queries in order. The location field is a hint. ${locationHint}`,
       inputSchema: toolInput({
-        searches: z
-          .array(
-            toolInput({
-              ...fields,
-              limit: z.number().int().min(1).max(5).default(3),
-            }),
-          )
-          .min(1)
-          .max(3),
+        searches: z.array(input).min(1).max(5),
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

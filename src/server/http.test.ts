@@ -398,7 +398,38 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     },
   ]);
 
+  const batch = await client.callTool({
+    name: "search_batch",
+    arguments: {
+      searches: [
+        { q: "default limit" },
+        { q: "max limit", limit: 10 },
+        { q: "third", limit: 1 },
+        { q: "fourth" },
+        { q: "fifth" },
+      ],
+    },
+  });
+  assert(!batch.isError);
+  assert.deepEqual(searches.slice(1), [
+    { query: "default limit", limit: 10 },
+    { query: "max limit", limit: 10 },
+    { query: "third", limit: 1 },
+    { query: "fourth", limit: 10 },
+    { query: "fifth", limit: 10 },
+  ]);
+
   const failures = [
+    [
+      "search_batch",
+      { searches: Array.from({ length: 6 }, () => ({ q: "test" })) },
+      /expected array to have <=5 items at searches/,
+    ],
+    [
+      "search_batch",
+      { searches: [{ q: "test", limit: 11 }] },
+      /expected number to be <=10 at searches\[0\]\.limit/,
+    ],
     [
       "search",
       { q: "test", recent: "week" },
@@ -451,5 +482,5 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     assert(Array.isArray(failure.content));
     assert.match(failure.content[0].text, message);
   }
-  assert.equal(searches.length, 1);
+  assert.equal(searches.length, 6);
 });

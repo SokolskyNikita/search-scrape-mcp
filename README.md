@@ -92,13 +92,13 @@ The relay forwards requests to the shared HTTP process.
 
 ## Tools
 
-| Tool           | Example arguments                                                | Result                                              |
-| -------------- | ---------------------------------------------------------------- | --------------------------------------------------- |
-| `search`       | `{"q":"example"}`                                                | Up to 10 results with links and snippets.           |
-| `search_batch` | `{"searches":[{"q":"example"}]}`                                 | Up to three searches, with up to five results each. |
-| `scrape`       | `{"url":"https://example.com/"}`                                 | Markdown or a saved binary download.                |
-| `scrape_batch` | `{"urls":["https://example.com/"]}`                              | Up to three scrapes.                                |
-| `browser`      | `{"command":{"action":"navigate","url":"https://example.com/"}}` | Open a remote browser tab and return page text.     |
+| Tool           | Example arguments                                                | Result                                                              |
+| -------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `search`       | `{"q":"example"}`                                                | Defaults to 10 results per page, with a maximum of 10.              |
+| `search_batch` | `{"searches":[{"q":"example"}]}`                                 | Up to five searches, each with the same per-page limit as `search`. |
+| `scrape`       | `{"url":"https://example.com/"}`                                 | Markdown or a saved binary download.                                |
+| `scrape_batch` | `{"urls":["https://example.com/"]}`                              | Up to three scrapes.                                                |
+| `browser`      | `{"command":{"action":"navigate","url":"https://example.com/"}}` | Open a remote browser tab and return page text.                     |
 
 Batches preserve input order and report errors per item. They run up to two
 items concurrently and serialize items for the same hostname. The tool deadline
