@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { fileHost } from "./file-hosts.js";
+import { SCRAPFLY_STANDARD_COST } from "./safety-limits.js";
 
 const integer = (
   min: number,
@@ -135,23 +136,11 @@ export const tuningSchema = z.object({
     .nullable()
     .default("us")
     .describe("Scrapfly proxy country. Set null to let Scrapfly choose."),
-  scrapflyDatacenterCost: integer(
-    1,
+  scrapflyExpensiveCost: integer(
+    SCRAPFLY_STANDARD_COST + 1,
     10_000,
-    5,
-    "Datacenter requested cost budget in credits.",
-  ),
-  scrapflyUnblockerCost: integer(
-    1,
-    10_000,
-    85,
-    "Unblocker requested cost budget in credits.",
-  ),
-  scrapflyRenderCost: integer(
-    1,
-    10_000,
-    40,
-    "Rendering requested cost budget in credits.",
+    200,
+    "Scrapfly requested cost budget in credits with allow_higher_cost enabled.",
   ),
   scrapflyDatacenterPool: pool
     .default("public_datacenter_pool")

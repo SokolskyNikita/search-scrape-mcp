@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileHosts } from "../config/file-hosts.js";
@@ -103,10 +103,7 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
       : input.searchParams.has("unblocker")
         ? "unblocker"
         : "datacenter";
-    assert.equal(
-      input.searchParams.get("cost_budget"),
-      { datacenter: "5", unblocker: "85", render: "40" }[rung],
-    );
+    assert.equal(input.searchParams.get("cost_budget"), "100");
     assert.equal(
       input.searchParams.get("timeout"),
       { datacenter: "15000", unblocker: "30000", render: "30000" }[rung],
@@ -241,7 +238,7 @@ test("Scrapfly retries a temporary failure once and respects retry headers", asy
   assert.equal(calls, 4);
 });
 
-test("menu and consent pages escalate once and keep the remaining rung visible", async (t) => {
+test("menu pages escalate while cookie notice text is returned", async (t) => {
   const menu = Array.from(
     { length: 30 },
     (_, i) =>
@@ -262,19 +259,10 @@ test("menu and consent pages escalate once and keep the remaining rung visible",
   content =
     "# Cookie preferences\nWe use cookies to improve your browsing experience.\nAccept all cookies";
   const second = options();
-  await assert.rejects(provider.scrape(target, undefined, second), {
-    code: "consent",
-    details: {
-      tried: ["datacenter", "unblocker"],
-      credits: 2,
-      hint: 'Try start_rung: "render" for a stronger fetch.',
-    },
-  });
-
-  content = body;
-  const hard: ScrapeOptions = { start: "render", tried: [] };
-  await provider.scrape(target, undefined, hard);
-  assert.deepEqual(hard.tried, ["render"]);
+  const notice = await provider.scrape(target, undefined, second);
+  assert.equal(notice.check.code, "ok");
+  assert.equal(notice.markdown, content);
+  assert.equal(second.tried.length, 1);
 });
 
 test("a per-request budget rejection escalates but insufficient account credit stops", async (t) => {
@@ -404,7 +392,7 @@ test("Scrapfly halts after a reported budget overrun and validates failed redire
         )
       : Response.json({
           ...success("# Access denied", target, 403),
-          context: { cost: 25 },
+          context: { cost: 101 },
         }),
   );
   const provider = scrapflyScrape(
@@ -496,7 +484,7 @@ test("datacenter HEAD gates files by headers before paying for a download", asyn
   t.mock.method(globalThis, "fetch", async (url: URL, init: RequestInit) => {
     methods.push(init.method!);
     assert.equal(url.searchParams.get("proxy_pool"), "public_datacenter_pool");
-    assert.equal(url.searchParams.get("cost_budget"), "5");
+    assert.equal(url.searchParams.get("cost_budget"), "100");
     assert.equal(url.searchParams.has("unblocker"), false);
     assert.equal(url.searchParams.has("render_js"), false);
     if (init.method === "HEAD")
@@ -604,7 +592,7 @@ test("an unexpected paid file is kept and its host gets HEAD on the next URL aft
     extension: "pdf",
   });
   assert.equal(result.credits, 37);
-  assert.match(result.costWarning ?? "", /37 credits.*5-credit/);
+  assert.equal(result.costWarning, undefined);
   const hosts = new FileHosts(["1.1.1.1"], state);
   assert.deepEqual([...hosts.list()], ["1.1.1.1", "8.8.8.8"]);
   const restarted = scrapflyScrape(
@@ -718,7 +706,7 @@ test("the recorded private redirect error stops before stronger rungs", async (t
   assert.equal(request.mock.callCount(), 2);
 });
 
-test("the recorded residential upgrade logs billing and requires opt-in after restart", async (t) => {
+test("three charges of 100 or more require opt-in after restart", async (t) => {
   const state = fileState(t);
   const log = state + ".jsonl";
   const previousLog = process.env.MCP_STATS_LOG;
@@ -727,8 +715,8 @@ test("the recorded residential upgrade logs billing and requires opt-in after re
     if (previousLog === undefined) delete process.env.MCP_STATS_LOG;
     else process.env.MCP_STATS_LOG = previousLog;
   });
+  let charge = 99;
   const breakdown = {
-    total: 25,
     details: [
       {
         amount: 25,
@@ -739,7 +727,10 @@ test("the recorded residential upgrade logs billing and requires opt-in after re
   };
   const fetch = t.mock.method(globalThis, "fetch", async (url: URL) => {
     assert.equal(url.searchParams.get("proxy_pool"), "public_datacenter_pool");
-    assert.equal(url.searchParams.get("cost_budget"), "5");
+    assert.equal(
+      url.searchParams.get("cost_budget"),
+      fetch.mock.callCount() < 4 ? "100" : "200",
+    );
     return Response.json(
       {
         ...success(),
@@ -748,12 +739,12 @@ test("the recorded residential upgrade logs billing and requires opt-in after re
             pool: "public_residential_pool_ix",
             identity: "private proxy identity",
           },
-          cost: breakdown,
+          cost: charge === 101 ? undefined : { ...breakdown, total: charge },
         },
       },
       {
         headers: {
-          "X-Scrapfly-Api-Cost": "25",
+          "X-Scrapfly-Api-Cost": String(charge),
           "X-Scrapfly-Remaining-Api-Credit": "197187",
         },
       },
@@ -767,34 +758,38 @@ test("the recorded residential upgrade logs billing and requires opt-in after re
       undefined,
       new FileHosts([], state),
     );
-  assert.match(
-    (await provider().scrape(target)).costWarning ?? "",
-    /25 credits/,
-  );
+  for (charge of [100, 99, 101, 100]) {
+    const result = await provider().scrape(target);
+    assert.equal(result.credits, charge);
+    assert.equal(Boolean(result.costWarning), charge > 100);
+  }
   const restarted = provider();
   await assert.rejects(restarted.scrape(target), {
     code: "provider_cost_opt_in_required",
-    message: /25 credits.*public_residential_pool_ix.*allow_higher_cost/,
-    details: { expectedCredits: 25 },
+    message: /101 credits.*allow_higher_cost/,
+    details: { expectedCredits: 101 },
   });
-  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(fetch.mock.callCount(), 4);
   const optedIn = await restarted.scrape(target, undefined, {
     tried: [],
     allowHigherCost: true,
   });
-  assert.equal(optedIn.credits, 25);
-  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(optedIn.credits, 100);
+  assert.equal(fetch.mock.callCount(), 5);
   const lines = readFileSync(log, "utf8").trim().split("\n");
-  assert.equal(lines.length, 2);
-  for (const line of lines) {
+  assert.equal(lines.length, 5);
+  for (const [index, line] of lines.entries()) {
     const row = JSON.parse(line);
-    assert.equal(row.credits, 25);
+    assert.equal(row.credits, [100, 99, 101, 100, 100][index]);
     assert.equal(row.remainingCredits, 197187);
     assert.equal(row.requestedProxyPool, "public_datacenter_pool");
     assert.equal(row.proxyPool, "public_residential_pool_ix");
     assert.equal(row.host, "8.8.8.8");
     assert.equal(row.url, target);
-    assert.deepEqual(row.costBreakdown, breakdown);
+    assert.deepEqual(
+      row.costBreakdown,
+      row.credits === 101 ? null : { ...breakdown, total: row.credits },
+    );
     assert.doesNotMatch(line, /private proxy identity/);
   }
 });
@@ -972,7 +967,7 @@ test("empty extraction falls back once at the same rung and records both charges
   t.mock.method(globalThis, "fetch", async (url: URL) => {
     const format = url.searchParams.get("format");
     formats.push(format!);
-    assert.equal(url.searchParams.get("cost_budget"), "5");
+    assert.equal(url.searchParams.get("cost_budget"), "100");
     assert.equal(url.searchParams.has("unblocker"), false);
     return format === "raw"
       ? htmlResponse(
@@ -1032,44 +1027,49 @@ test("a failed extraction fallback does not escalate to a stronger rung", async 
   assert.deepEqual(tried, ["datacenter", "datacenter_full"]);
 });
 
-test("a target 503 or 429 offers a priced next rung; clear 4xx errors stop", async (t) => {
+test("transient target failures escalate at 100 credits and stop above 100", async (t) => {
   let status = 503;
+  let charge = 100;
   const request = t.mock.method(globalThis, "fetch", async (url: URL) =>
     Response.json(
       url.searchParams.has("unblocker")
         ? success()
         : {
             ...success("Try again later.", target, status),
-            context: { cost: 0 },
+            context: { cost: charge },
           },
     ),
   );
-  const provider = scrapflyScrape("fixture");
   for (const code of [503, 429]) {
     status = code;
-    await assert.rejects(provider.scrape(target), {
-      code: "provider_cost_opt_in_required",
-      details: {
-        tried: ["datacenter"],
-        expectedCredits: 85,
-        hint: 'Try start_rung: "unblocker" with allow_higher_cost: true (request budget: up to 85 credits).',
-        credits: 0,
-      },
-    });
+    const tried: string[] = [];
+    const provider = scrapflyScrape(
+      "fixture",
+      defaults,
+      undefined,
+      undefined,
+      new FileHosts([], fileState(t)),
+    );
+    const result = await provider.scrape(target, undefined, { tried });
+    assert.equal(result.check.code, "ok");
+    assert.deepEqual(tried, ["datacenter", "unblocker"]);
   }
+  const provider = scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], fileState(t)),
+  );
+  charge = 101;
+  await assert.rejects(provider.scrape(target), {
+    code: "provider_cost_overrun",
+  });
+  assert.equal(request.mock.callCount(), 5);
+  charge = 0;
   status = 400;
   await assert.rejects(provider.scrape(target), { code: "target_http" });
-  assert.equal(request.mock.callCount(), 3);
-  status = 503;
-  const tried: string[] = [];
-  const withinBudget = scrapflyScrape("fixture", {
-    ...defaults,
-    scrapflyUnblockerCost: defaults.scrapflyDatacenterCost,
-  });
-  const result = await withinBudget.scrape(target, undefined, { tried });
-  assert.equal(result.check.code, "ok");
-  assert.equal(result.credits, 1);
-  assert.deepEqual(tried, ["datacenter", "unblocker"]);
+  assert.equal(request.mock.callCount(), 6);
 });
 
 test("a link-only extraction falls back to navigation with a render hint", async (t) => {
@@ -1098,37 +1098,28 @@ test("a link-only extraction falls back to navigation with a render hint", async
   assert.match(result.hint ?? "", /start_rung: "render"/);
 });
 
-test("bandwidth overrun does not set a host price, and cost updates keep one row", async (t) => {
+test("legacy cost notices preserve file hosts without counting as observations", (t) => {
   const state = fileState(t);
-  const hosts = new FileHosts([], state);
-  const response = binaryFixture(target, pdf, 37);
-  t.mock.method(globalThis, "fetch", async () =>
-    Response.json({
-      ...response,
-      context: {
-        cost: {
-          total: 37,
-          details: [
-            { code: "BANDWIDTH", amount: 36 },
-            { code: "PROXY_DATACENTER_NETWORK", amount: 1 },
-          ],
-        },
-      },
-    }),
+  writeFileSync(
+    state,
+    JSON.stringify({
+      host: "8.8.8.8",
+      expectedCredits: 125,
+      reason: "legacy cost notice",
+      file: true,
+    }) + "\n",
+    { mode: 0o600 },
   );
-  const result = await scrapflyScrape(
-    "fixture",
-    defaults,
-    undefined,
-    undefined,
-    hosts,
-  ).scrape(target);
-  assert.equal(result.credits, 37);
-  assert.match(result.costWarning ?? "", /37 credits/);
-  assert.equal(hosts.read().costs.size, 0);
-  hosts.remember("8.8.8.8", { expectedCredits: 25, reason: "first pool" });
-  hosts.remember("8.8.8.8", { expectedCredits: 25, reason: "updated pool" });
-  assert.equal(readFileSync(state, "utf8").trim().split("\n").length, 1);
-  assert.equal(hosts.read().costs.get("8.8.8.8")?.reason, "updated pool");
+  const hosts = new FileHosts([], state);
   assert.equal(hosts.list().has("8.8.8.8"), true);
+  hosts.observeCost("8.8.8.8", 100);
+  hosts.observeCost("8.8.8.8", 100);
+  assert.equal(hosts.read().costs.size, 0);
+  hosts.observeCost("8.8.8.8", 100);
+  const flagged = hosts.read().costs.get("8.8.8.8");
+  assert.deepEqual(flagged, { expectedCredits: 100, observations: 3 });
+  const recorded = readFileSync(state, "utf8");
+  hosts.observeCost("8.8.8.8", 150);
+  hosts.observeCost("1.1.1.1", Number.NaN);
+  assert.equal(readFileSync(state, "utf8"), recorded);
 });

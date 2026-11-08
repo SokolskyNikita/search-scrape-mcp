@@ -52,7 +52,6 @@ export async function fallback<T extends { name?: string }, R>(
           "not_found",
           "sign_in",
           "content_moved",
-          "consent",
         ].includes(error.code)
       )
         throw error;

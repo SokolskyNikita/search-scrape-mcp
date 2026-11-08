@@ -199,9 +199,7 @@ the generated table.
 | `searchGl` | `"us"` | Default Serper country code. |
 | `searchHl` | `"en"` | Default Serper language code. |
 | `scrapflyCountry` | `"us"` | Scrapfly proxy country. Set null to let Scrapfly choose. |
-| `scrapflyDatacenterCost` | `5` | Datacenter requested cost budget in credits. |
-| `scrapflyUnblockerCost` | `85` | Unblocker requested cost budget in credits. |
-| `scrapflyRenderCost` | `40` | Rendering requested cost budget in credits. |
+| `scrapflyExpensiveCost` | `200` | Scrapfly requested cost budget in credits with allow_higher_cost enabled. |
 | `scrapflyDatacenterPool` | `"public_datacenter_pool"` | Proxy pool sent on the datacenter rung. |
 | `scrapflyUnblockerPool` | `"public_datacenter_pool"` | Initial proxy pool sent on the Unblocker rung. |
 | `scrapflyRenderPool` | `"public_datacenter_pool"` | Initial proxy pool sent on the rendering rung. |
@@ -242,10 +240,12 @@ items that did not finish before the deadline. Clients with their own request
 timeout need to allow at least the configured tool deadline plus time to
 receive the result.
 
-Scrapfly can charge above the requested `cost_budget`. The server reports an
-observed overrun, stops further automatic attempts for that scrape, and flags
-the host for future calls. Set `allow_higher_cost: true` on either scrape tool
-to proceed with a flagged host using the configured pool and budget.
+Each Scrapfly scrape API request has a 100-credit requested budget across all
+rungs. If the provider reports a charge above 100 credits, the server stops
+automatic retries for that scrape. Scrapfly can bill above the requested budget.
+After three reported charges of 100 credits or more for a hostname, subsequent
+scrapes of that host require `allow_higher_cost: true`. This flag also selects
+the configured higher request budget (200 credits by default).
 Browser sessions and binary bandwidth can also incur charges.
 [Scrapfly billing documentation](https://scrapfly.io/docs/scrape-api/billing)
 

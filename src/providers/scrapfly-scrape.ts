@@ -1,5 +1,9 @@
 import { FileHosts, normalizeFileHost } from "../config/file-hosts.js";
 import {
+  SCRAPFLY_COST_OBSERVATIONS_REQUIRED,
+  SCRAPFLY_STANDARD_COST,
+} from "../config/safety-limits.js";
+import {
   datacenterFilePool,
   fileHeaders,
   identifyDownload,
@@ -267,25 +271,18 @@ async function requestPage(
   operation: "head" | FileHeaders | undefined,
   dispatch: DispatchScrape,
   recordAttempt: () => void,
+  budget: number,
 ): Promise<
   | (ScrapeResult & { transientTarget?: boolean })
   | { head: FileHeaders }
   | { error: AppError; retryMs?: number }
 > {
   const endpoint = new URL("https://api.scrapfly.io/scrape");
-  const [pool, budget] = (
-    {
-      datacenter: [
-        settings.scrapflyDatacenterPool,
-        settings.scrapflyDatacenterCost,
-      ],
-      unblocker: [
-        settings.scrapflyUnblockerPool,
-        settings.scrapflyUnblockerCost,
-      ],
-      render: [settings.scrapflyRenderPool, settings.scrapflyRenderCost],
-    } as const
-  )[rung];
+  const pool = {
+    datacenter: settings.scrapflyDatacenterPool,
+    unblocker: settings.scrapflyUnblockerPool,
+    render: settings.scrapflyRenderPool,
+  }[rung];
   const requestedProxyPool = operation ? datacenterFilePool : pool;
   const raw = contentMode === "main" && !operation;
   endpoint.search = new URLSearchParams({
@@ -316,11 +313,13 @@ async function requestPage(
   let errorCode: string | null = null;
   let providerStatus: number | undefined;
   let providerCode: string | undefined;
-  const overrun = () => credits !== null && credits > budget;
-  const costWarning = () =>
-    overrun()
-      ? `Scrapfly reported ${credits} credits for this attempt, above the ${budget}-credit rung budget.`
+  let contentCredits: number | null = null;
+  const costWarning = () => {
+    const highestCharge = Math.max(credits ?? 0, contentCredits ?? 0);
+    return highestCharge > SCRAPFLY_STANDARD_COST
+      ? `Scrapfly reported ${highestCharge} credits for this attempt, above the ${SCRAPFLY_STANDARD_COST}-credit standard budget.`
       : undefined;
+  };
   let retryMs: number | undefined;
   let retryAt: number | undefined;
   let retryable = true;
@@ -466,6 +465,8 @@ async function requestPage(
           { type: "unknown" },
           "datacenter HEAD did not verify the target.",
         );
+      const warning = costWarning();
+      if (warning) throw new AppError("provider_cost_overrun", warning);
       return { head: metadata };
     }
 
@@ -576,13 +577,16 @@ async function requestPage(
       };
     }
     let content = result.content ?? "";
-    if (format === "clob" && !operation)
+    if (format === "clob" && !operation) {
       content = await dispatch(
         () =>
           downloadContent(
             content,
             target,
-            recordCredits,
+            (charge) => {
+              contentCredits = charge;
+              recordCredits(charge);
+            },
             endpoint,
             key,
             requestSignal,
@@ -593,6 +597,7 @@ async function requestPage(
           ),
         requestSignal,
       );
+    }
     const html =
       isHtml(fileHeaders(contentType).type) ||
       (!contentType && /^\s*(?:<!doctype html\b|<html[\s>])/i.test(content));
@@ -660,6 +665,7 @@ async function requestPage(
       warning &&
       ![
         "unsafe_url",
+        "provider_cost_overrun",
         "file_refused",
         "binary_download",
         "provider_proxy_pool",
@@ -679,23 +685,7 @@ async function requestPage(
     };
   } finally {
     if (startedAt !== undefined) {
-      const host = normalizeFileHost(target.hostname);
-      const nonBandwidthCredits =
-        typeof breakdown === "object"
-          ? breakdown?.details
-              ?.filter(({ code }) => !/BANDWIDTH/i.test(code))
-              .reduce((sum, { amount }) => sum + amount, 0)
-          : undefined;
-      if (
-        overrun() &&
-        nonBandwidthCredits !== undefined &&
-        nonBandwidthCredits > budget
-      ) {
-        fileHosts.remember(host, {
-          expectedCredits: nonBandwidthCredits,
-          reason: `Scrapfly reported ${nonBandwidthCredits} non-bandwidth credits, above the ${budget}-credit rung budget.${proxyPool ? ` Reported proxy pool: ${proxyPool}.` : ""}`,
-        });
-      }
+      fileHosts.observeCost(normalizeFileHost(target.hostname), credits);
       recordCredits(credits);
       usage?.record("scrapfly", credits, startedAt);
       writeProviderAttempt(
@@ -762,25 +752,31 @@ export function scrapflyScrape(
       const target = await validatePublicUrl(url);
       target.hash = "";
       const host = normalizeFileHost(target.hostname);
-      function checkCost() {
-        const { hosts, costs } = fileHosts.read();
-        const notice = costs.get(host);
-        if (notice && !options.allowHigherCost)
-          throw new AppError(
-            "provider_cost_opt_in_required",
-            `Scrapfly expects ${notice.expectedCredits} credits for this host. ${notice.reason} Set allow_higher_cost: true to accept the higher price.`,
-            { expectedCredits: notice.expectedCredits },
-          );
-        return hosts.has(host);
-      }
-      const knownFile = checkCost();
+      const { hosts: knownFiles, costs } = fileHosts.read();
+      const notice = costs.get(host);
+      if (notice && !options.allowHigherCost)
+        throw new AppError(
+          "provider_cost_opt_in_required",
+          `Scrapfly charged up to ${notice.expectedCredits} credits for this host across at least ${SCRAPFLY_COST_OBSERVATIONS_REQUIRED} requests costing ${SCRAPFLY_STANDARD_COST} credits or more. Set allow_higher_cost: true to proceed.`,
+          { expectedCredits: notice.expectedCredits },
+        );
+      const knownFile = knownFiles.has(host);
       let file: FileHeaders | undefined;
       const admission = limits?.budget();
+      const budget = options.allowHigherCost
+        ? settings.scrapflyExpensiveCost
+        : SCRAPFLY_STANDARD_COST;
+      let overrunCredits: number | undefined;
       async function attempt(
         rung: ScrapeRung,
         operation?: "head" | FileHeaders,
         fullFallback = false,
       ) {
+        if (overrunCredits !== undefined)
+          throw new AppError(
+            "provider_cost_overrun",
+            `Scrapfly reported ${overrunCredits} credits on a previous attempt.`,
+          );
         checkBackoff();
         const timeout = scrapflyTimeoutMs[rung];
         const dispatch: DispatchScrape = (task, requestSignal) => {
@@ -792,10 +788,7 @@ export function scrapflyScrape(
             admission,
             task,
             host,
-            () => {
-              checkBackoff();
-              checkCost();
-            },
+            checkBackoff,
           );
         };
         return requestPage(
@@ -810,7 +803,11 @@ export function scrapflyScrape(
           checkBackoff,
           rateLimited,
           fullFallback ? "full" : (options.contentMode ?? "main"),
-          recordCredits,
+          (credits) => {
+            if (credits !== null && credits > SCRAPFLY_STANDARD_COST)
+              overrunCredits = credits;
+            recordCredits(credits);
+          },
           operation,
           dispatch,
           () =>
@@ -821,6 +818,7 @@ export function scrapflyScrape(
                   ? `${rung}_full`
                   : rung,
             ),
+          budget,
         );
       }
       const filePath = looksLikeFile(target);
@@ -1019,24 +1017,11 @@ export function scrapflyScrape(
           );
         }
         if (transientTarget) {
-          const expectedCredits = settings.scrapflyUnblockerCost;
-          const needsOptIn =
-            expectedCredits > settings.scrapflyDatacenterCost &&
-            !options.allowHigherCost;
-          if (
-            needsOptIn ||
-            remaining() < scrapflyTimeoutMs.unblocker ||
-            signal.aborted
-          )
-            throw new AppError(
-              needsOptIn ? "provider_cost_opt_in_required" : check.code,
-              check.reason,
-              {
-                tried: options.tried,
-                expectedCredits,
-                hint: `Try start_rung: "unblocker"${needsOptIn ? " with allow_higher_cost: true" : ""} (request budget: up to ${expectedCredits} credits).`,
-              },
-            );
+          if (remaining() < scrapflyTimeoutMs.unblocker || signal.aborted)
+            throw new AppError(check.code, check.reason, {
+              tried: options.tried,
+              hint: 'Try start_rung: "unblocker".',
+            });
           index++;
           continue;
         }
@@ -1061,12 +1046,7 @@ export function scrapflyScrape(
         }
         if (index === previous) hosts.delete(host);
         if (index === 0 && blocked.has(check.code)) protectedSite = true;
-        if (
-          !check.next ||
-          !stronger ||
-          next <= index ||
-          (check.code === "consent" && lastThin === check.code)
-        ) {
+        if (!check.next || !stronger || next <= index) {
           if (protectedSite && !hosts.has(host)) remember(host, 1);
           throw new AppError(check.code, check.reason, {
             tried: options.tried,

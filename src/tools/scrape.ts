@@ -1,7 +1,11 @@
 import { toolInput } from "./input.js";
 import type { ResultCache } from "./result-cache.js";
 import { defaults } from "../config/tuning.js";
-import { MAX_URL_CHARS } from "../config/safety-limits.js";
+import {
+  MAX_URL_CHARS,
+  SCRAPFLY_COST_OBSERVATIONS_REQUIRED,
+  SCRAPFLY_STANDARD_COST,
+} from "../config/safety-limits.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
@@ -34,7 +38,7 @@ const allowHigherCostInput = z
   .boolean()
   .optional()
   .describe(
-    "Allow Scrapfly requests to hosts flagged for higher charges in this call.",
+    `Use the higher Scrapfly request budget and allow hosts with ${SCRAPFLY_COST_OBSERVATIONS_REQUIRED} charges of ${SCRAPFLY_STANDARD_COST} credits or more.`,
   );
 const urlInput = z.string().trim().min(1).max(MAX_URL_CHARS);
 

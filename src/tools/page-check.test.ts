@@ -45,11 +45,11 @@ test("recorded page shapes classify walls, completeness and retry strategy", () 
     ],
     ["menus_only", menu, page, 200, "stronger"],
     [
-      "consent",
+      "ok",
       "# Cookie preferences\nWe use cookies and personal data to improve your browsing experience.\nAccept all cookies",
       page,
       200,
-      "stronger",
+      undefined,
     ],
     ["not_found", "# Page not found\nTry our search.", page, 200, undefined],
     ["not_found", article, page, 404, undefined],
@@ -152,11 +152,9 @@ test("branded soft 404 and login titles classify the document", () => {
   );
 });
 
-test("explicit consent and membership screens survive lengthy site chrome", () => {
+test("membership screens survive lengthy site chrome", () => {
   const url = new URL("https://example.com/article");
   const chrome = "Navigation label and surrounding page chrome.\n".repeat(130);
-  const consent = `Before you continue to Example Search\n\n${chrome}\nIf you choose to “Accept all,” we will use cookies and data. If you choose to “Reject all,” we will skip those purposes.`;
-  assert.equal(checkPage(consent, url, url, 200).code, "consent");
   assert.equal(
     checkPage(
       `Member-only story\n\n# Article preview\n\n${chrome}`,

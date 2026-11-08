@@ -13,8 +13,6 @@ const SIGN_IN_TEXT_CHARS = 1_500;
 const EMPTY_TEXT_CHARS = 75;
 const SHELL_TEXT_CHARS = 3_000;
 const PAYWALL_TEXT_CHARS = 5_000;
-const CONSENT_TEXT_CHARS = 3_000;
-const CONSENT_MAX_PROSE_LINES = 4;
 // Navigation and prose heuristics for classifying thin pages.
 const LINK_MAJORITY = 0.5;
 const PROSE_MIN_WORDS = 8;
@@ -221,27 +219,6 @@ export function checkPage(
 
   const prose = lines.filter((line) => line.prose && !line.nav);
   const proseLength = prose.reduce((n, line) => n + line.text.length, 0);
-  if (
-    (/^before you continue(?: to .+)?$/i.test(opening) &&
-      /\baccept all\b/i.test(text) &&
-      /\breject all\b/i.test(text) &&
-      /\bcookies and data\b/i.test(text)) ||
-    (text.length < CONSENT_TEXT_CHARS &&
-      prose.length <= CONSENT_MAX_PROSE_LINES &&
-      /(?:accept|reject|manage|allow|use) (?:all |optional |your )?cookies|cookie (?:preferences|consent)/i.test(
-        text,
-      ) &&
-      prose.every((line) =>
-        /cookie|privacy|consent|personal data|your device|tracking/i.test(
-          line.text,
-        ),
-      ))
-  )
-    return {
-      code: "consent",
-      reason: "Only a consent notice was returned.",
-      next: "stronger",
-    };
   const firstProse = lines.findIndex(
     (line) =>
       line.prose && !line.nav && line.text.length >= PROSE_PARAGRAPH_CHARS,

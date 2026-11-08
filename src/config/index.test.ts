@@ -41,6 +41,9 @@ test("tunable settings validate and the config report emits only public settings
     JSON.stringify({
       token,
       toolDeadlineSeconds: 42,
+      scrapflyDatacenterCost: 5,
+      scrapflyUnblockerCost: 85,
+      scrapflyRenderCost: 40,
       serperKey: "legacy-secret",
     }),
     { mode: 0o600 },
@@ -59,6 +62,8 @@ test("tunable settings validate and the config report emits only public settings
   );
   const settings = JSON.parse(output);
   assert.equal(settings.toolDeadlineSeconds, 42);
+  assert.equal(settings.scrapflyExpensiveCost, 200);
+  assert.equal("scrapflyDatacenterCost" in settings, false);
   assert.equal(settings.browserIdleMs, 150_000);
   assert.deepEqual(settings.derived, {
     toolTimeoutMs: 42_000,
@@ -78,7 +83,7 @@ test("tunable settings validate and the config report emits only public settings
     { toolDeadlineSeconds: 33 },
     { outputDirectory: "relative" },
     { browserSessionSeconds: 1801 },
-    { scrapflyRenderCost: -1 },
+    { scrapflyExpensiveCost: 100 },
   ])
     assert.throws(() => parseSettings({ token, ...invalid }), {
       code: "config",
@@ -99,6 +104,6 @@ test("the config report uses defaults for a missing settings file", (t) => {
   );
   const settings = JSON.parse(output);
   assert.equal(settings.toolDeadlineSeconds, 270);
-  assert.equal(settings.scrapflyUnblockerCost, 85);
+  assert.equal(settings.scrapflyExpensiveCost, 200);
   assert.equal(settings.derived.scrapeBudgetMs, 267_000);
 });

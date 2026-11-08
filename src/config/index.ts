@@ -128,6 +128,9 @@ export function readSettings(file = settingsFile()) {
     string,
     unknown
   >;
+  delete settings.scrapflyDatacenterCost;
+  delete settings.scrapflyUnblockerCost;
+  delete settings.scrapflyRenderCost;
   return {
     settings: parseSettings(settings),
     legacyKeys: serperKey !== undefined || scrapflyKey !== undefined,

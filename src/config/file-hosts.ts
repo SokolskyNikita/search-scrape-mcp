@@ -3,17 +3,18 @@ import {
   constants,
   fstatSync,
   mkdirSync,
-  mkdtempSync,
   openSync,
   readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { AppError } from "../server/error.js";
+import {
+  SCRAPFLY_COST_OBSERVATIONS_REQUIRED,
+  SCRAPFLY_STANDARD_COST,
+} from "./safety-limits.js";
 
 export const normalizeFileHost = (host: string) =>
   host.toLowerCase().replace(/\.$/, "");
@@ -30,9 +31,9 @@ const costNotice = z.object({
   host: fileHost,
   file: z.boolean().optional(),
   expectedCredits: z.number().finite().nonnegative(),
-  reason: z.string().min(1),
+  observed: z.literal(true).optional(),
 });
-type CostNotice = Omit<z.infer<typeof costNotice>, "host" | "file">;
+type CostNotice = { expectedCredits: number; observations: number };
 
 function withFile<T>(file: string, flags: number, run: (fd: number) => T) {
   const fd = openSync(
@@ -56,7 +57,7 @@ export class FileHosts {
     private readonly file = fileHostsPath(),
   ) {}
 
-  read(includeSeeds = true) {
+  read() {
     const hosts = new Set<string>();
     const costs = new Map<string, CostNotice>();
     try {
@@ -65,10 +66,20 @@ export class FileHosts {
       );
       for (const line of recorded.split("\n").filter(Boolean)) {
         if (line.startsWith("{")) {
-          const { host, file, ...notice } = costNotice.parse(JSON.parse(line));
+          const { host, file, expectedCredits, observed } = costNotice.parse(
+            JSON.parse(line),
+          );
           if (file) hosts.add(host);
-          if (notice.expectedCredits >= (costs.get(host)?.expectedCredits ?? 0))
-            costs.set(host, notice);
+          if (observed && expectedCredits >= SCRAPFLY_STANDARD_COST) {
+            const prior = costs.get(host);
+            costs.set(host, {
+              expectedCredits: Math.max(
+                expectedCredits,
+                prior?.expectedCredits ?? 0,
+              ),
+              observations: (prior?.observations ?? 0) + 1,
+            });
+          }
         } else {
           hosts.add(fileHost.parse(line));
         }
@@ -81,8 +92,13 @@ export class FileHosts {
         );
     }
     return {
-      hosts: includeSeeds ? new Set([...this.seeds, ...hosts]) : hosts,
-      costs,
+      hosts: new Set([...this.seeds, ...hosts]),
+      costs: new Map(
+        [...costs].filter(
+          ([, cost]) =>
+            cost.observations >= SCRAPFLY_COST_OBSERVATIONS_REQUIRED,
+        ),
+      ),
     };
   }
 
@@ -90,50 +106,41 @@ export class FileHosts {
     return this.read().hosts;
   }
 
-  remember(host: string, notice?: CostNotice) {
+  remember(host: string) {
     try {
       host = fileHost.parse(host);
-      const { hosts, costs } = this.read(false);
-      const previous = costs.get(host);
-      if (notice) {
-        if (previous && previous.expectedCredits > notice.expectedCredits)
-          return;
-        if (
-          previous?.expectedCredits === notice.expectedCredits &&
-          previous.reason === notice.reason
-        )
-          return;
-        costs.set(host, notice);
-      } else {
-        if (hosts.has(host) || this.seeds.includes(host)) return;
-        hosts.add(host);
-      }
-      const lines = [...new Set([...hosts, ...costs.keys()])].map((name) => {
-        const cost = costs.get(name);
-        return cost
-          ? JSON.stringify({
-              host: name,
-              ...(hosts.has(name) ? { file: true } : {}),
-              ...cost,
-            })
-          : name;
-      });
-      const dir = dirname(this.file);
-      mkdirSync(dir, { recursive: true, mode: 0o700 });
-      const temporary = mkdtempSync(join(dir, ".file-hosts-"));
-      try {
-        const next = join(temporary, "state");
-        withFile(
-          next,
-          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-          (fd) => writeFileSync(fd, lines.join("\n") + "\n", { flush: true }),
-        );
-        renameSync(next, this.file);
-      } finally {
-        rmSync(temporary, { recursive: true, force: true });
-      }
+      if (!this.list().has(host)) this.append(host);
     } catch {
       console.error("Could not persist Scrapfly host state.");
     }
+  }
+
+  observeCost(host: string, credits: number | null) {
+    if (
+      credits === null ||
+      !Number.isFinite(credits) ||
+      credits < SCRAPFLY_STANDARD_COST
+    )
+      return;
+    try {
+      host = fileHost.parse(host);
+      // Once approval is required, the provider log tracks later charges.
+      if (this.read().costs.has(host)) return;
+      this.append(
+        JSON.stringify({ host, expectedCredits: credits, observed: true }),
+      );
+    } catch {
+      console.error("Could not persist Scrapfly host state.");
+    }
+  }
+
+  private append(line: string) {
+    mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
+    // A single append per event avoids lost increments across writers.
+    withFile(
+      this.file,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND,
+      (fd) => writeSync(fd, "\n" + line + "\n"),
+    );
   }
 }
