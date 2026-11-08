@@ -231,7 +231,13 @@ test("Scrapfly retries a temporary failure once and respects retry headers", asy
   await assert.rejects(provider.scrape(target), { code: "provider_down" });
   retryable = "true";
   retryAfter = "90";
-  await assert.rejects(provider.scrape(target), { code: "provider_down" });
+  await assert.rejects(
+    provider.scrape(target, undefined, {
+      ...options(),
+      deadline: performance.now() + 54_000,
+    }),
+    { code: "provider_down" },
+  );
   assert.equal(calls, 4);
 });
 

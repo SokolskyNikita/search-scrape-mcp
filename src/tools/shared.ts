@@ -78,6 +78,7 @@ export async function toolResult(
     deadline: number,
   ) => Promise<unknown>,
   settings = defaults,
+  { partialOnTimeout = false } = {},
 ) {
   const start = performance.now();
   let attempts = 0;
@@ -92,8 +93,8 @@ export async function toolResult(
   try {
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        reject(timeoutError);
         controller.abort(timeoutError);
+        if (!partialOnTimeout) reject(timeoutError);
       }, toolTimeoutMs(settings));
     });
     const result = await Promise.race([
@@ -166,6 +167,7 @@ export async function batch<I, O>(
   run: (input: I, attempt: Attempt) => Promise<O | CachedSearch<O>>,
   group?: (input: I) => string | undefined,
   stats?: { tool: string; attempt: Attempt; settings: typeof defaults },
+  signal?: AbortSignal,
 ) {
   const results: (
     | { index: number; result: O; cached?: true }
@@ -177,9 +179,9 @@ export async function batch<I, O>(
     key: group?.(input),
   }));
   const busy = new Set<string>();
-  await Promise.all(
+  const workers = Promise.all(
     Array.from({ length: Math.min(2, inputs.length) }, async () => {
-      for (;;) {
+      while (!signal?.aborted) {
         const next = pending.findIndex(({ key }) => !key || !busy.has(key));
         if (next < 0) return;
         const { input, index, key } = pending.splice(next, 1)[0]!;
@@ -225,5 +227,24 @@ export async function batch<I, O>(
       }
     }),
   );
-  return results;
+  if (!signal) {
+    await workers;
+    return results;
+  }
+  let finish!: () => void;
+  const aborted = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  if (signal.aborted) finish();
+  else signal.addEventListener("abort", finish, { once: true });
+  try {
+    await Promise.race([workers, aborted]);
+    if (!signal.aborted) return results;
+    const { code, message } = safeError(signal.reason);
+    return inputs.map(
+      (_, index) => results[index] ?? { index, error: { code, message } },
+    );
+  } finally {
+    signal.removeEventListener("abort", finish);
+  }
 }

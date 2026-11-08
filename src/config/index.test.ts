@@ -74,7 +74,7 @@ test("tunable settings validate and the config report emits only public settings
   assert(!output.includes(token));
   assert(!output.includes("legacy-secret"));
   for (const invalid of [
-    { toolDeadlineSeconds: 60 },
+    { toolDeadlineSeconds: 601 },
     { toolDeadlineSeconds: 33 },
     { outputDirectory: "relative" },
     { browserSessionSeconds: 1801 },
@@ -98,7 +98,7 @@ test("the config report uses defaults for a missing settings file", (t) => {
     },
   );
   const settings = JSON.parse(output);
-  assert.equal(settings.toolDeadlineSeconds, 54);
+  assert.equal(settings.toolDeadlineSeconds, 270);
   assert.equal(settings.scrapflyUnblockerCost, 85);
-  assert.equal(settings.derived.scrapeBudgetMs, 51_000);
+  assert.equal(settings.derived.scrapeBudgetMs, 267_000);
 });

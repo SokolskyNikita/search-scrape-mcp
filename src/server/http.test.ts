@@ -183,23 +183,26 @@ test(
     let ready = latch();
     let expected = 0;
     const markdown = "This is a readable fixture page. ".repeat(30);
-    const server = createMcpHttp(token, (mcp) =>
-      registerScrape(
-        mcp,
-        [
-          {
-            async scrape(url) {
-              if (++entered === expected) ready.resolve();
-              await gate.promise;
-              return {
-                markdown,
-                check: checkPage(markdown, new URL(url), new URL(url), 200),
-              };
+    const server = createMcpHttp(
+      token,
+      (mcp) =>
+        registerScrape(
+          mcp,
+          [
+            {
+              async scrape(url) {
+                if (++entered === expected) ready.resolve();
+                await gate.promise;
+                return {
+                  markdown,
+                  check: checkPage(markdown, new URL(url), new URL(url), 200),
+                };
+              },
             },
-          },
-        ],
-        files,
-      ),
+          ],
+          files,
+        ),
+      { ...defaults, mcpConcurrentToolCalls: 16 },
     );
     const log = t.mock.method(console, "log", () => {});
     server.listen(0, "127.0.0.1");

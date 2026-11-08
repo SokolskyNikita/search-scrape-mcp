@@ -188,8 +188,10 @@ export function registerScrape(
                 ? new URL(url).hostname.replace(/\.$/, "")
                 : undefined,
             { tool: "scrape_batch", attempt, settings },
+            signal,
           ),
         settings,
+        { partialOnTimeout: true },
       ),
   );
 }

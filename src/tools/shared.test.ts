@@ -103,3 +103,53 @@ test("batch items log independent outcomes and the returned batch is successful"
     ],
   );
 });
+
+test("a scrape batch deadline returns successes and item errors for work still pending", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const started: number[] = [];
+  const result = toolResult(
+    "scrape_batch",
+    (_, signal) =>
+      batch(
+        [0, 1, 2, 3],
+        async (index) => {
+          started.push(index);
+          if (index === 0) return "completed";
+          if (index === 1) throw new AppError("fixture_error", "Item failed.");
+          return new Promise(() => {});
+        },
+        () => "same-host",
+        undefined,
+        signal,
+      ),
+    defaults,
+    { partialOnTimeout: true },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(defaults.toolDeadlineSeconds * 1_000);
+  const response = await result;
+  assert.equal(response.isError, undefined);
+  assert.deepEqual(started, [0, 1, 2]);
+  const itemContent = response.content[0];
+  assert(itemContent?.type === "text");
+  const items = JSON.parse(itemContent.text);
+  assert.deepEqual(
+    items.map(
+      ({
+        index,
+        result,
+        error,
+      }: {
+        index: number;
+        result?: string;
+        error?: { code: string };
+      }) => [index, result ?? error?.code],
+    ),
+    [
+      [0, "completed"],
+      [1, "fixture_error"],
+      [2, "tool_timeout"],
+      [3, "tool_timeout"],
+    ],
+  );
+});

@@ -76,19 +76,17 @@ test("hostname gap applies after release and can wait for the next slot", async 
   assert(performance.now() - start >= 60);
 });
 
-test("five parallel scrapes and ten parallel searches start under the defaults", async (t) => {
-  let scrapes = 0;
-  let searches = 0;
-  let release!: () => void;
-  const started = new Promise<void>((resolve) => {
-    release = resolve;
+test("scrape and search each pace starts and cap independently at five in flight", async (t) => {
+  const settings = { ...defaults, providerGapMs: 20 };
+  const starts = { scrapfly: [] as number[], serper: [] as number[] };
+  let finish!: () => void;
+  const hold = new Promise<void>((resolve) => {
+    finish = resolve;
   });
   t.mock.method(globalThis, "fetch", async (endpoint: URL) => {
     const isScrape = endpoint.hostname === "api.scrapfly.io";
-    if (isScrape) scrapes++;
-    else searches++;
-    if (scrapes + searches === 15) release();
-    await started;
+    starts[isScrape ? "scrapfly" : "serper"].push(performance.now());
+    await hold;
     return isScrape
       ? Response.json({
           result: {
@@ -100,23 +98,71 @@ test("five parallel scrapes and ten parallel searches start under the defaults",
         })
       : Response.json({ organic: [] });
   });
-  const limits = new RequestLimits(defaults);
-  const scrape = scrapflyScrape("fixture", defaults, limits);
-  const search = serper("fixture", defaults, limits);
-  const signal = AbortSignal.timeout(1_000);
-  await Promise.race([
-    Promise.all([
-      ...Array.from({ length: 5 }, (_, index) =>
-        scrape.scrape(`https://8.8.8.${index + 1}/`, signal),
-      ),
-      ...Array.from({ length: 10 }, (_, index) =>
-        search.search({ query: `query ${index}`, limit: 1 }, signal),
-      ),
-    ]),
-    delay(500, undefined, { signal }).then(() =>
-      assert.fail("All requests must start and finish in the initial burst"),
+  const limits = new RequestLimits(settings);
+  const scrape = scrapflyScrape("fixture", settings, limits);
+  const search = serper("fixture", settings, limits);
+  const signal = AbortSignal.timeout(2_000);
+  const work = Promise.all([
+    ...Array.from({ length: 6 }, (_, index) =>
+      scrape.scrape(`https://8.8.8.${index + 1}/`, signal),
     ),
-  ]).finally(release);
-  assert.equal(scrapes, 5);
-  assert.equal(searches, 10);
+    ...Array.from({ length: 6 }, (_, index) =>
+      search.search({ query: `query ${index}`, limit: 1 }, signal),
+    ),
+  ]);
+  try {
+    await Promise.race([
+      work,
+      (async () => {
+        while (starts.scrapfly.length < 5 || starts.serper.length < 5)
+          await delay(10, undefined, { signal });
+        await delay(60, undefined, { signal });
+      })(),
+    ]);
+    assert.equal(starts.scrapfly.length, 5);
+    assert.equal(starts.serper.length, 5);
+  } finally {
+    finish();
+    await work;
+  }
+  for (const times of Object.values(starts)) {
+    assert.equal(times.length, 6);
+    assert(times.slice(1).every((time, index) => time - times[index]! >= 19));
+  }
+});
+
+test("an expired queue wait never dispatches and shares the operation's admission budget", async () => {
+  const limits = new RequestLimits({
+    ...defaults,
+    providerConcurrency: 1,
+    providerGapMs: 1,
+    localLimitWaitMs: 30,
+  });
+  const signal = new AbortController().signal;
+  let finish!: () => void;
+  const active = limits.run(
+    "serper",
+    signal,
+    Infinity,
+    limits.budget(),
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const budget = limits.budget();
+  const never = async () => assert.fail("Expired work must not dispatch");
+  try {
+    await assert.rejects(
+      limits.run("serper", signal, Infinity, budget, never),
+      {
+        code: "local_rate_limit",
+      },
+    );
+    assert(budget.remainingMs < 2);
+  } finally {
+    finish();
+    await active;
+  }
+  await limits.run("serper", signal, Infinity, limits.budget(), async () => {});
 });

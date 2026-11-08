@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import {
   closeSync,
   constants,
@@ -173,10 +174,26 @@ export class Usage {
     }
   }
 
-  async open<T>(connect: (lease: BrowserLease) => Promise<T>): Promise<T> {
-    const now = this.now();
-    const state = this.current(now);
-    const active = Object.values(state.leases);
+  async open<T>(
+    connect: (lease: BrowserLease) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const stop = performance.now() + this.settings.localLimitWaitMs;
+    let now: number;
+    let state: State;
+    let active: State["leases"][string][];
+    for (;;) {
+      signal?.throwIfAborted();
+      now = this.now();
+      state = this.current(now);
+      active = Object.values(state.leases);
+      const remaining = stop - performance.now();
+      if (active.length < this.settings.browserConcurrency || remaining <= 0)
+        break;
+      await delay(Math.min(100, remaining), undefined, { signal }).catch(() =>
+        signal?.throwIfAborted(),
+      );
+    }
     const reject = (code: string, retryAt: string, reason: string): never => {
       writeLimitEvent({ code, outcome: "rejected", retryAt }, this.settings);
       throw new AppError(code, `${reason} Retry at ${retryAt}.`, { retryAt });

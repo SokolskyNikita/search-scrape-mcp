@@ -39,16 +39,28 @@ export const tuningSchema = z.object({
     10,
     "Maximum accumulated Scrapfly scrape request tokens.",
   ),
+  providerConcurrency: integer(
+    1,
+    32,
+    5,
+    "Maximum in-flight HTTP attempts per provider across all sessions.",
+  ),
+  providerGapMs: integer(
+    1,
+    60_000,
+    500,
+    "Minimum time between HTTP attempt starts for each provider.",
+  ),
   localLimitWaitMs: integer(
     0,
-    55_000,
-    10_000,
+    550_000,
+    210_000,
     "Maximum wait for a provider or hostname permit, within the call deadline.",
   ),
   siteConcurrency: integer(
     1,
     32,
-    4,
+    5,
     "Maximum simultaneous requests per target hostname.",
   ),
   siteGapMs: integer(
@@ -60,7 +72,7 @@ export const tuningSchema = z.object({
   browserConcurrency: integer(
     1,
     32,
-    4,
+    5,
     "Maximum simultaneous Cloud Browser sessions, including scrape fallback.",
   ),
   browserDailyMinutes: integer(
@@ -90,9 +102,9 @@ export const tuningSchema = z.object({
 
   toolDeadlineSeconds: integer(
     35,
-    55,
-    54,
-    "Overall tool deadline in seconds (35–55). The relay allows three additional seconds.",
+    600,
+    270,
+    "Overall tool deadline in seconds (35–600). The relay allows three additional seconds.",
   ),
   serperBackupDelayMs: integer(
     1_000,
@@ -190,7 +202,7 @@ export const tuningSchema = z.object({
   mcpConcurrentToolCalls: integer(
     1,
     1_024,
-    16,
+    100,
     "Maximum simultaneous tool calls across all MCP sessions.",
   ),
   scrapeInlineChars: integer(

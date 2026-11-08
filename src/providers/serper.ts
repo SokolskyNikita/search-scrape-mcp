@@ -90,48 +90,31 @@ export function serper(
       deadline = Infinity,
     ) {
       const outer = signal ?? new AbortController().signal;
-      await limits?.acquire(
-        outer,
-        deadline - settings.serperTimeoutMs,
-        "serper",
-      );
-      outer.throwIfAborted();
       const controller = new AbortController();
-      const requestDeadline = Math.min(
-        deadline,
-        performance.now() + settings.serperTimeoutMs,
-      );
-      const requestSignal = AbortSignal.any([
-        controller.signal,
-        AbortSignal.timeout(settings.serperTimeoutMs),
-        outer,
-      ]);
+      const admission = limits?.budget();
+      type RequestWindow = { signal: AbortSignal; deadline: number };
+      let begin!: (window: RequestWindow) => void;
+      const started = new Promise<RequestWindow>((resolve) => {
+        begin = resolve;
+      });
       const queryWithOperators = [
         query,
         ...(site ? [`site:${site}`] : []),
         ...exclude_domains.map((host) => `-site:${host}`),
       ].join(" ");
       const freshness = { day: "d", week: "w", month: "m", year: "y" };
-      async function request(hedgeTrigger?: "delay" | "failure") {
-        if (hedgeTrigger) {
-          const hedgeBudget = Math.max(
-            0,
-            settings.serperTimeoutMs - settings.serperBackupDelayMs,
-          );
-          await limits?.acquire(
-            requestSignal,
-            requestDeadline - hedgeBudget,
-            "serper",
-          );
-        }
+      async function request(
+        requestSignal: AbortSignal,
+        hedgeTrigger?: "delay" | "failure",
+      ) {
         requestSignal.throwIfAborted();
         if (hedgeTrigger) retry?.();
-        usage?.record("serper", null, Date.now());
+        const startedAt = Date.now();
         const start = performance.now();
         let credits: number | null = null;
         let errorCode: string | null = null;
         try {
-          const { response, body } = await providerResponse(
+          const pending = providerResponse(
             "Serper",
             new URL("https://google.serper.dev/search"),
             {
@@ -150,6 +133,8 @@ export function serper(
               signal: requestSignal,
             },
           );
+          usage?.record("serper", null, startedAt);
+          const { response, body } = await pending;
           const raw =
             body && typeof body === "object" && "credits" in body
               ? body.credits
@@ -188,7 +173,34 @@ export function serper(
           );
         }
       }
-      const primary = request();
+      const startPrimary = () => {
+        outer.throwIfAborted();
+        const requestSignal = AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(settings.serperTimeoutMs),
+          outer,
+        ]);
+        begin({
+          signal: requestSignal,
+          deadline: Math.min(
+            deadline,
+            performance.now() + settings.serperTimeoutMs,
+          ),
+        });
+        return request(requestSignal);
+      };
+      const primary =
+        limits && admission
+          ? limits.run(
+              "serper",
+              outer,
+              deadline - settings.serperTimeoutMs,
+              admission,
+              startPrimary,
+            )
+          : startPrimary();
+      const { signal: requestSignal, deadline: requestDeadline } =
+        await Promise.race([started, primary.then(() => started)]);
       const startBackup = Promise.race([
         delay(settings.serperBackupDelayMs, "delay" as const, {
           signal: requestSignal,
@@ -215,7 +227,16 @@ export function serper(
       const backup = startBackup.then((start) => {
         if (!start) return primary;
         requestSignal.throwIfAborted();
-        return request(start);
+        const hedge = () => request(requestSignal, start);
+        return limits && admission
+          ? limits.run(
+              "serper",
+              requestSignal,
+              requestDeadline,
+              admission,
+              hedge,
+            )
+          : hedge();
       });
       const response = await Promise.any([primary, backup])
         .catch((error: AggregateError) => {

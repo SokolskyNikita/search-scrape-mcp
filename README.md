@@ -183,15 +183,17 @@ the generated table.
 | `scrapflyRequestsPerMinute` | `30` | Server-wide Scrapfly scrape request rate, including retries and escalation. |
 | `serperBurstCapacity` | `20` | Maximum accumulated Serper request tokens. |
 | `scrapflyBurstCapacity` | `10` | Maximum accumulated Scrapfly scrape request tokens. |
-| `localLimitWaitMs` | `10000` | Maximum wait for a provider or hostname permit, within the call deadline. |
-| `siteConcurrency` | `4` | Maximum simultaneous requests per target hostname. |
+| `providerConcurrency` | `5` | Maximum in-flight HTTP attempts per provider across all sessions. |
+| `providerGapMs` | `500` | Minimum time between HTTP attempt starts for each provider. |
+| `localLimitWaitMs` | `210000` | Maximum wait for a provider or hostname permit, within the call deadline. |
+| `siteConcurrency` | `5` | Maximum simultaneous requests per target hostname. |
 | `siteGapMs` | `1000` | Minimum time between request starts for the same target hostname. |
-| `browserConcurrency` | `4` | Maximum simultaneous Cloud Browser sessions, including scrape fallback. |
+| `browserConcurrency` | `5` | Maximum simultaneous Cloud Browser sessions, including scrape fallback. |
 | `browserDailyMinutes` | `120` | Daily Cloud Browser session-minutes across all sessions. Resets at midnight UTC. |
 | `cacheTtlMs` | `600000` | Successful search and scrape cache lifetime in milliseconds. Zero disables caching. |
 | `cacheMaxEntries` | `128` | Maximum entries in each of the search and scrape caches. |
 | `cacheMaxBytes` | `16000000` | Maximum serialized bytes in each of the search and scrape caches. |
-| `toolDeadlineSeconds` | `54` | Overall tool deadline in seconds (35–55). The relay allows three additional seconds. |
+| `toolDeadlineSeconds` | `270` | Overall tool deadline in seconds (35–600). The relay allows three additional seconds. |
 | `serperBackupDelayMs` | `4500` | Delay before hedging a slow Serper request. Transient failures can trigger an earlier backup. |
 | `serperTimeoutMs` | `12000` | Shared Serper primary and backup budget in milliseconds, within the tool deadline. |
 | `searchGl` | `"us"` | Default Serper country code. |
@@ -210,7 +212,7 @@ the generated table.
 | `mcpSessionExpiryMs` | `7200000` | Expire idle MCP sessions after this many milliseconds. |
 | `mcpSessionLimit` | `128` | Maximum number of MCP sessions. |
 | `mcpSessionInFlightLimit` | `8` | Maximum simultaneous MCP requests per session. |
-| `mcpConcurrentToolCalls` | `16` | Maximum simultaneous tool calls across all MCP sessions. |
+| `mcpConcurrentToolCalls` | `100` | Maximum simultaneous tool calls across all MCP sessions. |
 | `scrapeInlineChars` | `16000` | Inline character limit for a single scrape. |
 | `scrapeBatchInlineChars` | `20000` | Inline character limit per batch scrape. |
 | `browserInlineChars` | `12000` | Inline character limit for browser text output. |
@@ -227,9 +229,18 @@ the generated table.
 
 <!-- settings:end -->
 
-Provider limits and hostname pacing apply across sessions. Hedges, retries,
-and escalation each consume a request permit. A provider HTTP 429 pauses new
-Scrape API requests for the reported retry interval.
+Provider limits and hostname pacing apply across sessions. The Scrape API and
+Serper have independent queues. Hedges, retries, and escalation each consume a
+request permit. The admission wait is shared across the attempts for one
+scrape or search, and each batch item has its own admission budget within the
+batch deadline. A Scrape API HTTP 429 pauses new Scrape API requests for the
+reported retry interval. Cloud Browser opens wait separately for a session
+lease. Commands on an open session use that existing lease.
+
+A scrape batch returns completed results and individual errors, including for
+items that did not finish before the deadline. Clients with their own request
+timeout need to allow at least the configured tool deadline plus time to
+receive the result.
 
 Scrapfly can charge above the requested `cost_budget`. The server reports an
 observed overrun, stops further automatic attempts for that scrape, and flags

@@ -18,6 +18,7 @@ test("browser preflight checks both caps before connecting", async (t) => {
     ...defaults,
     browserDailyMinutes: 1,
     browserConcurrency: 1,
+    localLimitWaitMs: 0,
   };
   let now = Date.parse("2026-11-07T12:00:00Z");
   let opens = 0;
@@ -110,4 +111,28 @@ test("startup settles stale reservations at startup and immediately frees the sl
   now += 5_000;
   second.release();
   assert.equal(todayUsage(file, now).browserSessionMinutes, 15 / 60);
+});
+
+test("browser admission waits for a lease and aborts without opening a session", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "search-scrape-usage-"));
+  t.after(() => rmSync(dir, { recursive: true }));
+  const usage = new Usage(
+    { ...defaults, browserConcurrency: 1, localLimitWaitMs: 1_000 },
+    join(dir, "usage.json"),
+  );
+  const connect = async (lease: BrowserLease) => lease;
+  const first = await usage.open(connect);
+
+  const controller = new AbortController();
+  const canceled = usage.open(
+    async () => assert.fail("Canceled admission must not connect"),
+    controller.signal,
+  );
+  controller.abort(new Error("Canceled"));
+  await assert.rejects(canceled, /Canceled/);
+
+  const waiting = usage.open(connect);
+  first.release();
+  const second = await waiting;
+  second.release();
 });

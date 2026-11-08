@@ -246,6 +246,11 @@ async function downloadContent(
   }
 }
 
+type DispatchScrape = <T>(
+  task: () => Promise<T>,
+  signal?: AbortSignal,
+) => Promise<T>;
+
 async function requestPage(
   key: string,
   target: URL,
@@ -259,13 +264,14 @@ async function requestPage(
   rateLimited: (ms: number) => number,
   contentMode: ScrapeContentMode,
   recordCredits: (credits: number | null) => void,
-  operation?: "head" | FileHeaders,
+  operation: "head" | FileHeaders | undefined,
+  dispatch: DispatchScrape,
+  recordAttempt: () => void,
 ): Promise<
   | (ScrapeResult & { transientTarget?: boolean })
   | { head: FileHeaders }
   | { error: AppError; retryMs?: number }
 > {
-  const startedAt = Date.now();
   const endpoint = new URL("https://api.scrapfly.io/scrape");
   const [pool, budget] = (
     {
@@ -301,7 +307,8 @@ async function requestPage(
       String(settings.scrapflyRenderingWaitMs),
     );
   }
-  const start = performance.now();
+  let startedAt: number | undefined;
+  let start = 0;
   let credits: number | null = null;
   let remainingCredits: number | null = null;
   let proxyPool: string | null = null;
@@ -318,38 +325,47 @@ async function requestPage(
   let retryAt: number | undefined;
   let retryable = true;
   let headerFailure: AppError | undefined;
-  const localTimeout = AbortSignal.timeout(timeout);
-  const requestSignal = AbortSignal.any([signal, localTimeout]);
+  let localTimeout: AbortSignal | undefined;
+  let requestSignal = signal;
   try {
-    const { response, body } = await providerResponse(
-      "Scrapfly",
-      endpoint,
-      {
-        method: operation === "head" ? "HEAD" : "GET",
-        headers: { Accept: "application/json" },
-        signal: requestSignal,
-      },
-      (headers) => {
-        providerStatus = headers.status;
-        const rejectCode = headers.headers.get("X-Scrapfly-Reject-Code") ?? "";
-        if (/^ERR(?:::[A-Z0-9_]{1,64}){1,4}$/.test(rejectCode))
-          providerCode = rejectCode;
-        headerFailure = providerError(headers.status, rejectCode);
-        credits = creditHeader(headers, "X-Scrapfly-Api-Cost");
-        remainingCredits = creditHeader(
-          headers,
-          "X-Scrapfly-Remaining-Api-Credit",
-        );
-        retryMs = retryDelay(headers);
-        if (headers.status === 429) {
-          retryAt = rateLimited(retryMs ?? 1000);
-          headerFailure ??= busy(retryAt);
-        }
-        retryable =
-          headers.headers.get("X-Scrapfly-Reject-Retryable")?.toLowerCase() !==
-          "false";
-      },
-    );
+    const { response, body } = await dispatch(() => {
+      recordAttempt();
+      startedAt = Date.now();
+      start = performance.now();
+      localTimeout = AbortSignal.timeout(timeout);
+      requestSignal = AbortSignal.any([signal, localTimeout]);
+      return providerResponse(
+        "Scrapfly",
+        endpoint,
+        {
+          method: operation === "head" ? "HEAD" : "GET",
+          headers: { Accept: "application/json" },
+          signal: requestSignal,
+        },
+        (headers) => {
+          providerStatus = headers.status;
+          const rejectCode =
+            headers.headers.get("X-Scrapfly-Reject-Code") ?? "";
+          if (/^ERR(?:::[A-Z0-9_]{1,64}){1,4}$/.test(rejectCode))
+            providerCode = rejectCode;
+          headerFailure = providerError(headers.status, rejectCode);
+          credits = creditHeader(headers, "X-Scrapfly-Api-Cost");
+          remainingCredits = creditHeader(
+            headers,
+            "X-Scrapfly-Remaining-Api-Credit",
+          );
+          retryMs = retryDelay(headers);
+          if (headers.status === 429) {
+            retryAt = rateLimited(retryMs ?? 1000);
+            headerFailure ??= busy(retryAt);
+          }
+          retryable =
+            headers.headers
+              .get("X-Scrapfly-Reject-Retryable")
+              ?.toLowerCase() !== "false";
+        },
+      );
+    });
     const parsed = envelope.safeParse(body);
     const data = parsed.success ? parsed.data : undefined;
     const context = billing.safeParse(body).data?.context;
@@ -561,17 +577,21 @@ async function requestPage(
     }
     let content = result.content ?? "";
     if (format === "clob" && !operation)
-      content = await downloadContent(
-        content,
-        target,
-        recordCredits,
-        endpoint,
-        key,
+      content = await dispatch(
+        () =>
+          downloadContent(
+            content,
+            target,
+            recordCredits,
+            endpoint,
+            key,
+            requestSignal,
+            settings,
+            usage,
+            checkBackoff,
+            rateLimited,
+          ),
         requestSignal,
-        settings,
-        usage,
-        checkBackoff,
-        rateLimited,
       );
     const html =
       isHtml(fileHeaders(contentType).type) ||
@@ -617,6 +637,7 @@ async function requestPage(
       );
     return { markdown, check, costWarning: costWarning(), transientTarget };
   } catch (error) {
+    if (startedAt === undefined) throw error;
     const caught = safeError(error);
     const failure =
       caught.code === "provider_request" || caught.code === "provider_response"
@@ -624,7 +645,7 @@ async function requestPage(
         : caught;
     const mapped =
       failure.code === "provider_request"
-        ? localTimeout.aborted
+        ? localTimeout?.aborted
           ? new AppError(
               "provider_timeout",
               "The local Scrapfly HTTP deadline expired.",
@@ -657,46 +678,50 @@ async function requestPage(
           : undefined,
     };
   } finally {
-    const host = normalizeFileHost(target.hostname);
-    const nonBandwidthCredits =
-      typeof breakdown === "object"
-        ? breakdown?.details
-            ?.filter(({ code }) => !/BANDWIDTH/i.test(code))
-            .reduce((sum, { amount }) => sum + amount, 0)
-        : undefined;
-    if (
-      overrun() &&
-      nonBandwidthCredits !== undefined &&
-      nonBandwidthCredits > budget
-    ) {
-      fileHosts.remember(host, {
-        expectedCredits: nonBandwidthCredits,
-        reason: `Scrapfly reported ${nonBandwidthCredits} non-bandwidth credits, above the ${budget}-credit rung budget.${proxyPool ? ` Reported proxy pool: ${proxyPool}.` : ""}`,
-      });
+    if (startedAt !== undefined) {
+      const host = normalizeFileHost(target.hostname);
+      const nonBandwidthCredits =
+        typeof breakdown === "object"
+          ? breakdown?.details
+              ?.filter(({ code }) => !/BANDWIDTH/i.test(code))
+              .reduce((sum, { amount }) => sum + amount, 0)
+          : undefined;
+      if (
+        overrun() &&
+        nonBandwidthCredits !== undefined &&
+        nonBandwidthCredits > budget
+      ) {
+        fileHosts.remember(host, {
+          expectedCredits: nonBandwidthCredits,
+          reason: `Scrapfly reported ${nonBandwidthCredits} non-bandwidth credits, above the ${budget}-credit rung budget.${proxyPool ? ` Reported proxy pool: ${proxyPool}.` : ""}`,
+        });
+      }
+      recordCredits(credits);
+      usage?.record("scrapfly", credits, startedAt);
+      writeProviderAttempt(
+        {
+          provider: "scrapfly",
+          ...providerTarget(target),
+          rung: operation === "head" ? "datacenter_head" : rung,
+          credits,
+          remainingCredits,
+          requestedProxyPool,
+          proxyPool,
+          costBreakdown: breakdown,
+          costBudget: budget,
+          providerStatus,
+          providerCode,
+          durationMs: Math.round(performance.now() - start),
+          errorCode,
+          ...(rung === "datacenter" && operation !== "head"
+            ? {
+                datacenterBlocked: errorCode !== null && blocked.has(errorCode),
+              }
+            : {}),
+        },
+        settings,
+      );
     }
-    recordCredits(credits);
-    usage?.record("scrapfly", credits, startedAt);
-    writeProviderAttempt(
-      {
-        provider: "scrapfly",
-        ...providerTarget(target),
-        rung: operation === "head" ? "datacenter_head" : rung,
-        credits,
-        remainingCredits,
-        requestedProxyPool,
-        proxyPool,
-        costBreakdown: breakdown,
-        costBudget: budget,
-        providerStatus,
-        providerCode,
-        durationMs: Math.round(performance.now() - start),
-        errorCode,
-        ...(rung === "datacenter" && operation !== "head"
-          ? { datacenterBlocked: errorCode !== null && blocked.has(errorCode) }
-          : {}),
-      },
-      settings,
-    );
   }
 }
 
@@ -750,6 +775,7 @@ export function scrapflyScrape(
       }
       const knownFile = checkCost();
       let file: FileHeaders | undefined;
+      const admission = limits?.budget();
       async function attempt(
         rung: ScrapeRung,
         operation?: "head" | FileHeaders,
@@ -757,41 +783,45 @@ export function scrapflyScrape(
       ) {
         checkBackoff();
         const timeout = scrapflyTimeoutMs[rung];
-        const release = await limits?.acquire(
+        const dispatch: DispatchScrape = (task, requestSignal) => {
+          if (!limits || !admission) return task();
+          return limits.run(
+            "scrapfly",
+            requestSignal ?? signal,
+            requestSignal ? deadline : deadline - timeout,
+            admission,
+            task,
+            host,
+            () => {
+              checkBackoff();
+              checkCost();
+            },
+          );
+        };
+        return requestPage(
+          key,
+          target,
+          rung,
+          timeout,
+          settings,
           signal,
-          deadline - timeout,
-          "scrapfly",
-          host,
+          usage,
+          fileHosts,
+          checkBackoff,
+          rateLimited,
+          fullFallback ? "full" : (options.contentMode ?? "main"),
+          recordCredits,
+          operation,
+          dispatch,
+          () =>
+            options.tried.push(
+              operation === "head"
+                ? "datacenter_head"
+                : fullFallback
+                  ? `${rung}_full`
+                  : rung,
+            ),
         );
-        try {
-          signal.throwIfAborted();
-          checkBackoff();
-          checkCost();
-          options.tried.push(
-            operation === "head"
-              ? "datacenter_head"
-              : fullFallback
-                ? `${rung}_full`
-                : rung,
-          );
-          return await requestPage(
-            key,
-            target,
-            rung,
-            timeout,
-            settings,
-            signal,
-            usage,
-            fileHosts,
-            checkBackoff,
-            rateLimited,
-            fullFallback ? "full" : (options.contentMode ?? "main"),
-            recordCredits,
-            operation,
-          );
-        } finally {
-          release?.();
-        }
       }
       const filePath = looksLikeFile(target);
       if (filePath || knownFile) {

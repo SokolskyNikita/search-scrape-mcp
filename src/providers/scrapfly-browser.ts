@@ -361,7 +361,10 @@ export function scrapflyBrowser(
     name: provider.name,
     open(signal, target) {
       signal?.throwIfAborted();
-      return usage.open((lease) => provider.open(signal, target, lease));
+      return usage.open(
+        (lease) => provider.open(signal, target, lease),
+        signal,
+      );
     },
   };
 }
