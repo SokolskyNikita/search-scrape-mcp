@@ -1,6 +1,6 @@
 # Search Scrape MCP
 
-I built this because I wanted a web research MCP for coding agents that could recover from a bad scrape on its own and show me what each attempt cost.
+My research showed that web search and scraping are essential for good research and the fastest way to fill an agent’s context with noise. Rising demand from agents can also make web access unstable. I couldn’t find a tool that handled both problems well, so I built one on the best APIs I could find.
 
 The MCP server runs on your Mac. It gets Google results through Serper, fetches pages and runs interactive browser sessions through Scrapfly, and uses yt-dlp to fetch metadata and captions directly from YouTube. Defuddle extracts the main text from fetched HTML locally.
 
