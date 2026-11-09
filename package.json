@@ -1,6 +1,7 @@
 {
   "name": "search-scrape-mcp",
   "version": "1.0.0",
+  "license": "MIT",
   "scripts": {
     "test": "npm run build && node dist/config/report.js --check-readme && node --test \"dist/**/*.test.js\"",
     "build": "tsc",

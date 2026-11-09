@@ -1,9 +1,7 @@
 # Provider documentation
 
-Before looking up provider documentation remotely, check `api-docs/` for
-downloaded official documentation. Use the local copy when it covers the
-question. Look up official sources remotely only when the relevant material
-is missing from `api-docs/`.
+Use official provider documentation. If a private local copy is available in
+`api-docs/`, check it before looking up the official sources remotely.
 
 # Live provider tests
 
