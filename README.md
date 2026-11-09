@@ -117,8 +117,11 @@ pagination and `autocorrect` to control spelling correction. Serper may ignore
 
 ### Scrape
 
-Use the GitHub CLI (`gh`) directly to open or read `github.com` URLs.
-Web search still supports GitHub queries and results.
+Scrape and browser tools reject URLs on these GitHub domains and their
+subdomains: `github.com`, `githubusercontent.com`, `githubassets.com`, `github.io`,
+`github.dev`, `githubapp.com`, `githubcopilot.com`, and `ghcr.io`. Use the GitHub
+CLI (`gh`) for GitHub repository and API access. Web search still supports
+GitHub queries and results.
 
 Both scrape tools default to `content_mode: "main"`. Defuddle extracts the
 main text from Scrapfly HTML and retains links within that content. Set
@@ -128,9 +131,9 @@ applies to the entire batch and is part of the cache key.
 
 If extraction yields an empty page or mostly navigation, the server can retry
 locally with less aggressive filtering on the same HTML. If Defuddle still
-produces no usable text, the server can make one additional whole-page request
-at the same rung, subject to time and cost limits. The whole-page fallback
-carries a warning and bypasses caching. To enable Cloud Browser
+cannot reliably extract the main content, the result includes any Markdown
+it produced, an `extractionWarning`, and an `htmlPath` to the original HTML
+from the same fetch. These results bypass caching. To enable Cloud Browser
 as a secondary scrape provider, set
 `"scrapeProviders": ["scrapfly", "scrapfly-browser"]`. It returns page text
 in main mode. Full mode requires the Scrapfly Scrape API.

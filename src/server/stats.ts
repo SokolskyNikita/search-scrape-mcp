@@ -2,10 +2,26 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { defaults } from "../config/tuning.js";
 import { appendFileSync, renameSync, statSync } from "node:fs";
 
+export type RequestStats = {
+  httpAttempts: number;
+  parent?: RequestStats;
+  warningCode?: string;
+  batchItems?: { succeeded: number; failed: number };
+};
+
 export const statsContext = new AsyncLocalStorage<{
   tool: string;
   itemIndex?: number;
+  request?: RequestStats;
 }>();
+
+export function recordHttpAttempt() {
+  const request = statsContext.getStore()?.request;
+  if (request) {
+    request.httpAttempts++;
+    if (request.parent) request.parent.httpAttempts++;
+  }
+}
 
 export function writeLimitEvent(
   event: {
@@ -18,7 +34,12 @@ export function writeLimitEvent(
   settings = defaults,
 ) {
   writeStats(
-    { event: "local_limit", ...statsContext.getStore(), ...event },
+    {
+      event: "local_limit",
+      tool: statsContext.getStore()?.tool,
+      itemIndex: statsContext.getStore()?.itemIndex,
+      ...event,
+    },
     settings.statsLogMaxBytes,
   );
 }
@@ -29,13 +50,20 @@ export function writeToolStats(
     itemIndex?: number;
     durationMs: number;
     attempts: number;
+    httpAttempts: number;
+    warningCode?: string;
+    batchItems?: RequestStats["batchItems"];
     provider: string | null;
     errorCode: string | null;
   },
   settings = defaults,
 ) {
   writeStats(
-    { ok: stats.errorCode === null, ...stats },
+    {
+      ok: stats.errorCode === null,
+      ...stats,
+      providerInvocations: stats.attempts,
+    },
     settings.statsLogMaxBytes,
   );
 }
@@ -52,6 +80,7 @@ export function writeProviderAttempt(
   attempt: {
     provider: string;
     rung: string;
+    format?: string;
     host?: string;
     url?: string;
     datacenterBlocked?: boolean;
@@ -79,6 +108,8 @@ export function writeProviderAttempt(
     {
       event: "provider_attempt",
       ok: attempt.errorCode === null,
+      tool: statsContext.getStore()?.tool,
+      itemIndex: statsContext.getStore()?.itemIndex,
       ...attempt,
     },
     settings.statsLogMaxBytes,

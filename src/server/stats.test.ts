@@ -27,12 +27,13 @@ test("tool stats rotate at the size cap and retain only approved fields", (t) =>
     tool: "search",
     durationMs: 4,
     attempts: 1,
+    httpAttempts: 2,
     provider: "serper",
     errorCode: "provider_limit",
   };
   writeToolStats(stats);
   const { timestamp, ...logged } = JSON.parse(readFileSync(file, "utf8"));
   assert.match(timestamp, /^\d{4}-\d{2}-\d{2}T/);
-  assert.deepEqual(logged, { ok: false, ...stats });
+  assert.deepEqual(logged, { ok: false, ...stats, providerInvocations: 1 });
   assert.equal(readFileSync(file + ".1", "utf8").slice(0, 7), "old log");
 });

@@ -1,6 +1,8 @@
 import { MAX_PROVIDER_RESPONSE_BYTES } from "../config/safety-limits.js";
 import { AppError } from "../server/error.js";
 
+import { recordHttpAttempt } from "../server/stats.js";
+
 export async function providerResponse(
   provider: string,
   url: URL,
@@ -9,6 +11,7 @@ export async function providerResponse(
   format: "json" | "text" = "json",
 ) {
   try {
+    recordHttpAttempt();
     const response = await fetch(url, {
       ...init,
       redirect: init.method === "HEAD" ? "manual" : "error",

@@ -1,3 +1,4 @@
+import type { ExtractionCause } from "../tools/main-content.js";
 import type { PageCheck } from "../tools/page-check.js";
 
 export interface SearchInput {
@@ -41,6 +42,7 @@ export type ScrapeResult = {
   check: PageCheck;
   hint?: string;
   binary?: { bytes: Buffer; mimeType: string; extension?: string };
+  extraction?: { cause: ExtractionCause; html: string };
   credits?: number;
   costWarning?: string;
 };

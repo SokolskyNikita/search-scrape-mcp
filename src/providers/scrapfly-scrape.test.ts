@@ -909,6 +909,7 @@ test("default and explicit full mode request different formats, including raw HT
   const provider = scrapflyScrape("fixture");
   const main = await provider.scrape(target);
   assert.equal(main.check.code, "ok");
+  assert.equal(main.extraction, undefined);
   assert.match(main.markdown, /recorded a steady increase/);
   assert.match(
     main.markdown,
@@ -960,71 +961,23 @@ test("empty main extraction recovers text from the same HTML without a second re
   assert.equal(request.mock.callCount(), 1);
 });
 
-test("empty extraction falls back once at the same rung and records both charges", async (t) => {
+test("empty extraction returns original HTML without another request or charge", async (t) => {
   const file = fileState(t);
   const usage = new Usage(defaults, file);
-  const formats: string[] = [];
-  t.mock.method(globalThis, "fetch", async (url: URL) => {
-    const format = url.searchParams.get("format");
-    formats.push(format!);
-    assert.equal(url.searchParams.get("cost_budget"), "100");
-    assert.equal(url.searchParams.has("unblocker"), false);
-    return format === "raw"
-      ? htmlResponse(
-          "<html><head></head><body><img src='station.jpg'></body></html>",
-        )
-      : htmlResponse(body, target, "markdown");
+  const html = "<html><head></head><body><img src='station.jpg'></body></html>";
+  const request = t.mock.method(globalThis, "fetch", async (url: URL) => {
+    assert.equal(url.searchParams.get("format"), "raw");
+    return htmlResponse(html);
   });
   const provider = scrapflyScrape("fixture", defaults, undefined, usage);
   const tried: string[] = [];
   const result = await provider.scrape(target, undefined, { tried });
-  assert.equal(result.markdown, "# An article\n\nPublic content.");
-  assert.equal(result.check.code, "extraction_fallback");
-  assert.equal(result.check.warning, true);
-  assert.deepEqual(tried, ["datacenter", "datacenter_full"]);
-  assert.deepEqual(formats, ["raw", "markdown:no_images"]);
-  assert.equal(result.credits, 2);
-  assert.equal(todayUsage(file).scrapflyCredits, 2);
-});
-
-test("full-page fallback stops when the same rung cannot fit the deadline", async (t) => {
-  let now = 0;
-  t.mock.method(performance, "now", () => now);
-  const request = t.mock.method(globalThis, "fetch", async () => {
-    now = 12_000;
-    return htmlResponse("<html><head></head><body></body></html>");
-  });
-  await assert.rejects(
-    scrapflyScrape("fixture").scrape(target, undefined, {
-      start: "render",
-      tried: [],
-      deadline: 42_000,
-    }),
-    {
-      code: "extraction_failed",
-      details: {
-        tried: ["render"],
-        credits: 1,
-        hint: 'Retry with content_mode: "full".',
-      },
-    },
-  );
+  assert.equal(result.markdown, "");
+  assert.deepEqual(result.extraction, { cause: "unusable_output", html });
+  assert.deepEqual(tried, ["datacenter"]);
   assert.equal(request.mock.callCount(), 1);
-});
-
-test("a failed extraction fallback does not escalate to a stronger rung", async (t) => {
-  const request = t.mock.method(globalThis, "fetch", async (url: URL) =>
-    url.searchParams.get("format") === "raw"
-      ? htmlResponse("<html><head></head><body></body></html>")
-      : Response.json(success("# Access denied", target, 403)),
-  );
-  const tried: string[] = [];
-  await assert.rejects(
-    scrapflyScrape("fixture").scrape(target, undefined, { tried }),
-    { code: "blocked" },
-  );
-  assert.equal(request.mock.callCount(), 2);
-  assert.deepEqual(tried, ["datacenter", "datacenter_full"]);
+  assert.equal(result.credits, 1);
+  assert.equal(todayUsage(file).scrapflyCredits, 1);
 });
 
 test("transient target failures escalate at 100 credits and stop above 100", async (t) => {
@@ -1072,30 +1025,21 @@ test("transient target failures escalate at 100 credits and stop above 100", asy
   assert.equal(request.mock.callCount(), 6);
 });
 
-test("a link-only extraction falls back to navigation with a render hint", async (t) => {
-  const links = [
-    "Home",
-    "Login",
-    "Contact the website administrator",
-    "Read the website privacy policy",
-  ]
-    .map((name, i) => `[${name}](https://8.8.8.8/link/${i})`)
-    .join("\n");
-  t.mock.method(globalThis, "fetch", async (url: URL) =>
-    url.searchParams.get("format") === "raw"
-      ? htmlResponse(
-          '<html><title>Quotes</title><body><header><h1>Quotes</h1></header><main><a href="/login">Login</a></main><footer>Copyright belongs to this site.</footer></body></html>',
-        )
-      : htmlResponse(links, target, "markdown"),
+test("a link-only extraction preserves partial Markdown without escalating", async (t) => {
+  const html =
+    '<html><title>Quotes</title><body><header><h1>Quotes</h1></header><main><a href="/login">Login</a></main><footer>Copyright belongs to this site.</footer></body></html>';
+  const request = t.mock.method(globalThis, "fetch", async () =>
+    htmlResponse(html),
   );
   const tried: string[] = [];
   const result = await scrapflyScrape("fixture").scrape(target, undefined, {
     tried,
   });
-  assert.deepEqual(tried, ["datacenter", "datacenter_full"]);
-  assert.equal(result.check.code, "menus_only");
-  assert.equal(result.check.next, "render");
-  assert.match(result.hint ?? "", /start_rung: "render"/);
+  assert.deepEqual(tried, ["datacenter"]);
+  assert.equal(request.mock.callCount(), 1);
+  assert.deepEqual(result.extraction, { cause: "unusable_output", html });
+  assert.match(result.markdown, /\[Login\]/);
+  assert.equal(result.hint, undefined);
 });
 
 test("legacy cost notices preserve file hosts without counting as observations", (t) => {

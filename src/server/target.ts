@@ -8,6 +8,16 @@ const globalV6 = ipaddr.parseCIDR("2000::/3");
 const specialV4 = ["192.0.0.0/24", "192.88.99.0/24"].map((cidr) =>
   ipaddr.IPv4.parseCIDR(cidr),
 );
+const githubDomains = [
+  "github.com",
+  "githubusercontent.com",
+  "githubassets.com",
+  "github.io",
+  "github.dev",
+  "githubapp.com",
+  "githubcopilot.com",
+  "ghcr.io",
+];
 
 function publicIp(value: string): boolean {
   const ip = ipaddr.parse(value);
@@ -37,8 +47,12 @@ export async function validatePublicUrl(value: string): Promise<URL> {
   if (url.port) throw forbidden("Use the standard port for the URL scheme.");
 
   const host = url.hostname.replace(/^\[|\]$|\.$/g, "");
-  if (host === "github.com" || host === "www.github.com")
-    throw forbidden("Use the GitHub CLI (`gh`) directly for github.com URLs.");
+  if (
+    githubDomains.some(
+      (domain) => host === domain || host.endsWith(`.${domain}`),
+    )
+  )
+    throw forbidden("Use the GitHub CLI (`gh`) directly for GitHub URLs.");
   if (ipaddr.isValid(host)) {
     if (!publicIp(host))
       throw forbidden("The URL points to a private or reserved IP address.");

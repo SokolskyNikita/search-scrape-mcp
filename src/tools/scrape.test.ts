@@ -6,6 +6,8 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { FileHosts } from "../config/file-hosts.js";
+import { scrapflyScrape } from "../providers/scrapfly-scrape.js";
 import { defaults } from "../config/tuning.js";
 import type { ScrapeResult } from "../providers/types.js";
 import { ResultCache } from "./result-cache.js";
@@ -108,6 +110,7 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert.deepEqual(busyItems[0].error, {
     code: "provider_rate",
     message: "Scrapfly is busy. Retry after 6 s.",
+    reason: "Scrapfly is busy. Retry after 6 s.",
     tried: [],
   });
   assert.equal(busyItems[1].result.check.code, "ok");
@@ -179,4 +182,109 @@ test("main and full use separate caches and batch forwards content mode", async 
   assert.equal(batch[1].result.markdown, "full");
   assert.deepEqual(seen, ["main", "full", "full"]);
   assert.equal(browserAttempts, 1);
+});
+
+test("scrape returns partial Markdown and original HTML only for extraction trouble", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "scrape-extraction-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const logger = t.mock.method(console, "log", () => {});
+  const partialUrl = "https://1.1.1.1/partial";
+  const cleanUrl = "https://1.1.1.1/clean";
+  const html =
+    '<html><title>Quotes</title><body><header><h1>Quotes</h1></header><main><a href="/login">Login</a></main><footer>Copyright belongs to this site.</footer></body></html>';
+  const request = t.mock.method(globalThis, "fetch", async (endpoint: URL) => {
+    assert.equal(endpoint.searchParams.get("format"), "raw");
+    const url = endpoint.searchParams.get("url");
+    return Response.json({
+      result: {
+        url,
+        status_code: 200,
+        success: true,
+        format: "raw",
+        content_type: "text/html",
+        content:
+          url === partialUrl
+            ? html
+            : "<html><body><main><p>The weather station recorded a steady increase in rainfall over the last five days.</p></main></body></html>",
+      },
+    });
+  });
+  const mcp = new McpServer({ name: "scrape-test", version: "1.0.0" });
+  const settings = { ...defaults, scrapeInlineChars: 1, cacheTtlMs: 60_000 };
+  registerScrape(
+    mcp,
+    [
+      scrapflyScrape(
+        "fixture",
+        settings,
+        undefined,
+        undefined,
+        new FileHosts([], join(dir, "hosts")),
+      ),
+    ],
+    new OutputFiles(join(dir, "spills"), settings),
+    settings,
+    new ResultCache<ScrapeResult & { tried: string[] }>(settings),
+  );
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "1.0.0" });
+  await mcp.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await mcp.close();
+  });
+
+  const single = await client.callTool({
+    name: "scrape",
+    arguments: { url: partialUrl },
+  });
+  assert(Array.isArray(single.content));
+  const partial = JSON.parse(single.content[0].text);
+  assert.equal(readFileSync(partial.htmlPath, "utf8"), html);
+  assert.match(readFileSync(partial.path, "utf8"), /\[Login\]/);
+  assert.equal(partial.extractionWarning.code, "extraction_incomplete");
+  assert.deepEqual(partial.tried, ["datacenter"]);
+  assert.equal(request.mock.callCount(), 1);
+
+  const batch = await client.callTool({
+    name: "scrape_batch",
+    arguments: { urls: [partialUrl, cleanUrl, "https://github.com/"] },
+  });
+  assert(Array.isArray(batch.content));
+  const [incomplete, clean, failed] = JSON.parse(batch.content[0].text);
+  assert.match(incomplete.result.markdown, /\[Login\]/);
+  assert.equal(readFileSync(incomplete.result.htmlPath, "utf8"), html);
+  assert.match(clean.result.markdown, /steady increase in rainfall/);
+  assert.equal(clean.result.htmlPath, undefined);
+  assert.equal(clean.result.extractionWarning, undefined);
+  assert.equal(failed.error.code, "unsafe_url");
+  assert.match(failed.error.reason, /GitHub CLI/);
+  assert.equal(request.mock.callCount(), 3);
+
+  const logs = logger.mock.calls.map(({ arguments: [line] }) =>
+    JSON.parse(String(line)),
+  );
+  assert.deepEqual(
+    logs
+      .filter((row) => row.event === "provider_attempt")
+      .map((row) => row.format),
+    ["raw", "raw", "raw"],
+  );
+  assert.deepEqual(
+    logs
+      .filter((row) => row.warningCode === "extraction_incomplete")
+      .map((row) => [row.tool, row.itemIndex, row.httpAttempts]),
+    [
+      ["scrape", undefined, 1],
+      ["scrape_batch", 0, 1],
+    ],
+  );
+  const summary = logs.find(
+    (row) => row.tool === "scrape_batch" && row.batchItems,
+  );
+  assert.deepEqual(summary.batchItems, { succeeded: 2, failed: 1 });
+  assert.equal(summary.providerInvocations, 2);
+  assert.equal(summary.httpAttempts, 2);
 });

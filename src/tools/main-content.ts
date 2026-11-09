@@ -27,6 +27,9 @@ function withTitle(markdown: string, title: string, h1: string) {
   return `# ${name}\n\n${markdown}`;
 }
 
+export type ExtractionCause =
+  "links_lost" | "unusable_output" | "extractor_exception";
+
 export async function mainContent(
   html: string,
   target: URL,
@@ -130,6 +133,7 @@ export async function mainContent(
   let extractedTitle = "";
   let missingLinks = false;
   let listingRecovered = false;
+  let extractorException = false;
   try {
     if (document.documentElement) {
       const extracted = await extract(true);
@@ -147,13 +151,8 @@ export async function mainContent(
       }
     }
   } catch {
-    if (!missingLinks) markdown = "";
+    extractorException = true;
   }
-  if (missingLinks)
-    throw new AppError(
-      "extraction_failed",
-      "Defuddle dropped most links from the main area.",
-    );
   function unusable(content: string) {
     const prose = content.replace(markdownLink, "");
     const proseWords = words(prose);
@@ -169,7 +168,8 @@ export async function mainContent(
   if (
     (original.code === "ok" || original.code === "empty_page") &&
     text.trim() &&
-    (unusable(markdown) ||
+    (missingLinks ||
+      unusable(markdown) ||
       extractedCheck.code === "empty_page" ||
       extractedCheck.code === "menus_only")
   ) {
@@ -179,33 +179,35 @@ export async function mainContent(
       const retryCheck = extractedPageCheck(retry);
       if (retryCheck.code === "ok" && !unusable(retry) && !lostLinks(retry)) {
         markdown = retry;
+        missingLinks = false;
         extractedTitle = oneLine(extracted.title || title);
         extractedCheck = retryCheck;
       }
     } catch {
-      // Keep the primary result and its existing fallback behavior.
+      extractorException = true;
     }
   }
-  if (unusable(markdown)) {
-    throw new AppError(
-      "extraction_failed",
-      "Defuddle found no usable main content.",
-    );
-  }
+  const extractionCause: ExtractionCause | undefined = missingLinks
+    ? "links_lost"
+    : unusable(markdown) ||
+        (original.code === "ok" && extractedCheck.code !== "ok")
+      ? extractorException
+        ? "extractor_exception"
+        : "unusable_output"
+      : undefined;
 
   // Access and interstitial decisions come only from the original page.
   const check =
-    original.warning && original.code !== "menus_only"
+    extractionCause || (original.warning && original.code !== "menus_only")
       ? original
       : ["empty_page", "menus_only"].includes(extractedCheck.code)
         ? extractedCheck
         : { code: "ok", reason: "Readable page content." };
   return {
-    markdown: withTitle(
-      markdown,
-      listingRecovered && h1 ? h1 : extractedTitle,
-      h1,
-    ),
+    extractionCause,
+    markdown: markdown
+      ? withTitle(markdown, listingRecovered && h1 ? h1 : extractedTitle, h1)
+      : "",
     check,
   };
 }

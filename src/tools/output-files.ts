@@ -84,6 +84,19 @@ export class OutputFiles {
     return path;
   }
 
+  savePartial(markdown: string, html: string, inlineLimit: number) {
+    const bytes =
+      Buffer.byteLength(html) +
+      (markdown.length > inlineLimit ? Buffer.byteLength(markdown) : 0);
+    if (bytes > this.settings.outputMaxBytes)
+      throw new AppError("output_size", "Output exceeds the file storage cap.");
+    this.cleanup(bytes);
+    return {
+      ...(this.spill(markdown, inlineLimit) ?? { markdown }),
+      htmlPath: this.save(html, "html"),
+    };
+  }
+
   saveBinary({
     bytes,
     mimeType,

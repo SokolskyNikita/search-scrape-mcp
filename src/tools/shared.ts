@@ -1,7 +1,11 @@
 import { defaults } from "../config/tuning.js";
 import { toolTimeoutMs } from "../config/deadline.js";
 import type { BrowserImage } from "../providers/types.js";
-import { statsContext, writeToolStats } from "../server/stats.js";
+import {
+  statsContext,
+  writeToolStats,
+  type RequestStats,
+} from "../server/stats.js";
 import { AppError, safeError } from "../server/error.js";
 
 export type Attempt = (provider?: string) => void;
@@ -80,6 +84,7 @@ export async function toolResult(
   { partialOnTimeout = false } = {},
 ) {
   const start = performance.now();
+  const request: RequestStats = { httpAttempts: 0 };
   let attempts = 0;
   let errorCode: string | null = null;
   const providers = new Set<string>();
@@ -97,7 +102,7 @@ export async function toolResult(
       }, toolTimeoutMs(settings));
     });
     const result = await Promise.race([
-      statsContext.run({ tool: name }, () =>
+      statsContext.run({ tool: name, request }, () =>
         run(
           (provider) => {
             attempts++;
@@ -136,13 +141,11 @@ export async function toolResult(
       content: [
         {
           type: "text" as const,
-          text: failure.details
-            ? JSON.stringify({
-                code: failure.code,
-                reason: failure.message,
-                ...failure.details,
-              })
-            : `${failure.code}: ${failure.message}`,
+          text: JSON.stringify({
+            code: failure.code,
+            reason: failure.message,
+            ...failure.details,
+          }),
         },
       ],
     };
@@ -153,6 +156,9 @@ export async function toolResult(
         tool: name,
         durationMs: Math.round(performance.now() - start),
         attempts,
+        httpAttempts: request.httpAttempts,
+        warningCode: request.warningCode,
+        batchItems: request.batchItems,
         provider: providers.size ? [...providers].join(",") : null,
         errorCode,
       },
@@ -168,9 +174,13 @@ export async function batch<I, O>(
   stats?: { tool: string; attempt: Attempt; settings: typeof defaults },
   signal?: AbortSignal,
 ) {
+  const parent = statsContext.getStore()?.request;
   const results: (
     | { index: number; result: O; cached?: true }
-    | { index: number; error: { code: string; message: string } }
+    | {
+        index: number;
+        error: { code: string; reason: string; message: string };
+      }
   )[] = [];
   const pending = inputs.map((input, index) => ({
     input,
@@ -186,12 +196,13 @@ export async function batch<I, O>(
         const { input, index, key } = pending.splice(next, 1)[0]!;
         if (key) busy.add(key);
         const start = performance.now();
+        const request: RequestStats = { httpAttempts: 0, parent };
         let attempts = 0;
         let errorCode: string | null = null;
         const providers = new Set<string>();
         try {
           const result = await statsContext.run(
-            { tool: stats?.tool ?? "batch", itemIndex: index },
+            { tool: stats?.tool ?? "batch", itemIndex: index, request },
             () =>
               run(input, (provider) => {
                 stats?.attempt(provider);
@@ -207,7 +218,10 @@ export async function batch<I, O>(
           errorCode = code;
           if (code === "internal")
             console.error("Unexpected batch item error.");
-          results[index] = { index, error: { code, message, ...details } };
+          results[index] = {
+            index,
+            error: { code, reason: message, message, ...details },
+          };
         } finally {
           if (key) busy.delete(key);
           if (stats)
@@ -217,6 +231,8 @@ export async function batch<I, O>(
                 itemIndex: index,
                 durationMs: Math.round(performance.now() - start),
                 attempts,
+                httpAttempts: request.httpAttempts,
+                warningCode: request.warningCode,
                 provider: providers.size ? [...providers].join(",") : null,
                 errorCode,
               },
@@ -226,9 +242,16 @@ export async function batch<I, O>(
       }
     }),
   );
+  const summarize = (items: typeof results) => {
+    if (parent) {
+      const failed = items.filter((item) => "error" in item).length;
+      parent.batchItems = { succeeded: items.length - failed, failed };
+    }
+    return items;
+  };
   if (!signal) {
     await workers;
-    return results;
+    return summarize(results);
   }
   let finish!: () => void;
   const aborted = new Promise<void>((resolve) => {
@@ -238,10 +261,16 @@ export async function batch<I, O>(
   else signal.addEventListener("abort", finish, { once: true });
   try {
     await Promise.race([workers, aborted]);
-    if (!signal.aborted) return results;
-    const { code, message } = safeError(signal.reason);
-    return inputs.map(
-      (_, index) => results[index] ?? { index, error: { code, message } },
+    if (!signal.aborted) return summarize(results);
+    const { code, message, details } = safeError(signal.reason);
+    return summarize(
+      inputs.map(
+        (_, index) =>
+          results[index] ?? {
+            index,
+            error: { code, reason: message, message, ...details },
+          },
+      ),
     );
   } finally {
     signal.removeEventListener("abort", finish);

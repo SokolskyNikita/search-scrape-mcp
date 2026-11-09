@@ -236,6 +236,7 @@ async function downloadContent(
         provider: "scrapfly",
         ...providerTarget(target),
         rung: "clob",
+        format: "clob",
         credits,
         remainingCredits,
         requestedProxyPool: null,
@@ -285,6 +286,7 @@ async function requestPage(
   }[rung];
   const requestedProxyPool = operation ? datacenterFilePool : pool;
   const raw = contentMode === "main" && !operation;
+  const formatRequested = raw ? "raw" : "markdown:no_images";
   endpoint.search = new URLSearchParams({
     key,
     url: target.href,
@@ -292,7 +294,7 @@ async function requestPage(
     cost_budget: String(budget),
     timeout: String(timeout),
     retry: "false",
-    format: raw ? "raw" : "markdown:no_images",
+    format: formatRequested,
   }).toString();
   if (settings.scrapflyCountry)
     endpoint.searchParams.set("country", settings.scrapflyCountry);
@@ -603,15 +605,19 @@ async function requestPage(
       (!contentType && /^\s*(?:<!doctype html\b|<html[\s>])/i.test(content));
     let markdown: string;
     let check: PageCheck;
+    let extraction: ScrapeResult["extraction"];
     if (raw && html) {
-      ({ markdown, check } = await mainContent(
+      const extracted = await mainContent(
         content,
         target,
         final,
         result.status_code,
         contentType,
         result.success,
-      ));
+      );
+      ({ markdown, check } = extracted);
+      if (extracted.extractionCause)
+        extraction = { cause: extracted.extractionCause, html: content };
     } else {
       markdown = cleanPage(content);
       check = checkPage(
@@ -634,13 +640,20 @@ async function requestPage(
       !operation &&
       (result.status_code === 429 ||
         (result.status_code >= 500 && check.code === "target_http"));
-    errorCode = check.code === "ok" || check.warning ? null : check.code;
+    errorCode =
+      extraction || check.code === "ok" || check.warning ? null : check.code;
     if (check.code === "ok" && result.success === false)
       throw new AppError(
         "provider_response",
         "Scrapfly reported an unsuccessful scrape.",
       );
-    return { markdown, check, costWarning: costWarning(), transientTarget };
+    return {
+      markdown,
+      check,
+      extraction,
+      costWarning: costWarning(),
+      transientTarget,
+    };
   } catch (error) {
     if (startedAt === undefined) throw error;
     const caught = safeError(error);
@@ -693,6 +706,7 @@ async function requestPage(
           provider: "scrapfly",
           ...providerTarget(target),
           rung: operation === "head" ? "datacenter_head" : rung,
+          format: formatRequested,
           credits,
           remainingCredits,
           requestedProxyPool,
@@ -770,7 +784,6 @@ export function scrapflyScrape(
       async function attempt(
         rung: ScrapeRung,
         operation?: "head" | FileHeaders,
-        fullFallback = false,
       ) {
         if (overrunCredits !== undefined)
           throw new AppError(
@@ -802,7 +815,7 @@ export function scrapflyScrape(
           fileHosts,
           checkBackoff,
           rateLimited,
-          fullFallback ? "full" : (options.contentMode ?? "main"),
+          options.contentMode ?? "main",
           (credits) => {
             if (credits !== null && credits > SCRAPFLY_STANDARD_COST)
               overrunCredits = credits;
@@ -811,13 +824,7 @@ export function scrapflyScrape(
           operation,
           dispatch,
           () =>
-            options.tried.push(
-              operation === "head"
-                ? "datacenter_head"
-                : fullFallback
-                  ? `${rung}_full`
-                  : rung,
-            ),
+            options.tried.push(operation === "head" ? "datacenter_head" : rung),
           budget,
         );
       }
@@ -905,56 +912,6 @@ export function scrapflyScrape(
         if (rung !== "datacenter") advancedRung = rung;
         lastBudgetError = undefined;
         const result = await attempt(rung, file);
-        if ("error" in result && result.error.code === "extraction_failed") {
-          signal.throwIfAborted();
-          if (remaining() < timeout)
-            throw new AppError(
-              "extraction_failed",
-              `${result.error.message} Too little time remains for a full-page fetch.`,
-              { hint: 'Retry with content_mode: "full".' },
-            );
-          const full = await attempt(rung, undefined, true);
-          if ("error" in full) throw full.error;
-          if ("head" in full)
-            throw new AppError(
-              "internal",
-              "Unexpected Scrapfly HEAD metadata.",
-            );
-          if (full.check.code !== "ok" && !full.check.warning)
-            throw new AppError(
-              full.costWarning ? "provider_cost_overrun" : full.check.code,
-              full.costWarning
-                ? `${full.costWarning} ${full.check.reason}`
-                : full.check.reason,
-            );
-          if (full.check.code === "menus_only" && rung !== "render")
-            return {
-              ...full,
-              check: {
-                ...full.check,
-                next: "render",
-                reason: `${result.error.message} ${full.check.reason}`,
-              },
-              hint: 'Try start_rung: "render" to load JavaScript content.',
-            };
-          if (full.binary) return full;
-          if (full.check.warning)
-            return {
-              ...full,
-              check: {
-                ...full.check,
-                reason: `${result.error.message} ${full.check.reason}`,
-              },
-            };
-          return {
-            ...full,
-            check: {
-              code: "extraction_fallback",
-              reason: `${result.error.message} Returned whole-page Markdown.`,
-              warning: true,
-            },
-          };
-        }
         if ("head" in result)
           throw new AppError("internal", "Unexpected Scrapfly HEAD metadata.");
         if ("error" in result) {
@@ -1001,7 +958,7 @@ export function scrapflyScrape(
         }
         const { markdown, check, binary, costWarning, transientTarget } =
           result;
-        if (binary) return { markdown, check, binary, costWarning };
+        if (binary || result.extraction) return result;
         if (file)
           throw refuseFile(
             file,
