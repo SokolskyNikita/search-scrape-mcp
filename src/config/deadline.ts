@@ -18,4 +18,5 @@ export const scrapflyTimeoutMs = {
   datacenter: 30_000,
   unblocker: 30_000,
   render: 30_000,
+  residential_render: 30_000,
 } as const;

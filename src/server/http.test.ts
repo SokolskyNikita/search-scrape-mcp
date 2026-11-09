@@ -342,10 +342,13 @@ test("an empty search is retried and a later hit can be cached", async (t) => {
     page: 1,
   });
   const cached = await search();
+  const { cached_at } = cached.structuredContent as { cached_at: string };
+  assert.match(cached_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.deepEqual(cached.structuredContent, {
     results: [hit],
     page: 1,
     cached: true,
+    cached_at,
   });
   assert(Array.isArray(cached.content));
   assert(
@@ -446,10 +449,14 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
   assert.match(search?.description ?? "", /exactly one of q or query/);
   assert(search?.inputSchema.properties?.q);
   assert(search.inputSchema.properties.query);
-  assert.match(search?.description ?? "", /put the place name in the query/i);
+  assert.doesNotMatch(search.description ?? "", /Serper|place name/i);
+  assert.match(
+    JSON.stringify(search.inputSchema.properties.location),
+    /include the place name/i,
+  );
   assert.match(
     JSON.stringify(search?.inputSchema.properties?.location),
-    /Serper may ignore this/,
+    /Best-effort location hint/,
   );
   const location = "Seattle, Washington, United States";
   const result = await client.callTool({

@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import { Defuddle } from "defuddle/node";
 import { parseHTML } from "linkedom";
 import { AppError } from "../server/error.js";
@@ -306,11 +307,65 @@ export async function mainContent(
       : ["empty_page", "menus_only"].includes(extractedCheck.code)
         ? extractedCheck
         : { code: "ok", reason: "Readable page content." };
+  const failed = extractionCause && extractionCause !== "links_lost";
+  const fallbackText =
+    failed && ["ok", "empty_page", "menus_only"].includes(check.code)
+      ? extractionFallback(document, main, h1, title, final)
+      : undefined;
   return {
     extractionCause,
+    fallbackText,
     markdown: markdown
       ? withTitle(markdown, listingRecovered && h1 ? h1 : extractedTitle, h1)
       : "",
-    check,
+    check:
+      fallbackText !== undefined
+        ? {
+            code: "extraction_failed",
+            reason: messages.page.extractionEmpty,
+            warning: true as const,
+          }
+        : check,
   };
+}
+
+function extractionFallback(
+  document: Document,
+  main: Element | null | undefined,
+  h1: string,
+  title: string,
+  final: URL,
+) {
+  const mainHeading =
+    oneLine(main?.querySelector("h1")?.textContent ?? "") || h1;
+  const excerpt = Array.from(main?.querySelectorAll("p") ?? [])
+    .filter(
+      (node) =>
+        !node.closest('nav, header, footer, aside, [role="navigation"]'),
+    )
+    .map((node) => oneLine(node.textContent))
+    .find((text) => words(text) >= 8 && text !== mainHeading);
+  const metaDescription = oneLine(
+    document
+      .querySelector(
+        'meta[property="og:description"], meta[name="description"]',
+      )
+      ?.getAttribute("content") ?? "",
+  );
+  const siteName = oneLine(
+    document
+      .querySelector('meta[property="og:site_name"]')
+      ?.getAttribute("content") ??
+      final.hostname.split(".").at(-2) ??
+      "",
+  ).toLowerCase();
+  const pageTitle =
+    oneLine(
+      document
+        .querySelector('meta[property="og:title"]')
+        ?.getAttribute("content") ?? "",
+    ) || title;
+  const titleLead = pageTitle.split(/\s+[|–—-]\s+/u)[0]?.toLowerCase();
+  const heading = mainHeading || (titleLead !== siteName ? pageTitle : "");
+  return [heading, excerpt || metaDescription].filter(Boolean).join("\n\n");
 }

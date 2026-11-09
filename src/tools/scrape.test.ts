@@ -345,11 +345,26 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
   const logger = t.mock.method(console, "log", () => {});
   const partialUrl = "https://1.1.1.1/partial";
   const cleanUrl = "https://1.1.1.1/clean";
+  let rejectRender = false;
   const html =
     '<html><title>Quotes</title><body><header><h1>Quotes</h1></header><main><a href="/login">Login</a></main><footer>Copyright belongs to this site.</footer></body></html>';
   const request = t.mock.method(globalThis, "fetch", async (endpoint: URL) => {
     assert.equal(endpoint.searchParams.get("format"), "raw");
+    assert.equal(endpoint.searchParams.get("render_js"), "true");
     const url = endpoint.searchParams.get("url");
+    if (
+      rejectRender &&
+      endpoint.searchParams.get("proxy_pool") === "public_residential_pool"
+    )
+      return Response.json(
+        {},
+        {
+          status: 422,
+          headers: {
+            "X-Scrapfly-Reject-Code": "ERR::SCRAPE::COST_BUDGET_LIMIT",
+          },
+        },
+      );
     return Response.json({
       result: {
         url,
@@ -413,8 +428,10 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
   assert.equal(readFileSync(partial.htmlPath, "utf8"), html);
   assert.match(readFileSync(partial.path, "utf8"), /\[Login\]/);
   assert.equal(partial.extractionWarning.code, "extraction_incomplete");
-  assert.deepEqual(partial.tried, ["datacenter"]);
-  assert.equal(request.mock.callCount(), 1);
+  assert.equal(partial.check.code, "extraction_failed");
+  assert.equal(partial.fallbackText, undefined);
+  assert.deepEqual(partial.tried, ["render", "residential_render"]);
+  assert.equal(request.mock.callCount(), 2);
 
   const batch = await client.callTool({
     name: "scrape_batch",
@@ -425,13 +442,15 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
     batch.structuredContent as { items: ReturnType<typeof JSON.parse> }
   ).items;
   assert.match(incomplete.result.markdown, /\[Login\]/);
+  assert.equal(incomplete.result.fallbackText, "Quotes");
+  assert.equal(incomplete.result.cached, undefined);
   assert.equal(readFileSync(incomplete.result.htmlPath, "utf8"), html);
   assert.match(clean.result.markdown, /steady increase in rainfall/);
   assert.equal(clean.result.htmlPath, undefined);
   assert.equal(clean.result.extractionWarning, undefined);
   assert.equal(failed.error.code, "unsafe_url");
   assert.equal(failed.error.reason, hostRule("github.com")!.accessError);
-  assert.equal(request.mock.callCount(), 3);
+  assert.equal(request.mock.callCount(), 5);
 
   const logs = logger.mock.calls.map(({ arguments: [line] }) =>
     JSON.parse(String(line)),
@@ -440,15 +459,15 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
     logs
       .filter((row) => row.event === "provider_attempt")
       .map((row) => row.format),
-    ["raw", "raw", "raw"],
+    ["raw", "raw", "raw", "raw", "raw"],
   );
   assert.deepEqual(
     logs
       .filter((row) => row.warningCode === "extraction_incomplete")
       .map((row) => [row.tool, row.itemIndex, row.httpAttempts]),
     [
-      ["scrape", undefined, 1],
-      ["scrape_batch", 0, 1],
+      ["scrape", undefined, 2],
+      ["scrape_batch", 0, 2],
     ],
   );
   const summary = logs.find(
@@ -456,5 +475,22 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
   );
   assert.deepEqual(summary.batchItems, { succeeded: 2, failed: 1 });
   assert.equal(summary.providerInvocations, 2);
-  assert.equal(summary.httpAttempts, 2);
+  assert.equal(summary.httpAttempts, 3);
+
+  rejectRender = true;
+  const rejected = await client.callTool({
+    name: "scrape",
+    arguments: { url: partialUrl },
+  });
+  const result = rejected.structuredContent as ReturnType<typeof JSON.parse>;
+  assert.equal(result.check.code, "extraction_failed");
+  assert.deepEqual(result.retry, {
+    name: "scrape",
+    arguments: {
+      url: partialUrl,
+      content_mode: "main",
+      start_rung: "residential_render",
+      allow_higher_cost: true,
+    },
+  });
 });

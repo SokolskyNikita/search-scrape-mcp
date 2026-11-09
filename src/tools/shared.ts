@@ -17,10 +17,14 @@ import { AppError, safeError } from "../server/error.js";
 export type Attempt = (provider?: string) => void;
 
 const cacheMarker = Symbol("cachedSearch");
-type CachedSearch<T> = { [cacheMarker]: true; value: T };
-export const cachedSearch = <T>(value: T): CachedSearch<T> => ({
+type CachedSearch<T> = { [cacheMarker]: true; value: T; cached_at: string };
+export const cachedSearch = <T>(
+  value: T,
+  cached_at: string,
+): CachedSearch<T> => ({
   [cacheMarker]: true as const,
   value,
+  cached_at,
 });
 function isCachedSearch<T>(
   value: T | CachedSearch<T>,
@@ -126,7 +130,11 @@ export async function toolResult(
     ]);
     const cached = isCachedSearch(result);
     const value = cached ? result.value : result;
-    return presentedResult(presentation ?? { operation: name }, value, cached);
+    return presentedResult(
+      presentation ?? { operation: name },
+      value,
+      cached ? result.cached_at : undefined,
+    );
   } catch (error) {
     const failure = safeError(error);
     errorCode = failure.code;
@@ -159,7 +167,7 @@ export async function batch<I, O>(
 ) {
   const parent = statsContext.getStore()?.request;
   const results: (
-    | { index: number; result: O; cached?: true }
+    | { index: number; result: O; cached?: true; cached_at?: string }
     | {
         index: number;
         error: { code: string; reason: string; message: string };
@@ -194,7 +202,12 @@ export async function batch<I, O>(
               }),
           );
           results[index] = isCachedSearch(result)
-            ? { index, result: result.value, cached: true }
+            ? {
+                index,
+                result: result.value,
+                cached: true,
+                cached_at: result.cached_at,
+              }
             : { index, result };
         } catch (error) {
           const { code, message, details } = safeError(error);

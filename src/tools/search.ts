@@ -52,7 +52,8 @@ function domain(field: "site" | "exclude_domains") {
     );
 }
 
-const locationHint = "Serper may ignore this. Put the place name in the query.";
+const locationHint =
+  "Best-effort location hint. Include the place name in the query when it matters.";
 const queryHint = "Provide exactly one of q or query.";
 const fields = {
   query: query.optional().describe("Search text. An alternative to q."),
@@ -64,7 +65,8 @@ const fields = {
     .trim()
     .regex(/^[a-z]{2}$/i)
     .toLowerCase()
-    .optional(),
+    .optional()
+    .describe("Best-effort two-letter country hint."),
   hl: z
     .string()
     .trim()
@@ -116,7 +118,7 @@ export function registerSearch(
       exclude_domains: args.exclude_domains ?? [],
     });
     const hit = cache?.get(key, fresh);
-    if (hit) return cachedSearch(withAccessHints(hit));
+    if (hit) return cachedSearch(withAccessHints(hit.value), hit.cached_at);
     const result = await fallback(
       providers,
       (provider) =>
@@ -131,7 +133,7 @@ export function registerSearch(
   server.registerTool(
     "search",
     {
-      description: `Find web sources when you do not have a URL. ${queryHint} ${locationHint}`,
+      description: `Find web sources when you do not have a URL. ${queryHint}`,
       inputSchema: input,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -153,7 +155,7 @@ export function registerSearch(
   server.registerTool(
     "search_batch",
     {
-      description: `Search up to five queries in order. For each search: ${queryHint} ${locationHint}`,
+      description: `Search up to five queries in order. For each search: ${queryHint}`,
       inputSchema: toolInput({
         searches: z.array(input).min(1).max(5),
       }),

@@ -20,7 +20,9 @@ import { batch, fallback, toolResult, type Attempt } from "./shared.js";
 const startRung = z
   .enum(scrapeRungs)
   .optional()
-  .describe("Start at this rung or higher if the hostname already needs it.");
+  .describe(
+    "Page scrapes render JavaScript by default. Select datacenter or unblocker for the static-first ladder, or residential_render to render with residential IPs.",
+  );
 const retryAtHigherCost =
   "In rare cases a page is unusually costly to scrape. If the error includes a retry call, use that call.";
 const scrapeFields = {
@@ -82,37 +84,45 @@ export function registerScrape(
       const target = await validatePublicUrl(url);
       const key = JSON.stringify([
         target.href,
-        start ?? "datacenter",
+        start ?? "default",
         contentMode,
       ]);
       const hit = cache?.get(key, fresh);
       const {
         markdown,
-        check,
+        check: pageCheck,
         hint,
         retryRung,
+        retryHigherCost,
         binary,
         extraction,
         costWarning,
         finalUrl,
-      } =
-        hit ??
-        (await fallback(
-          contentMode === "full"
-            ? providers.filter((provider) => provider.name === "scrapfly")
-            : providers,
-          (provider) =>
-            provider.scrape(target.href, signal, {
-              contentMode,
-              start,
-              tried,
-              deadline,
-              allowHigherCost,
-            }),
-          attempt,
-          signal,
-        ));
+      } = hit?.value ??
+      (await fallback(
+        contentMode === "full"
+          ? providers.filter((provider) => provider.name === "scrapfly")
+          : providers,
+        (provider) =>
+          provider.scrape(target.href, signal, {
+            contentMode,
+            start,
+            tried,
+            deadline,
+            allowHigherCost,
+          }),
+        attempt,
+        signal,
+      ));
       signal.throwIfAborted();
+      const check =
+        !binary && !markdown.trim() && pageCheck.code === "ok"
+          ? {
+              code: "extraction_failed",
+              reason: messages.page.extractionEmpty,
+              warning: true as const,
+            }
+          : pageCheck;
       if (
         !hit &&
         !binary &&
@@ -136,8 +146,21 @@ export function registerScrape(
               previewLimit,
             )
           : (files.spill(markdown, inlineLimit, previewLimit) ?? { markdown });
+      const fallbackText = extraction?.fallbackText?.slice(
+        0,
+        Math.max(
+          0,
+          inlineLimit -
+            ("markdown" in output
+              ? output.markdown.length
+              : "preview" in output
+                ? (output.preview?.length ?? 0)
+                : 0),
+        ),
+      );
       const result = {
         ...output,
+        ...(fallbackText ? { fallbackText } : {}),
         ...("preview" in output ? { truncated: true } : {}),
         url: finalUrl ?? url,
         ...(extraction
@@ -153,10 +176,17 @@ export function registerScrape(
           : {}),
         ...(costWarning ? { warning: messages.page.costWarning } : {}),
         check,
-        tried: hit?.tried ?? tried,
-        ...(hit ? { cached: true } : {}),
+        tried: hit?.value.tried ?? tried,
+        ...(hit ? { cached: true, cached_at: hit.cached_at } : {}),
         ...(hint ? { nextHint: hint } : {}),
-        ...(retryRung ? { retry: retry({ start_rung: retryRung }) } : {}),
+        ...(retryRung
+          ? {
+              retry: retry({
+                start_rung: retryRung,
+                ...(retryHigherCost ? { allow_higher_cost: true } : {}),
+              }),
+            }
+          : {}),
       };
       const request = statsContext.getStore()?.request;
       if (request)

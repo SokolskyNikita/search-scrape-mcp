@@ -113,15 +113,16 @@ Programmatic clients can read `structuredContent` for results and status fields.
 Tool argument errors use the same layout and identify the fields to correct.
 
 Pass `fresh: true` to either scrape tool, a single search, or a search batch item
-to bypass the cache. Scrapes and search batch items report `cached: true` on a
-hit in structured output. A cached result is also labeled in the text.
+to bypass the cache. Structured cache hits include `cached: true` and the
+insertion timestamp `cached_at`. A cached result is also labeled in the text.
 
 ### Search
 
 Provide exactly one of `q` or `query` for the search text in each search. Filter by `site`, `exclude_domains`,
 country (`gl`), language (`hl`), or time (`recency` or `tbs`). Use `page` for
-pagination and `autocorrect` to control spelling correction. Serper may ignore
-`location`, so include the place name in the query when it matters.
+pagination and `autocorrect` to control spelling correction. The `location`
+and `gl` fields are best-effort hints. Include the place name in the query when
+it matters.
 Each search result header identifies the requested page number.
 
 ### Scrape
@@ -133,7 +134,8 @@ CLI (`gh`) for GitHub repository and API access. Matching results from
 `search` and `search_batch` include an `accessHint` recommending `gh`.
 Reddit domains (`reddit.com` and `redd.it`, including subdomains) use
 `scrape` or `scrape_batch`. The browser rejects those destinations, and
-matching search hits include that guidance.
+matching search hits include that guidance. Reddit page fetches render
+JavaScript with residential IPs by default.
 
 Both scrape tools default to `content_mode: "main"`. Defuddle extracts the
 main text from Scrapfly HTML and retains links within that content. Set
@@ -144,18 +146,25 @@ applies to the entire batch and is part of the cache key.
 If extraction yields an empty page or mostly navigation, the server can retry
 locally with less aggressive filtering on the same HTML. If Defuddle still
 cannot reliably extract the main content, the result includes any Markdown
-it produced, an `extractionWarning`, and an `htmlPath` to the original HTML
-from the same fetch. These results bypass caching. To enable Cloud Browser
+it produced, an `extractionWarning`, and an `htmlPath` to the saved original
+HTML on the server. Empty or unusable extraction is reported as
+`check.code: "extraction_failed"`. When the HTML contains a meaningful title
+or excerpt, the result can also include `fallbackText` within the inline text
+limit. For sites without a custom rule, the server can try one stronger fetch
+within the deadline and current credit limit. If a separate call is needed,
+the result can include retry arguments. Unresolved extractions bypass caching.
+To enable Cloud Browser
 as a secondary scrape provider, set
 `"scrapeProviders": ["scrapfly", "scrapfly-browser"]`. It returns page text
 in main mode. Full mode requires the Scrapfly Scrape API.
 
-Results report a page check and the rungs tried. All page requests enable
-Scrapfly Unblocker, including the initial datacenter rung. The server can try
-the alternate proxy configuration or jump to render for a JavaScript shell.
-The server remembers successful
-rungs by hostname. Set `start_rung` to `datacenter`, `unblocker`, or `render`,
-or follow the returned hint when a stronger rung needs a fresh call.
+Results report a page check and the rungs tried. Page scrapes enable Scrapfly
+Unblocker and render JavaScript by default. The initial rendered fetch uses
+the configured render pool. If a rendered fetch needs escalation, the server
+can render with residential IPs. Set `start_rung` to `datacenter` or
+`unblocker` to use the static-first ladder, or use `residential_render` to
+start with residential rendering. Follow the returned hint when a stronger rung
+needs a fresh call.
 
 File URLs and known file hosts get a datacenter HEAD check. File preflight
 and download requests use the datacenter pool without Unblocker. Downloads require

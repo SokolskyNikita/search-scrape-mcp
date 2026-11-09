@@ -25,6 +25,18 @@ function fileState(t: TestContext) {
   return join(dir, "file-hosts.txt");
 }
 
+// Exercise the existing opt-out ladder independently of the rendered default.
+function staticFirstScrape(...args: Parameters<typeof scrapflyScrape>) {
+  const provider = scrapflyScrape(...args);
+  return {
+    scrape: (
+      url: string,
+      signal?: AbortSignal,
+      options: ScrapeOptions = { tried: [] },
+    ) => provider.scrape(url, signal, { start: "datacenter", ...options }),
+  };
+}
+
 test("Scrapfly retrieves offloaded text without forwarding credentials to another origin", async (t) => {
   let format = "clob";
   let content = "https://api.scrapfly.io/object?ref=example";
@@ -39,7 +51,7 @@ test("Scrapfly retrieves offloaded text without forwarding credentials to anothe
     assert.equal(init.redirect, "error");
     return new Response(body, { headers: { "Content-Type": "text/plain" } });
   });
-  const provider = scrapflyScrape(
+  const provider = staticFirstScrape(
     "fake-key",
     defaults,
     undefined,
@@ -75,7 +87,7 @@ test("Scrapfly treats retryable Unblocker timeouts as transient failures", async
   });
   const tried: string[] = [];
   await assert.rejects(
-    scrapflyScrape("fake-key").scrape(target, undefined, {
+    staticFirstScrape("fake-key").scrape(target, undefined, {
       start: "unblocker",
       tried,
     }),
@@ -114,7 +126,7 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
       return Response.json(success("# Page not found", target, 404));
     return Response.json(success());
   });
-  const provider = scrapflyScrape("fake-key", {
+  const provider = staticFirstScrape("fake-key", {
     ...defaults,
     scrapflyUnblockerPool: "public_residential_pool",
   });
@@ -140,7 +152,7 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
   mode = "missing";
   await assert.rejects(provider.scrape(target), {
     code: "not_found",
-    details: { tried: ["render"], credits: 1, hint: undefined },
+    details: { tried: ["datacenter"], credits: 1, hint: undefined },
   });
   mode = "ok";
   await provider.scrape(target);
@@ -149,7 +161,7 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
     "unblocker",
     "unblocker",
     "render",
-    "render",
+    "datacenter",
     "datacenter",
   ]);
 });
@@ -166,7 +178,7 @@ test("Scrapfly validates object and string redirects and separates target from p
       },
     });
   const request = t.mock.method(globalThis, "fetch", async () => response());
-  const provider = scrapflyScrape("fake-key");
+  const provider = staticFirstScrape("fake-key");
   assert.equal((await provider.scrape(target)).check.code, "ok");
   response = () =>
     Response.json({
@@ -217,7 +229,7 @@ test("Scrapfly retries a temporary failure once and respects retry headers", asy
       },
     );
   });
-  const provider = scrapflyScrape("fake-key");
+  const provider = staticFirstScrape("fake-key");
   const first = options();
   await assert.rejects(provider.scrape(target, undefined, first), {
     code: "provider_down",
@@ -247,7 +259,7 @@ test("menu pages escalate while cookie notice text is returned", async (t) => {
   t.mock.method(globalThis, "fetch", async () =>
     Response.json(success(content)),
   );
-  const provider = scrapflyScrape("fake-key");
+  const provider = staticFirstScrape("fake-key");
   const first = options();
   const result = await provider.scrape(target, undefined, first);
   assert.equal(result.check.code, "menus_only");
@@ -275,7 +287,7 @@ test("a per-request budget rejection escalates but insufficient account credit s
   );
   const budget = options();
   await assert.rejects(
-    scrapflyScrape("fixture").scrape(target, undefined, budget),
+    staticFirstScrape("fixture").scrape(target, undefined, budget),
     {
       code: "provider_cost_budget",
       details: {
@@ -291,7 +303,7 @@ test("a per-request budget rejection escalates but insufficient account credit s
     false,
   );
   code = "ERR::SCRAPE::BALANCE_REQUIRED_FOR_EXTRA";
-  await assert.rejects(scrapflyScrape("fixture").scrape(target), {
+  await assert.rejects(staticFirstScrape("fixture").scrape(target), {
     code: "provider_credit",
   });
   assert.equal(request.mock.callCount(), 3);
@@ -304,7 +316,7 @@ test("the real tool deadline prevents an unfunded retry", async (t) => {
   });
   const deadline = performance.now() + 38_000;
   await assert.rejects(
-    scrapflyScrape("fixture").scrape(target, undefined, {
+    staticFirstScrape("fixture").scrape(target, undefined, {
       deadline,
       tried: [],
     }),
@@ -322,7 +334,7 @@ test("escalation stops with the stronger rung hint if its minimum cannot fit", a
   });
   const deadline = performance.now() + 35_000;
   await assert.rejects(
-    scrapflyScrape("fixture").scrape(target, undefined, {
+    staticFirstScrape("fixture").scrape(target, undefined, {
       deadline,
       tried: [],
     }),
@@ -351,7 +363,7 @@ test("deferred escalation returns a usable warning and the next rung", async (t)
     now += 3_000;
     return Response.json(success(menu));
   });
-  const result = await scrapflyScrape("fixture").scrape(target, undefined, {
+  const result = await staticFirstScrape("fixture").scrape(target, undefined, {
     tried: [],
     deadline: performance.now() + 35_000,
   });
@@ -373,7 +385,7 @@ test("each Scrapfly rung must obtain its own provider permit", async (t) => {
     siteGapMs: 0,
     scrapflyBurstCapacity: 1,
   };
-  const provider = scrapflyScrape(
+  const provider = staticFirstScrape(
     "fake-key",
     settings,
     new RequestLimits(settings),
@@ -403,7 +415,7 @@ test("Scrapfly halts after a reported budget overrun and validates failed redire
           context: { cost: 101 },
         }),
   );
-  const provider = scrapflyScrape(
+  const provider = staticFirstScrape(
     "fixture",
     defaults,
     undefined,
@@ -435,7 +447,7 @@ test("full mode renders title-only Scrapfly Markdown with or without a heading",
   for (const title of ["@bsky.app on Bluesky", "# @bsky.app on Bluesky"]) {
     shell = title;
     const tried: string[] = [];
-    const result = await scrapflyScrape("fixture", {
+    const result = await staticFirstScrape("fixture", {
       ...defaults,
       scrapflyCountry: null,
     }).scrape(target, undefined, { tried, contentMode: "full" });
@@ -458,7 +470,7 @@ test("the provider's HTTP 504 is identified separately from a local deadline", a
       },
     ),
   );
-  await assert.rejects(scrapflyScrape("fixture").scrape(target), {
+  await assert.rejects(staticFirstScrape("fixture").scrape(target), {
     code: "provider_down",
     message: "Scrapfly returned an upstream operation timeout.",
   });
@@ -559,7 +571,7 @@ test("preflighted files refuse a challenge or an HTML body disguised as PDF", as
         : Response.json(binaryFixture(pdfUrl, html));
     },
   );
-  const provider = scrapflyScrape("fixture");
+  const provider = staticFirstScrape("fixture");
   await assert.rejects(provider.scrape(pdfUrl), {
     code: "file_refused",
     message: /application\/pdf, 44 bytes.*datacenter/,
@@ -587,7 +599,7 @@ test("an unexpected paid file is kept and its host gets HEAD on the next URL aft
         : success(body, upstream),
     );
   });
-  const provider = scrapflyScrape(
+  const provider = staticFirstScrape(
     "fixture",
     defaults,
     undefined,
@@ -604,7 +616,7 @@ test("an unexpected paid file is kept and its host gets HEAD on the next URL aft
   assert.equal(result.costWarning, undefined);
   const hosts = new FileHosts(["1.1.1.1"], state);
   assert.deepEqual([...hosts.list()], ["1.1.1.1", "8.8.8.8"]);
-  const restarted = scrapflyScrape(
+  const restarted = staticFirstScrape(
     "fixture",
     defaults,
     undefined,
@@ -653,7 +665,7 @@ test("Scrapfly BLOB refusal reports original scrape cost without fetching the ob
     },
   );
   await assert.rejects(
-    scrapflyScrape(
+    staticFirstScrape(
       "fixture",
       defaults,
       undefined,
@@ -703,7 +715,7 @@ test("the recorded private redirect error stops before stronger rungs", async (t
           },
         ),
   );
-  const provider = scrapflyScrape("fixture");
+  const provider = staticFirstScrape("fixture");
   await assert.rejects(
     provider.scrape(requested.replace("/redirect-to", "/short-link")),
     {
@@ -760,7 +772,7 @@ test("three charges of 100 or more require opt-in after restart", async (t) => {
     );
   });
   const provider = () =>
-    scrapflyScrape(
+    staticFirstScrape(
       "fixture",
       defaults,
       undefined,
@@ -809,7 +821,7 @@ test("a pool rejection is terminal but does not record an unverified price", asy
   const fetch = t.mock.method(globalThis, "fetch", async () =>
     Response.json({ result: { error: { code } } }, { status: 422 }),
   );
-  const provider = scrapflyScrape(
+  const provider = staticFirstScrape(
     "fixture",
     defaults,
     undefined,
@@ -845,7 +857,7 @@ test("provider 429 logs unknown cost and prevents new calls during Retry-After",
       ? new Response(null, { status: 429, headers: { "Retry-After": "30" } })
       : Response.json({ result: success().result }),
   );
-  const provider = scrapflyScrape(
+  const provider = staticFirstScrape(
     "fixture",
     defaults,
     undefined,
@@ -918,7 +930,7 @@ test("default and explicit full mode request different formats, including raw HT
       ? htmlResponse(clob, "https://1.1.1.1/archive/article", "clob")
       : htmlResponse(whole, target, "markdown");
   });
-  const provider = scrapflyScrape("fixture");
+  const provider = staticFirstScrape("fixture");
   const main = await provider.scrape(target);
   assert.equal(main.check.code, "ok");
   assert.equal(main.extraction, undefined);
@@ -950,7 +962,7 @@ test("a challenge in the original HTML cannot become a successful extraction", a
     );
   });
   const tried: string[] = [];
-  const result = await scrapflyScrape("fixture").scrape(target, undefined, {
+  const result = await staticFirstScrape("fixture").scrape(target, undefined, {
     tried,
   });
   assert.equal(result.check.code, "ok");
@@ -967,13 +979,13 @@ test("empty main extraction recovers text from the same HTML without a second re
         "</aside></body></html>",
     );
   });
-  const result = await scrapflyScrape("fixture").scrape(target);
+  const result = await staticFirstScrape("fixture").scrape(target);
   assert.equal(result.check.code, "ok");
   assert.match(result.markdown, /recorded a steady increase/);
   assert.equal(request.mock.callCount(), 1);
 });
 
-test("empty extraction returns original HTML without another request or charge", async (t) => {
+test("empty extraction retries once and retains original HTML if rendering also fails", async (t) => {
   const file = fileState(t);
   const usage = new Usage(defaults, file);
   const html = "<html><head></head><body><img src='station.jpg'></body></html>";
@@ -981,15 +993,16 @@ test("empty extraction returns original HTML without another request or charge",
     assert.equal(url.searchParams.get("format"), "raw");
     return htmlResponse(html);
   });
-  const provider = scrapflyScrape("fixture", defaults, undefined, usage);
+  const provider = staticFirstScrape("fixture", defaults, undefined, usage);
   const tried: string[] = [];
   const result = await provider.scrape(target, undefined, { tried });
   assert.equal(result.markdown, "");
   assert.deepEqual(result.extraction, { cause: "unusable_output", html });
-  assert.deepEqual(tried, ["datacenter"]);
-  assert.equal(request.mock.callCount(), 1);
-  assert.equal(result.credits, 1);
-  assert.equal(todayUsage(file).scrapflyCredits, 1);
+  assert.equal(result.check.code, "extraction_failed");
+  assert.deepEqual(tried, ["datacenter", "render"]);
+  assert.equal(request.mock.callCount(), 2);
+  assert.equal(result.credits, 2);
+  assert.equal(todayUsage(file).scrapflyCredits, 2);
 });
 
 test("transient target failures escalate at 100 credits and stop above 100", async (t) => {
@@ -1012,7 +1025,7 @@ test("transient target failures escalate at 100 credits and stop above 100", asy
     status = code;
     firstAttempt = true;
     const tried: string[] = [];
-    const provider = scrapflyScrape(
+    const provider = staticFirstScrape(
       "fixture",
       defaults,
       undefined,
@@ -1023,7 +1036,7 @@ test("transient target failures escalate at 100 credits and stop above 100", asy
     assert.equal(result.check.code, "ok");
     assert.deepEqual(tried, ["datacenter", "unblocker"]);
   }
-  const provider = scrapflyScrape(
+  const provider = staticFirstScrape(
     "fixture",
     defaults,
     undefined,
@@ -1043,19 +1056,23 @@ test("transient target failures escalate at 100 credits and stop above 100", asy
   assert.equal(request.mock.callCount(), 6);
 });
 
-test("a link-only extraction preserves partial Markdown without escalating", async (t) => {
+test("an unresolved link-only extraction preserves partial Markdown and fallback text", async (t) => {
   const html =
     '<html><title>Quotes</title><body><header><h1>Quotes</h1></header><main><a href="/login">Login</a></main><footer>Copyright belongs to this site.</footer></body></html>';
   const request = t.mock.method(globalThis, "fetch", async () =>
     htmlResponse(html),
   );
   const tried: string[] = [];
-  const result = await scrapflyScrape("fixture").scrape(target, undefined, {
+  const result = await staticFirstScrape("fixture").scrape(target, undefined, {
     tried,
   });
-  assert.deepEqual(tried, ["datacenter"]);
-  assert.equal(request.mock.callCount(), 1);
-  assert.deepEqual(result.extraction, { cause: "unusable_output", html });
+  assert.deepEqual(tried, ["datacenter", "render"]);
+  assert.equal(request.mock.callCount(), 2);
+  assert.deepEqual(result.extraction, {
+    cause: "unusable_output",
+    html,
+    fallbackText: "Quotes",
+  });
   assert.match(result.markdown, /\[Login\]/);
   assert.equal(result.hint, undefined);
 });
@@ -1084,4 +1101,167 @@ test("legacy cost notices preserve file hosts without counting as observations",
   hosts.observeCost("8.8.8.8", 150);
   hosts.observeCost("1.1.1.1", Number.NaN);
   assert.equal(readFileSync(state, "utf8"), recorded);
+});
+
+test("Reddit page requests use residential and render by default", async (t) => {
+  const { Resolver } = await import("node:dns/promises");
+  t.mock.method(Resolver.prototype, "resolve4", async () => ["8.8.8.8"]);
+  t.mock.method(Resolver.prototype, "resolve6", async () => []);
+  const renders: boolean[] = [];
+  let html =
+    "<html><body><main><p>The weather station recorded a steady increase in rainfall over the last five days.</p></main></body></html>";
+  const request = t.mock.method(globalThis, "fetch", async (endpoint: URL) => {
+    renders.push(endpoint.searchParams.get("render_js") === "true");
+    assert.equal(
+      endpoint.searchParams.get("proxy_pool"),
+      "public_residential_pool",
+    );
+    return htmlResponse(html, endpoint.searchParams.get("url")!);
+  });
+  const provider = scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], fileState(t)),
+  );
+  for (const [url, start, expected] of [
+    ["https://www.reddit.com/r/example/", undefined, "render"],
+    ["https://www.reddit.com/r/example/", "datacenter", "unblocker"],
+    ["https://redd.it/abc", "render", "render"],
+  ] as const) {
+    const tried: string[] = [];
+    const result = await provider.scrape(url, undefined, { tried, start });
+    assert.equal(result.check.code, "ok");
+    assert.deepEqual(tried, [expected]);
+  }
+  html = "<html><body><img src='station.jpg'></body></html>";
+  const opts = options();
+  const partial = await provider.scrape(
+    "https://www.reddit.com/r/example/comments/abc/",
+    undefined,
+    opts,
+  );
+  assert.equal(partial.check.code, "extraction_failed");
+  assert.equal(partial.retryRung, undefined);
+  assert.equal(partial.retryHigherCost, undefined);
+  assert.deepEqual(opts.tried, ["render"]);
+  assert.equal(request.mock.callCount(), 4);
+  assert.deepEqual(renders, [true, false, true, true]);
+});
+
+test("an extraction retry can recover content or require higher-cost opt-in", async (t) => {
+  let rejectBudget = false;
+  t.mock.method(globalThis, "fetch", async (endpoint: URL) => {
+    assert.equal(endpoint.searchParams.get("cost_budget"), "100");
+    assert.equal(endpoint.searchParams.get("render_js"), "true");
+    if (endpoint.searchParams.get("proxy_pool") === "public_datacenter_pool")
+      return htmlResponse("<html><body><img src='station.jpg'></body></html>");
+    if (rejectBudget)
+      return Response.json(
+        {},
+        {
+          status: 422,
+          headers: {
+            "X-Scrapfly-Reject-Code": "ERR::SCRAPE::COST_BUDGET_LIMIT",
+          },
+        },
+      );
+    return htmlResponse(
+      "<html><body><main><p>The weather station recorded a steady increase in rainfall over the last five days.</p></main></body></html>",
+    );
+  });
+  const provider = scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], fileState(t)),
+  );
+  const first = options();
+  const recovered = await provider.scrape(target, undefined, first);
+  assert.equal(recovered.check.code, "ok");
+  assert.match(recovered.markdown, /steady increase/);
+  assert.deepEqual(first.tried, ["render", "residential_render"]);
+
+  rejectBudget = true;
+  const second = options();
+  const partial = await provider.scrape(target, undefined, second);
+  assert.equal(partial.check.code, "extraction_failed");
+  assert.equal(partial.retryRung, "residential_render");
+  assert.equal(partial.retryHigherCost, true);
+  assert.deepEqual(second.tried, ["render", "residential_render"]);
+});
+
+test("default rendering retries transient target responses once on the same rung", async (t) => {
+  let statuses: number[] = [];
+  const request = t.mock.method(globalThis, "fetch", async (url: URL) => {
+    assert.equal(url.searchParams.get("render_js"), "true");
+    assert.equal(url.searchParams.get("proxy_pool"), "public_datacenter_pool");
+    const status = statuses.shift()!;
+    return Response.json(
+      success(status === 200 ? body : "Try again later.", target, status),
+    );
+  });
+  const provider = scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], fileState(t)),
+  );
+  for (const status of [503, 429]) {
+    statuses = [status, 200];
+    const opts = options();
+    assert.equal(
+      (await provider.scrape(target, undefined, opts)).check.code,
+      "ok",
+    );
+    assert.deepEqual(opts.tried, ["render", "render"]);
+  }
+  statuses = [503, 503];
+  const opts = options();
+  await assert.rejects(provider.scrape(target, undefined, opts), {
+    code: "target_http",
+  });
+  assert.deepEqual(opts.tried, ["render", "render"]);
+  assert.equal(request.mock.callCount(), 6);
+});
+
+test("default rendering skips residential escalation when Scrapfly already used it", async (t) => {
+  let includePool = true;
+  const request = t.mock.method(globalThis, "fetch", async (url: URL) => {
+    assert.equal(url.searchParams.get("proxy_pool"), "public_datacenter_pool");
+    assert.equal(url.searchParams.get("render_js"), "true");
+    const content = "<html><body><img src='station.jpg'></body></html>";
+    const { result } = success(content);
+    return Response.json({
+      result: { ...result, content_type: "text/html" },
+      context: includePool
+        ? { proxy: { pool: "public_residential_pool_ix" }, cost: 30 }
+        : {
+            cost: {
+              total: 30,
+              details: [{ code: "PROXY_RESIDENTIAL_NETWORK", amount: 25 }],
+            },
+          },
+    });
+  });
+  const provider = scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], fileState(t)),
+  );
+  for (const reportedPool of [true, false]) {
+    includePool = reportedPool;
+    const opts = options();
+    const result = await provider.scrape(target, undefined, opts);
+    assert.equal(result.check.code, "extraction_failed");
+    assert.equal(result.credits, 30);
+    assert.equal(result.retryRung, undefined);
+    assert.deepEqual(opts.tried, ["render"]);
+  }
+  assert.equal(request.mock.callCount(), 2);
 });

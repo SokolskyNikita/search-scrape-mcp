@@ -75,3 +75,30 @@ test("recovers a link post from its heading and a unique external destination", 
   assert(!ambiguous.markdown.includes(source));
   assert(!ambiguous.markdown.includes("https://other.example/story"));
 });
+
+test("a Reddit video thread without text returns its title as fallback", async () => {
+  const url = new URL(
+    "https://www.reddit.com/r/OcarinaOfTime/comments/1xq0ejr/",
+  );
+  // Reduced from the saved response. The raw DOM lacks post and comment text.
+  const title = "Speedrunners dream. New glitch found by ZFG";
+  const result = await mainContent(
+    `<html><head><title>Reddit - The heart of the internet</title></head><body>
+      <main>
+        <shreddit-post post-title="${title}">
+          <h1 slot="title">${title}</h1>
+          <shreddit-player slot="post-media-container"></shreddit-player>
+        </shreddit-post>
+      </main>
+    </body></html>`,
+    url,
+    url,
+    200,
+    "text/html",
+    true,
+  );
+  assert.equal(result.markdown, "");
+  assert.equal(result.check.code, "extraction_failed");
+  assert.equal(result.extractionCause, "unusable_output");
+  assert.equal(result.fallbackText, title);
+});

@@ -76,7 +76,7 @@ async function smoke() {
       const quotes = /The world as we have created it/i;
       const preview = await call(
         "scrape",
-        { url },
+        { url, start_rung: "datacenter" },
         /start_rung.*render/i,
         "render hint",
       );
@@ -91,12 +91,7 @@ async function smoke() {
         quotes,
         "follow render hint",
       );
-      await call(
-        "scrape",
-        { url, start_rung: "render" },
-        quotes,
-        "explicit render",
-      );
+      await call("scrape", { url }, quotes, "default render");
       return;
     }
     if (process.argv.includes("--batch")) {

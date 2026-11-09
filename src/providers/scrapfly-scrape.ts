@@ -1,3 +1,4 @@
+import { siteScrapeSettings } from "../config/site-scrape-settings.js";
 import { messages } from "../config/messages.js";
 import { FileHosts, normalizeFileHost } from "../config/file-hosts.js";
 import {
@@ -271,7 +272,7 @@ async function requestPage(
   recordAttempt: () => void,
   budget: number,
 ): Promise<
-  | (ScrapeResult & { transientTarget?: boolean })
+  | (ScrapeResult & { transientTarget?: boolean; residentialUsed?: boolean })
   | { head: FileHeaders }
   | { error: AppError; retryMs?: number }
 > {
@@ -280,8 +281,11 @@ async function requestPage(
     datacenter: settings.scrapflyDatacenterPool,
     unblocker: settings.scrapflyUnblockerPool,
     render: settings.scrapflyRenderPool,
+    residential_render: "public_residential_pool",
   }[rung];
-  const requestedProxyPool = operation ? datacenterFilePool : pool;
+  const requestedProxyPool = operation
+    ? datacenterFilePool
+    : (siteScrapeSettings(target.hostname)?.proxyPool ?? pool);
   const raw = contentMode === "main" && !operation;
   const formatRequested = raw ? "raw" : "markdown:no_images";
   endpoint.search = new URLSearchParams({
@@ -296,7 +300,7 @@ async function requestPage(
   if (settings.scrapflyCountry)
     endpoint.searchParams.set("country", settings.scrapflyCountry);
   if (!operation) endpoint.searchParams.set("unblocker", "true");
-  if (rung === "render") {
+  if (!operation && (rung === "render" || rung === "residential_render")) {
     endpoint.searchParams.set("render_js", "true");
     endpoint.searchParams.set(
       "rendering_wait",
@@ -612,7 +616,13 @@ async function requestPage(
       );
       ({ markdown, check } = extracted);
       if (extracted.extractionCause)
-        extraction = { cause: extracted.extractionCause, html: content };
+        extraction = {
+          cause: extracted.extractionCause,
+          html: content,
+          ...(extracted.fallbackText
+            ? { fallbackText: extracted.fallbackText }
+            : {}),
+        };
     } else {
       markdown = cleanPage(content);
       check = checkPage(
@@ -631,7 +641,7 @@ async function requestPage(
     // Only a target response (as opposed to Scrapfly's own HTTP errors)
     // can trigger this limited retry path.
     const transientTarget =
-      rung === "datacenter" &&
+      rung !== "unblocker" &&
       !operation &&
       (result.status_code === 429 ||
         (result.status_code >= 500 && check.code === "target_http"));
@@ -649,6 +659,12 @@ async function requestPage(
       finalUrl: final.href,
       costWarning: costWarning(),
       transientTarget,
+      residentialUsed:
+        /(?:^|_)residential(?:_|$)/i.test(proxyPool ?? "") ||
+        (typeof charged === "object" &&
+          charged?.details?.some(
+            ({ code }) => code === "PROXY_RESIDENTIAL_NETWORK",
+          )),
     };
   } catch (error) {
     if (startedAt === undefined) throw error;
@@ -878,10 +894,27 @@ export function scrapflyScrape(
             );
         }
       }
-      const known = hosts.get(host);
-      if (known && known.expires <= Date.now()) hosts.delete(host);
-      const previous = hosts.get(host)?.rung ?? 0;
-      const start = options.start ? scrapeRungs.indexOf(options.start) : 0;
+      const site = siteScrapeSettings(target.hostname);
+      const initialRung = options.start ?? "render";
+      const start = Math.max(
+        scrapeRungs.indexOf(initialRung),
+        site ? scrapeRungs.indexOf(site.startRung) : 0,
+      );
+      const renderedStart =
+        initialRung === "render" || initialRung === "residential_render";
+      const canEscalateRender =
+        renderedStart &&
+        !site &&
+        settings.scrapflyRenderPool !== "public_residential_pool";
+      const renderRung = scrapeRungs.indexOf("render");
+      const lastRung =
+        initialRung === "residential_render" || canEscalateRender
+          ? scrapeRungs.indexOf("residential_render")
+          : renderRung;
+      const memoryKey = renderedStart ? `render:${host}` : host;
+      const known = hosts.get(memoryKey);
+      if (known && known.expires <= Date.now()) hosts.delete(memoryKey);
+      const previous = hosts.get(memoryKey)?.rung ?? 0;
       let retryUsed = false;
       let advancedRung: ScrapeRung | undefined;
       let lastBudgetError: AppError | undefined;
@@ -889,14 +922,14 @@ export function scrapflyScrape(
       let warning: ScrapeResult | undefined;
       let protectedSite = false;
       for (
-        let index = file ? 0 : Math.max(previous, start);
-        index < scrapeRungs.length;
+        let index = file ? 0 : Math.max(Math.min(previous, lastRung), start);
+        index <= lastRung;
       ) {
         const rung = scrapeRungs[index]!;
         const timeout = file ? scrapflyFileTimeoutMs : scrapflyTimeoutMs[rung];
         const defer = advancedRung !== undefined && advancedRung !== rung;
         if (signal.aborted || remaining() < timeout || defer) {
-          if (protectedSite && !hosts.has(host)) remember(host, 1);
+          if (protectedSite && !hosts.has(memoryKey)) remember(memoryKey, 1);
           if (file)
             throw refuseFile(
               file,
@@ -918,7 +951,7 @@ export function scrapflyScrape(
             },
           );
         }
-        if (rung !== "datacenter") advancedRung = rung;
+        if (!renderedStart && rung !== "datacenter") advancedRung = rung;
         lastBudgetError = undefined;
         const result = await attempt(rung, file);
         if ("head" in result)
@@ -935,12 +968,12 @@ export function scrapflyScrape(
             await delay(result.retryMs, undefined, { signal });
             continue;
           }
-          if (index === previous) hosts.delete(host);
-          if (protectedSite && !hosts.has(host)) remember(host, 1);
+          if (index === previous) hosts.delete(memoryKey);
+          if (protectedSite && !hosts.has(memoryKey)) remember(memoryKey, 1);
           if (
             !file &&
             result.error.code === "provider_cost_budget" &&
-            index + 1 < scrapeRungs.length
+            index < lastRung
           ) {
             lastBudgetError = result.error;
             index++;
@@ -970,9 +1003,73 @@ export function scrapflyScrape(
           binary,
           costWarning,
           transientTarget,
+          residentialUsed,
           finalUrl,
         } = result;
-        if (binary || result.extraction) return result;
+        if (binary) return result;
+        if (result.extraction) {
+          if (
+            file ||
+            check.code !== "extraction_failed" ||
+            costWarning ||
+            rung === "residential_render" ||
+            (rung === "render" && (!canEscalateRender || residentialUsed))
+          )
+            return result;
+          // The default first two rungs use the same pool. Only try the
+          // alternate pool when it is configured to change the fetch.
+          const retryRung =
+            rung === "render"
+              ? "residential_render"
+              : rung === "datacenter" &&
+                  settings.scrapflyUnblockerPool !==
+                    settings.scrapflyDatacenterPool
+                ? "unblocker"
+                : "render";
+          const hint = messages.page.retryRung(retryRung);
+          if (overrunCredits !== undefined) return result;
+          if (
+            site?.extractionRetry === "manual" ||
+            remaining() < scrapflyTimeoutMs[retryRung]
+          )
+            return { ...result, hint, retryRung };
+          try {
+            const stronger = await attempt(retryRung);
+            if ("error" in stronger) {
+              if (
+                stronger.error.code === "provider_cost_budget" &&
+                !options.allowHigherCost
+              )
+                return {
+                  ...result,
+                  hint: messages.page.costRetry,
+                  retryRung,
+                  retryHigherCost: true,
+                };
+              return overrunCredits !== undefined
+                ? { ...result, costWarning: messages.page.costWarning }
+                : result;
+            }
+            if ("head" in stronger) return result;
+            if (
+              stronger.binary ||
+              (!stronger.extraction && stronger.check.code === "ok")
+            )
+              return stronger;
+            if (
+              stronger.extraction &&
+              stronger.markdown.length > markdown.length
+            )
+              return stronger;
+            return {
+              ...result,
+              costWarning: stronger.costWarning ?? costWarning,
+            };
+          } catch (error) {
+            if (signal.aborted || !(error instanceof AppError)) throw error;
+            return result;
+          }
+        }
         if (file)
           throw refuseFile(
             file,
@@ -988,27 +1085,39 @@ export function scrapflyScrape(
           );
         }
         if (transientTarget) {
-          if (remaining() < scrapflyTimeoutMs.unblocker || signal.aborted)
+          const retryRung = rung === "datacenter" ? "unblocker" : rung;
+          if ((rung !== "datacenter" && retryUsed) || signal.aborted)
             throw new AppError(check.code, check.reason, {
               tried: options.tried,
-              hint: messages.page.retryRung("unblocker"),
-              retryRung: "unblocker",
             });
-          index++;
+          if (remaining() < scrapflyTimeoutMs[retryRung])
+            throw new AppError(check.code, check.reason, {
+              tried: options.tried,
+              hint: messages.page.retryRung(retryRung),
+              retryRung,
+            });
+          if (rung === "datacenter") index++;
+          else retryUsed = true;
           continue;
         }
-        const next = check.next === "render" ? 2 : index + 1;
-        const stronger = scrapeRungs[next];
+        const next =
+          check.next === "render" && index < renderRung
+            ? renderRung
+            : index + 1;
+        const stronger =
+          next <= lastRung && !(rung === "render" && residentialUsed)
+            ? scrapeRungs[next]
+            : undefined;
         const hint = stronger ? messages.page.retryRung(stronger) : undefined;
         if (
           check.code === "ok" ||
           (check.warning &&
             (!check.next || !stronger || lastThin === check.code))
         ) {
-          if (!check.next)
+          if (!check.next && (!renderedStart || index > start))
             remember(
-              host,
-              start > previous && hosts.get(host)?.rung === previous
+              memoryKey,
+              start > previous && hosts.get(memoryKey)?.rung === previous
                 ? previous
                 : index,
             );
@@ -1020,10 +1129,10 @@ export function scrapflyScrape(
             ...(check.next && stronger ? { retryRung: stronger } : {}),
           };
         }
-        if (index === previous) hosts.delete(host);
+        if (index === previous) hosts.delete(memoryKey);
         if (index === 0 && blocked.has(check.code)) protectedSite = true;
         if (!check.next || !stronger || next <= index) {
-          if (protectedSite && !hosts.has(host)) remember(host, 1);
+          if (protectedSite && !hosts.has(memoryKey)) remember(memoryKey, 1);
           throw new AppError(check.code, check.reason, {
             tried: options.tried,
             hint: check.next ? hint : undefined,

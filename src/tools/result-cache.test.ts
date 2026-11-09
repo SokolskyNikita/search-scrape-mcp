@@ -26,7 +26,7 @@ test("cache expires, evicts the oldest entry, and skips oversized entries", (t) 
   assert.equal(cache.get("a"), undefined);
   cache.set("c", "too many bytes");
   assert.equal(cache.get("c"), undefined);
-  assert.equal(cache.get("b"), "second");
+  assert.equal(cache.get("b")?.value, "second");
   now = 100;
   assert.equal(cache.get("b"), undefined);
 
@@ -34,7 +34,7 @@ test("cache expires, evicts the oldest entry, and skips oversized entries", (t) 
   bounded.set("a", "first");
   bounded.set("b", "second");
   assert.equal(bounded.get("a"), undefined);
-  assert.equal(bounded.get("b"), "second");
+  assert.equal(bounded.get("b")?.value, "second");
 });
 
 test("search and scrape cache hits cross sessions and batches, with fresh bypass and failure exclusion", async (t) => {
@@ -116,7 +116,7 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
       const data = response.structuredContent as Record<string, unknown>;
       return [
         data.items ?? data.results ?? data,
-        data.cached ? { cached: true } : undefined,
+        data.cached ? { cached: true, cached_at: data.cached_at } : undefined,
         response.content[0].text,
       ] as ReturnType<typeof JSON.parse>;
     };
@@ -130,8 +130,10 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
   });
   assert.equal(batch[0].cached, true);
   assert.equal(batch[0].result[0].title, "1");
+  assert.match(batch[0].cached_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.deepEqual((await second("search", { q: "fixture", limit: 10 }))[1], {
     cached: true,
+    cached_at: batch[0].cached_at,
   });
   await second("search", { q: "fixture", limit: 10, fresh: true });
   const [hits] = await first("search", { q: "fixture", limit: 10 });
@@ -169,6 +171,9 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
   await first("scrape", { url });
   const [scraped] = await second("scrape_batch", { urls: [url] });
   assert.equal(scraped[0].result.cached, true);
+  assert.match(scraped[0].result.cached_at, /^\d{4}-\d{2}-\d{2}T/);
+  const [singleScrape] = await first("scrape", { url });
+  assert.equal(singleScrape.cached_at, scraped[0].result.cached_at);
   await second("scrape", { url, fresh: true });
   const [updated] = await first("scrape", { url });
   assert.equal(updated.markdown, "2");

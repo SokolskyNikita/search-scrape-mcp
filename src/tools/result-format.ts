@@ -26,6 +26,7 @@ type ResultItem = {
 };
 type PageResult = {
   markdown?: string;
+  fallbackText?: string;
   preview?: string;
   path?: string;
   htmlPath?: string;
@@ -180,7 +181,13 @@ function resultFrame(
           : { note: messages.note.noResults }
         : (value as PageResult);
   const notices: string[] = [];
-  const body = page.markdown ?? page.preview;
+  const body =
+    [
+      page.markdown ?? page.preview,
+      page.fallbackText && `Fallback text:\n${page.fallbackText}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n") || undefined;
   const warning =
     page.extractionWarning?.reason ??
     page.warning ??
@@ -208,7 +215,7 @@ function resultFrame(
 export function presentedResult(
   presentation: ResultPresentation,
   value: unknown,
-  cached: boolean,
+  cachedAt?: string,
 ) {
   const {
     operation,
@@ -254,12 +261,14 @@ export function presentedResult(
     };
   }
   return {
-    content: [resultFrame(operation, target?.(), value, cached, page)],
+    content: [
+      resultFrame(operation, target?.(), value, Boolean(cachedAt), page),
+    ],
     structuredContent: Array.isArray(value)
       ? {
           results: value,
           ...(page ? { page } : {}),
-          ...(cached ? { cached: true } : {}),
+          ...(cachedAt ? { cached: true, cached_at: cachedAt } : {}),
         }
       : typeof value === "string"
         ? { text: value }

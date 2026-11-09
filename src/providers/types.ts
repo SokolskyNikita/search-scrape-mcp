@@ -33,7 +33,12 @@ export interface SearchProvider {
   ): Promise<SearchHit[]>;
 }
 
-export const scrapeRungs = ["datacenter", "unblocker", "render"] as const;
+export const scrapeRungs = [
+  "datacenter",
+  "unblocker",
+  "render",
+  "residential_render",
+] as const;
 export type ScrapeRung = (typeof scrapeRungs)[number];
 export const scrapeContentModes = ["main", "full"] as const;
 export type ScrapeContentMode = (typeof scrapeContentModes)[number];
@@ -43,8 +48,9 @@ export type ScrapeResult = {
   check: PageCheck;
   hint?: string;
   retryRung?: ScrapeRung;
+  retryHigherCost?: true;
   binary?: { bytes: Buffer; mimeType: string; extension?: string };
-  extraction?: { cause: ExtractionCause; html: string };
+  extraction?: { cause: ExtractionCause; html: string; fallbackText?: string };
   credits?: number;
   costWarning?: string;
 };
