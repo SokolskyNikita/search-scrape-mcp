@@ -15,19 +15,19 @@ const publicSchema = settingsSchema.omit({ token: true }).strip();
 
 try {
   if (
-    process.argv[2] === "--write-readme" ||
-    process.argv[2] === "--check-readme"
+    process.argv[2] === "--write-docs" ||
+    process.argv[2] === "--check-docs"
   ) {
     const rows = Object.entries(publicSchema.shape).map(
       ([name, schema]) =>
         `| \`${name}\` | \`${JSON.stringify(schema.parse(undefined))}\` | ${schema.description} |`,
     );
-    const file = new URL("../../README.md", import.meta.url);
-    const readme = readFileSync(file, "utf8");
+    const file = new URL("../../USAGE.md", import.meta.url);
+    const usage = readFileSync(file, "utf8");
     const section = /<!-- settings:start -->[\s\S]*?<!-- settings:end -->/;
-    if (!section.test(readme))
-      throw new AppError("config", "README settings markers are missing.");
-    const updated = readme.replace(
+    if (!section.test(usage))
+      throw new AppError("config", "usage guide settings markers are missing.");
+    const updated = usage.replace(
       section,
       [
         "<!-- settings:start -->",
@@ -40,11 +40,11 @@ try {
         "<!-- settings:end -->",
       ].join("\n"),
     );
-    if (process.argv[2] === "--write-readme") writeFileSync(file, updated);
-    else if (readme !== updated)
+    if (process.argv[2] === "--write-docs") writeFileSync(file, updated);
+    else if (usage !== updated)
       throw new AppError(
         "config",
-        "Run npm run config:docs to refresh the README settings.",
+        "Run npm run config:docs to refresh the usage guide settings.",
       );
   } else {
     const missing = !lstatSync(settingsFile(), { throwIfNoEntry: false });

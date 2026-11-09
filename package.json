@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "license": "MIT",
   "scripts": {
-    "test": "npm run build && node dist/config/report.js --check-readme && node --test \"dist/**/*.test.js\"",
+    "test": "npm run build && node dist/config/report.js --check-docs && node --test \"dist/**/*.test.js\"",
     "build": "tsc",
     "start": "node dist/server/main.js",
     "lint": "eslint .",
@@ -11,7 +11,7 @@
     "format:check": "prettier --check .",
     "smoke": "npm run build && node dist/server/smoke.js",
     "config": "npm run build --silent && node dist/config/report.js",
-    "config:docs": "npm run build --silent && node dist/config/report.js --write-readme"
+    "config:docs": "npm run build --silent && node dist/config/report.js --write-docs"
   },
   "type": "module",
   "engines": {
