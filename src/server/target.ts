@@ -47,7 +47,11 @@ async function validateUrl(value: string, access: HostAccess): Promise<URL> {
 
   const host = url.hostname.replace(/^\[|\]$|\.$/g, "");
   const rule = urlRule(url);
-  if (rule?.denied.includes(access)) throw forbidden(rule.accessError);
+  if (rule?.denied.includes(access))
+    throw new AppError(
+      access === "scrape" ? "unsupported_in_scrape" : "unsafe_url",
+      rule.accessError,
+    );
   if (ipaddr.isValid(host)) {
     if (!publicIp(host)) throw forbidden(messages.input.publicUrl);
     return url;

@@ -117,6 +117,7 @@ const errorMessages: Readonly<Partial<Record<string, string>>> = {
 
 const specificErrors = new Set([
   "unsafe_url",
+  "unsupported_in_scrape",
   "empty_page",
   "input",
   "target_http",

@@ -150,7 +150,7 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert.equal(readFileSync(result[0].result.path, "utf8"), content);
   assert.equal(readFileSync(result[2].result.path, "utf8"), content);
   assert.notEqual(result[0].result.path, result[2].result.path);
-  assert.match(result[1].error.code, /url|target/);
+  assert.equal(result[1].error.code, "unsupported_in_scrape");
   assert.equal(result[1].error.message, hostRule("github.com")!.accessError);
   assert.deepEqual(seen, [first, second, first]);
 
@@ -452,7 +452,7 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
   assert.match(clean.result.markdown, /steady increase in rainfall/);
   assert.equal(clean.result.htmlPath, undefined);
   assert.equal(clean.result.extractionWarning, undefined);
-  assert.equal(failed.error.code, "unsafe_url");
+  assert.equal(failed.error.code, "unsupported_in_scrape");
   assert.equal(failed.error.reason, hostRule("github.com")!.accessError);
   assert.equal(request.mock.callCount(), 5);
 

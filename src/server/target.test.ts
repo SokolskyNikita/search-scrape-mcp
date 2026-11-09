@@ -18,7 +18,7 @@ test("target URL policy rejects GitHub domains and subdomains before DNS", async
   ]) {
     await assert.rejects(
       validatePublicUrl(`https://${host}/`),
-      { code: "unsafe_url", message: hostRule(host)!.accessError },
+      { code: "unsupported_in_scrape", message: hostRule(host)!.accessError },
       host,
     );
   }

@@ -54,7 +54,8 @@ function domain(field: "site" | "exclude_domains") {
 
 const locationHint =
   "Best-effort location hint. Include the place name in the query when it matters.";
-const queryHint = "Provide exactly one of q or query.";
+const queryHint =
+  "Provide exactly one of q or query. Use double quotes for phrases and uppercase OR for alternatives. These are best-effort provider operators.";
 const fields = {
   query: query.optional().describe("Search text. An alternative to q."),
   q: query.optional().describe("Search text. Use q or query."),

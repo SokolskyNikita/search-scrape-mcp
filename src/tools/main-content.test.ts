@@ -102,3 +102,32 @@ test("a Reddit video thread without text returns its title as fallback", async (
   assert.equal(result.extractionCause, "unusable_output");
   assert.equal(result.fallbackText, title);
 });
+
+test("main extraction omits navigation and complementary landmarks outside main content", async () => {
+  const url = new URL("https://example.com/forum/topic");
+  const directory = `<ul>
+    <li><a href="/first">Global directory first section</a></li>
+    <li><a href="/second">Global directory second section</a></li>
+    <li><a href="/third">Global directory third section</a></li>
+  </ul>`;
+  const { markdown, check } = await mainContent(
+    `<html><head><title>Community thread</title></head><body><div>
+      <article><nav>${directory}</nav></article>
+      <div role="navigation">${directory}</div>
+      <main><h1>Community thread</h1><div>
+        <p>The first contribution includes enough prose to establish the topic.</p>
+        <p>The second contribution answers the question with additional context.</p>
+      </div></main>
+      <aside role="complementary"><p>Unrelated sidebar and list of contacts.</p></aside>
+    </div></body></html>`,
+    url,
+    url,
+    200,
+    "text/html",
+    true,
+  );
+  assert.equal(check.code, "ok");
+  assert.match(markdown, /first contribution/);
+  assert.match(markdown, /second contribution/);
+  assert.doesNotMatch(markdown, /Global directory|Unrelated sidebar/);
+});

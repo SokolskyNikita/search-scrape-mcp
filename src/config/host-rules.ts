@@ -9,7 +9,7 @@ type HostRule = {
 
 const youtubeRule: HostRule = {
   domains: ["youtube.com", "youtu.be"],
-  denied: ["scrape"],
+  denied: ["scrape", "browser"],
   accessError: "Use the youtube tool to open YouTube video links.",
   searchHint: "Use the youtube tool for YouTube video metadata and captions.",
 };
@@ -71,7 +71,7 @@ export function urlRule(url: URL) {
   const rule = hostRule(url.hostname);
   if (rule === youtubeRule && !youtubeVideoId(url)) {
     const message =
-      "Use browser for this YouTube page. The youtube tool accepts individual video links.";
+      "Use the youtube tool with an individual YouTube video link.";
     return { ...rule, accessError: message, searchHint: message };
   }
   return rule;

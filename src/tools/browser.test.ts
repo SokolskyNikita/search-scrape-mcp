@@ -80,6 +80,19 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
       github.content[0].text.includes(hostRule("github.com")!.accessError),
     );
     assert.equal(opened, 0);
+    for (const [url, hint] of [
+      ["https://youtu.be/0yIfx7JlkiM", hostRule("youtu.be")!.accessError],
+      [
+        "https://www.youtube.com/@example",
+        "Use the youtube tool with an individual YouTube video link.",
+      ],
+    ] as const) {
+      const youtube = await a.call({ action: "navigate", url });
+      assert.equal(youtube.isError, true);
+      assert(Array.isArray(youtube.content));
+      assert(youtube.content[0].text.includes(hint));
+    }
+    assert.equal(opened, 0);
     for (const url of [
       "https://old.reddit.com./r/example/",
       "https://redd.it/abc",

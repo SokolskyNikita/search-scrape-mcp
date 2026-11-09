@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { once } from "node:events";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { defaults } from "../config/tuning.js";
 import { createMcpHttp } from "../server/http.js";
 import type { YouTubeProvider } from "../providers/types.js";
 import { OutputFiles } from "./output-files.js";
@@ -25,6 +26,10 @@ function latch() {
 test("YouTube normalizes URLs, keeps metadata and transcript cache entries distinct, and tries another provider", async (t) => {
   const calls: [string, string, boolean][] = [];
   const canceledVideo = "aaaaaaaaaaa";
+  const longVideo = "bbbbbbbbbbb";
+  const longText = "Long caption. ".repeat(20).trimEnd();
+  const output = mkdtempSync(join(tmpdir(), "youtube-output-"));
+  t.after(() => rmSync(output, { recursive: true, force: true }));
   const providerCanceled = latch();
   let cancellationCalls = 0;
   const fixture: YouTubeProvider = {
@@ -48,6 +53,8 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
       return {
         url: `https://www.youtube.com/watch?v=${id}`,
         title: "Fixture",
+        description:
+          "A description.\n00:00 Intro\n00:15 - Basement\n1:02:03 Finale",
         ...(transcript ? { transcript: { status: "no_captions" } } : {}),
       };
     },
@@ -70,13 +77,19 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
               segments: [
                 { start_seconds: 1, text: "テスト" },
                 { start_seconds: 2, text: "Outside range" },
+                { start_seconds: 15, text: "Basement" },
+                { start_seconds: 47, text: "Later" },
+                ...(id === longVideo
+                  ? [{ start_seconds: 60, text: longText }]
+                  : []),
               ],
             },
           };
         },
       },
     ],
-    new OutputFiles(),
+    new OutputFiles(output),
+    { ...defaults, scrapeInlineChars: 128, outputPreviewChars: 32 },
   );
   const token = "a".repeat(40);
   const server = createMcpHttp(token, (mcp) => {
@@ -123,7 +136,14 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
     return response.structuredContent as {
       cached: boolean;
       cached_at?: string;
-      transcript?: { language: string; segments: { text: string }[] };
+      chapters?: { start_seconds: number; title: string }[];
+      transcript?: {
+        language: string;
+        text: string;
+        kind: string;
+        partial?: true;
+        file?: { path: string; mimeType: string };
+      };
     };
   }
 
@@ -134,10 +154,19 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
   const metadataHit = await call(second, { url: watch });
   assert.equal(metadataHit.cached, true);
   assert(metadataHit.cached_at);
+  assert.deepEqual(metadataHit.chapters, [
+    { start_seconds: 0, title: "Intro" },
+    { start_seconds: 15, title: "Basement" },
+    { start_seconds: 3723, title: "Finale" },
+  ]);
+  const full = await call(second, { url: watch, transcript: true });
+  assert.equal(full.transcript?.language, "ja");
+  assert.equal(full.transcript?.kind, "automatic");
   assert.equal(
-    (await call(second, { url: watch, transcript: true })).transcript?.language,
-    "ja",
+    full.transcript?.text,
+    "[00:00] テスト Outside range\n[00:15] Basement\n[00:45] Later",
   );
+  assert(!Object.hasOwn(full.transcript!, "segments"));
   assert.equal(
     (await call(first, { url: short, transcript: true })).cached,
     true,
@@ -154,9 +183,7 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
     end_seconds: 2,
   });
   assert.equal(excerpt.cached, true);
-  assert.deepEqual(excerpt.transcript?.segments, [
-    { start_seconds: 1, text: "テスト" },
-  ]);
+  assert.equal(excerpt.transcript?.text, "[00:00] テスト");
   for (const alias of [
     "https://www.youtube.com/live/0yIfx7JlkiM",
     "https://music.youtube.com/watch?v=0yIfx7JlkiM",
@@ -181,6 +208,21 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
     ["first", "0yIfx7JlkiM", true],
     ["second", "0yIfx7JlkiM", true],
   ]);
+
+  const spill = await call(first, {
+    url: `https://youtu.be/${longVideo}`,
+    transcript: true,
+  });
+  assert.equal(spill.transcript?.partial, true);
+  assert.equal(spill.transcript?.text.length, 32);
+  const file = spill.transcript?.file;
+  assert(file);
+  assert.equal(file.mimeType, "text/plain");
+  assert.match(file.path, /\.txt$/);
+  assert.equal(
+    readFileSync(file.path, "utf8"),
+    `${full.transcript?.text}\n[01:00] ${longText}`,
+  );
 
   // Two callers share the pending provider work. Only the last cancellation
   // should abort it.
@@ -279,6 +321,10 @@ test("YouTube links route away from both scrape tools and missing captions sugge
   const url = "https://youtu.be/0yIfx7JlkiM";
   const scrape = await client.callTool({ name: "scrape", arguments: { url } });
   assert.equal(scrape.isError, true);
+  assert.equal(
+    (scrape.structuredContent as { code?: string } | undefined)?.code,
+    "unsupported_in_scrape",
+  );
   assert.match(JSON.stringify(scrape.content), /Use the youtube tool/);
   const channel = await client.callTool({
     name: "scrape",
@@ -287,13 +333,19 @@ test("YouTube links route away from both scrape tools and missing captions sugge
   assert.equal(channel.isError, true);
   assert.match(
     JSON.stringify(channel.content),
-    /Use browser for this YouTube page/,
+    /Use the youtube tool with an individual YouTube video link/,
   );
   const batch = await client.callTool({
     name: "scrape_batch",
     arguments: { urls: ["https://www.youtube.com/watch?v=0yIfx7JlkiM"] },
   });
-  assert.match(JSON.stringify(batch.structuredContent), /Use the youtube tool/);
+  const items = (
+    batch.structuredContent as {
+      items: { error: { code: string; message: string } }[];
+    }
+  ).items;
+  assert.equal(items[0]?.error.code, "unsupported_in_scrape");
+  assert.match(items[0]!.error.message, /Use the youtube tool/);
   const youtube = await client.callTool({
     name: "youtube",
     arguments: { url, transcript: true },

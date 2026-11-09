@@ -47,6 +47,42 @@ function videoId(value: string) {
   return id;
 }
 
+function descriptionChapters(description: string | undefined) {
+  const chapters: { start_seconds: number; title: string }[] = [];
+  for (const line of description?.split(/\r?\n/) ?? []) {
+    const match =
+      /^\s*(?:(\d{1,3}):)?(\d{1,3}):([0-5]\d)\s+(?:[-–—]\s+)?(\S.*?)\s*$/.exec(
+        line,
+      );
+    if (!match) continue;
+    const [, hours, minutes, seconds, title] = match;
+    if (hours && Number(minutes) >= 60) continue;
+    const start =
+      Number(hours ?? 0) * 3600 + Number(minutes) * 60 + Number(seconds);
+    if (start <= (chapters.at(-1)?.start_seconds ?? -1)) continue;
+    chapters.push({ start_seconds: start, title: title! });
+  }
+  return chapters.length >= 2 ? chapters : undefined;
+}
+
+function transcriptText(segments: { start_seconds: number; text: string }[]) {
+  const parts: string[] = [];
+  let previous = -1;
+  for (const { start_seconds, text } of segments) {
+    const block = Math.floor(start_seconds / 15) * 15;
+    if (block > previous) {
+      const minutes = String(Math.floor(block / 60)).padStart(2, "0");
+      const seconds = String(block % 60).padStart(2, "0");
+      parts.push(parts.length ? "\n" : "", `[${minutes}:${seconds}] `);
+      previous = block;
+    } else {
+      parts.push(" ");
+    }
+    parts.push(text);
+  }
+  return parts.join("");
+}
+
 export function youtubeTool(
   providers: readonly YouTubeProvider[],
   files: OutputFiles,
@@ -73,7 +109,9 @@ export function youtubeTool(
     const cacheInfo = cachedAt
       ? { cached: true, cached_at: cachedAt }
       : { cached: false };
-    const transcript = video.transcript;
+    const { transcript, ...metadata } = video;
+    const chapters = descriptionChapters(metadata.description);
+    const result = { ...metadata, ...cacheInfo, ...(chapters && { chapters }) };
     if (transcript?.status === "ok") {
       const ranged = start !== undefined || end !== undefined;
       const segments = ranged
@@ -86,48 +124,40 @@ export function youtubeTool(
       const range = ranged
         ? { range: { start_seconds: start, end_seconds: end } }
         : {};
-      const bytes = Buffer.from(JSON.stringify(segments));
+      const { status, language, kind, translated } = transcript;
+      const text = transcriptText(segments);
+      const bytes = Buffer.from(text);
+      const captions = { status, language, kind, translated, ...range };
       if (bytes.length > settings.scrapeInlineChars) {
-        const { status, language, kind, translated } = transcript;
-        const preview = [];
-        let remaining = settings.outputPreviewChars - 2;
-        for (const segment of segments) {
-          remaining -= JSON.stringify(segment).length + 1;
-          if (remaining < 0) break;
-          preview.push(segment);
-        }
         return {
-          ...video,
-          ...cacheInfo,
+          ...result,
           note: "Partial transcript preview. Use a timestamp range for a smaller excerpt.",
           transcript: {
-            status,
-            language,
-            kind,
-            translated,
-            ...range,
+            ...captions,
             partial: true,
-            segments: preview,
+            text: text
+              .slice(0, settings.outputPreviewChars)
+              .replace(/[\uD800-\uDBFF]$/u, "")
+              .trimEnd(),
             file: files.saveBinary({
               bytes,
-              mimeType: "application/json",
-              extension: "json",
+              mimeType: "text/plain",
+              extension: "txt",
             }),
           },
         };
       }
       return {
-        ...video,
-        ...cacheInfo,
-        transcript: { ...transcript, ...range, segments },
+        ...result,
+        transcript: { ...captions, text },
         ...(!segments.length && {
           note: "No captions start within the requested range.",
         }),
       };
     }
     return {
-      ...video,
-      ...cacheInfo,
+      ...result,
+      ...(transcript && { transcript }),
       ...((transcript?.status === "no_captions" ||
         transcript?.status === "unavailable") && {
         note: "No transcript was retrieved. Try a different video if you need captions.",
@@ -140,7 +170,7 @@ export function youtubeTool(
       "youtube",
       {
         description:
-          "Read a YouTube video's metadata. Set transcript to true to retrieve its captions with timestamps. Use start_seconds and end_seconds to request an excerpt.",
+          "Read a YouTube video's metadata and any chapters found in its description. Set transcript to true to retrieve caption text with timestamps every 15 seconds. Use start_seconds and end_seconds to request an excerpt.",
         inputSchema: input,
         annotations: { readOnlyHint: true, openWorldHint: true },
       },

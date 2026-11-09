@@ -690,6 +690,7 @@ async function requestPage(
       warning &&
       ![
         "unsafe_url",
+        "unsupported_in_scrape",
         "provider_cost_overrun",
         "file_refused",
         "binary_download",

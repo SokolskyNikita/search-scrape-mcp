@@ -49,6 +49,7 @@ export async function fallback<T extends { name?: string }, R>(
         !(error instanceof AppError) ||
         [
           "unsafe_url",
+          "unsupported_in_scrape",
           "dns",
           "provider_auth",
           "provider_limit",

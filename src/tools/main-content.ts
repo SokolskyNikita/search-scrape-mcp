@@ -179,6 +179,15 @@ export async function mainContent(
     broad = false,
     copy = document.cloneNode(true) as Document,
   ) => {
+    const primary = copy.querySelector('main, [role="main"]');
+    if (primary?.textContent?.trim()) {
+      for (const landmark of copy.querySelectorAll(
+        'nav, aside, [role="navigation"], [role="complementary"]',
+      )) {
+        if (!primary.contains(landmark) && !landmark.contains(primary))
+          landmark.remove();
+      }
+    }
     for (const picture of copy.querySelectorAll("picture")) picture.remove();
     if (broad) {
       for (const node of copy.querySelectorAll("script, style, template"))

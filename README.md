@@ -123,15 +123,20 @@ insertion timestamp `cached_at`. A cached result is also labeled in the text.
 ### YouTube
 
 The `youtube` tool accepts watch, Shorts, live, embed, and youtu.be video links. It returns
-metadata by default. Set `transcript: true` to request one caption track.
+metadata by default, including a `chapters` array with `start_seconds` and
+`title` when the description contains an ordered timestamp list. Set
+`transcript: true` to request one caption track.
 It prefers original-language captions, then English, and reports when no
-captions are available or YouTube rate-limits the request. Large transcripts
-return a bounded preview and a local JSON file reference. With
-`transcript: true`, use `start_seconds` (inclusive) and `end_seconds` (exclusive)
-to select captions by their start times. Excerpts reuse the cached full
-transcript. Set `fresh: true` to bypass the MCP result cache. If captions are missing or unavailable, the result suggests
-trying a different video. Use `youtube` for YouTube links, since `scrape` and
-`scrape_batch` reject them.
+captions are available or YouTube rate-limits the request. The transcript's
+`text` field contains all caption text in order, with a timestamp at the start
+of each occupied 15-second block. Large transcripts return a bounded preview
+and a local plain-text file reference. Use `start_seconds` (inclusive) and
+`end_seconds` (exclusive) to select captions by their original start times
+before grouping them. Excerpts reuse the cached full transcript. Set
+`fresh: true` to bypass the MCP result cache. If captions are missing or
+unavailable, the result suggests trying a different video. Use `youtube` for
+YouTube video links. The scrape and browser tools reject `youtube.com` and
+`youtu.be` URLs, including subdomains.
 
 The server runs one yt-dlp job at a time in arrival order. Clients that request
 MCP progress get an estimated start and finish when the job joins the queue.
@@ -145,8 +150,11 @@ present and falls back to `python3`.
 
 ### Search
 
-Provide exactly one of `q` or `query` for the search text in each search. Filter by `site`, `exclude_domains`,
-country (`gl`), language (`hl`), or time (`recency` or `tbs`). Use `page` for
+Provide exactly one of `q` or `query` for the search text in each search.
+Double quotes request a phrase and uppercase `OR` requests alternatives,
+including between quoted phrases. These operators are passed through to the
+search provider, which applies them on a best-effort basis.
+Filter by `site`, `exclude_domains`, country (`gl`), language (`hl`), or time (`recency` or `tbs`). Use `page` for
 pagination and `autocorrect` to control spelling correction. The `location`
 and `gl` fields are best-effort hints. Include the place name in the query when
 it matters.
