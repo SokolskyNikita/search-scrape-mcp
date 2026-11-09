@@ -161,6 +161,7 @@ export function createMcpHttp(
                       throw new AppError(code, message, { hint });
                     },
                     settings,
+                    { presentation: { operation: call.data.params.name } },
                   ),
                 }
               : { error: { code: -32000, message: `${message} ${hint}` } };

@@ -1,3 +1,4 @@
+import { resultDivider } from "./result-format.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +20,8 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   const mcp = new McpServer({ name: "scrape-test", version: "1.0.0" });
   const seen: string[] = [];
   const rateLimited = "https://9.9.9.9/busy";
+  const costly = "https://9.9.9.9/costly";
+  const budgetRejected = "https://9.9.9.9/rejected";
   const content = "Public page content ".repeat(4_000).trim();
   const dir = mkdtempSync(join(tmpdir(), "scrape-tool-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -35,14 +38,34 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
               "Scrapfly is busy. Retry after 6 s.",
             );
           }
+          if (url === budgetRejected)
+            throw new AppError(
+              "provider_cost_budget",
+              "Internal budget rejection.",
+              {
+                credits: 100,
+              },
+            );
+          if (url === costly && !options?.allowHigherCost)
+            throw new AppError(
+              "provider_cost_opt_in_required",
+              "Internal cost notice.",
+              {
+                expectedCredits: 150,
+              },
+            );
           throw new AppError("blocked", "Page was blocked.");
         },
       },
       {
-        scrape: async () => ({
-          markdown: content,
-          check: { code: "ok", reason: "Readable page." },
-        }),
+        scrape: async (url) => {
+          if (url === budgetRejected)
+            throw new AppError("blocked", "Page was blocked.");
+          return {
+            markdown: content,
+            check: { code: "ok", reason: "Readable page." },
+          };
+        },
       },
     ],
     new OutputFiles(join(dir, "spills")),
@@ -65,12 +88,19 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
     arguments: { url: first },
   });
   assert(Array.isArray(single.content));
-  const saved = JSON.parse(single.content[0].text);
-  assert.equal(readFileSync(saved.path, "utf8"), content);
+  const saved = single.structuredContent as Record<string, unknown>;
+  assert.equal(readFileSync(saved.path as string, "utf8"), content);
   assert.equal(saved.characters, content.length);
+  assert.equal(saved.truncated, true);
   assert.equal(saved.preview, content.slice(0, 600).trimEnd());
   assert.equal(saved.markdown, undefined);
-  assert.match(saved.hint, /untrusted web content/);
+  assert.ok(
+    single.content[0].text.startsWith(
+      `search-scrape-mcp · Scrape result · ${first}\nPreview only. Full text: ${saved.path}\n\n${resultDivider}\n\n`,
+    ),
+  );
+  assert.ok(single.content[0].text.endsWith(resultDivider));
+  assert.match(saved.hint as string, /untrusted web content/);
   assert.deepEqual(seen, [first]);
 
   const github = await client.callTool({
@@ -87,8 +117,14 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   });
   const blocks = mixed.content;
   assert(Array.isArray(blocks));
-  assert.equal(blocks.length, 1);
-  const result = JSON.parse(blocks[0].text);
+  assert.equal(blocks.length, 3);
+  assert.match(
+    blocks[1].text,
+    /^search-scrape-mcp · Scrape result · https:\/\/www\.github\.com/,
+  );
+  assert.ok(blocks.every((block) => block.text.endsWith(resultDivider)));
+  const result = (mixed.structuredContent as Record<string, unknown>)
+    .items as ReturnType<typeof JSON.parse>;
   assert.deepEqual(
     result.map((item: { index: number }) => item.index),
     [0, 1, 2],
@@ -106,7 +142,8 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   });
   assert.notEqual(busyBatch.isError, true);
   assert(Array.isArray(busyBatch.content));
-  const busyItems = JSON.parse(busyBatch.content[0].text);
+  const busyItems = (busyBatch.structuredContent as Record<string, unknown>)
+    .items as ReturnType<typeof JSON.parse>;
   assert.deepEqual(busyItems[0].error, {
     code: "provider_rate",
     message: "Scrapfly is busy. Retry after 6 s.",
@@ -114,6 +151,72 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
     tried: [],
   });
   assert.equal(busyItems[1].result.check.code, "ok");
+
+  const options = {
+    content_mode: "main",
+    fresh: true,
+    start_rung: "unblocker",
+    max_chars: 20,
+  };
+  const rejected = await client.callTool({
+    name: "scrape",
+    arguments: { url: costly, ...options },
+  });
+  assert.equal(rejected.isError, true);
+  assert(Array.isArray(rejected.content));
+  assert.ok(rejected.content[0].text.includes(`\nRetry: `));
+  assert.ok(rejected.content[0].text.endsWith(resultDivider));
+  const failure = rejected.structuredContent as Record<string, unknown>;
+  assert.deepEqual(failure, {
+    code: "scrape_cost",
+    reason:
+      "This page is unusually costly to scrape. Retry using the supplied scrape call.",
+    message:
+      "This page is unusually costly to scrape. Retry using the supplied scrape call.",
+    retry: {
+      name: "scrape",
+      arguments: { url: costly, ...options, allow_higher_cost: true },
+    },
+  });
+  const retried = await client.callTool(
+    failure.retry as Parameters<Client["callTool"]>[0],
+  );
+  assert(Array.isArray(retried.content));
+  const truncated = retried.structuredContent as Record<string, unknown>;
+  assert.equal(truncated.truncated, true);
+  assert.equal(
+    truncated.preview,
+    content.slice(0, options.max_chars).trimEnd(),
+  );
+  assert.equal(readFileSync(truncated.path as string, "utf8"), content);
+
+  const partial = await client.callTool({
+    name: "scrape_batch",
+    arguments: { urls: [first, budgetRejected], ...options },
+  });
+  assert(Array.isArray(partial.content));
+  const [completed, failed] = (
+    partial.structuredContent as Record<string, unknown>
+  ).items as ReturnType<typeof JSON.parse>;
+  assert.equal(completed.result.truncated, true);
+  assert.equal(completed.result.preview, truncated.preview);
+  assert.deepEqual(failed.error, {
+    code: "scrape_cost",
+    message: failure.message,
+    reason: failure.message,
+    retry: {
+      name: "scrape",
+      arguments: { url: budgetRejected, ...options, allow_higher_cost: true },
+    },
+  });
+  const exhausted = await client.callTool(failed.error.retry);
+  assert(Array.isArray(exhausted.content));
+  assert.equal(exhausted.isError, true);
+  assert.match(
+    exhausted.content[0].text,
+    /Error \(scrape_cost\): This page is unusually costly to scrape/,
+  );
+  assert.ok(exhausted.content[0].text.endsWith(resultDivider));
 });
 
 test("main and full use separate caches and batch forwards content mode", async (t) => {
@@ -122,6 +225,7 @@ test("main and full use separate caches and batch forwards content mode", async 
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const settings = { ...defaults, cacheTtlMs: 60_000 };
   const seen: (string | undefined)[] = [];
+  const finalUrl = "https://8.8.8.8/redirected";
   let browserAttempts = 0;
   registerScrape(
     mcp,
@@ -139,6 +243,7 @@ test("main and full use separate caches and batch forwards content mode", async 
           seen.push(options?.contentMode);
           return {
             markdown: options?.contentMode ?? "missing",
+            finalUrl,
             check: { code: "ok", reason: "Readable page." },
           };
         },
@@ -163,9 +268,15 @@ test("main and full use separate caches and batch forwards content mode", async 
   const call = async (name: string, args: Record<string, unknown>) => {
     const result = await client.callTool({ name, arguments: args });
     assert(Array.isArray(result.content));
-    return JSON.parse(result.content[0].text);
+    return ((result.structuredContent as Record<string, unknown>).items ??
+      result.structuredContent) as ReturnType<typeof JSON.parse>;
   };
-  assert.equal((await call("scrape", { url })).markdown, "main");
+  const first = await client.callTool({ name: "scrape", arguments: { url } });
+  assert(Array.isArray(first.content));
+  assert.equal(
+    first.content[0].text,
+    `search-scrape-mcp · Scrape result · ${finalUrl}\nRequested URL: ${url}\n\n${resultDivider}\n\nmain\n\n${resultDivider}`,
+  );
   assert.equal(
     (await call("scrape", { url, content_mode: "main" })).cached,
     true,
@@ -238,10 +349,16 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
 
   const single = await client.callTool({
     name: "scrape",
-    arguments: { url: partialUrl },
+    arguments: { url: partialUrl, max_chars: 1 },
   });
   assert(Array.isArray(single.content));
-  const partial = JSON.parse(single.content[0].text);
+  const partial = single.structuredContent as ReturnType<typeof JSON.parse>;
+  assert.match(
+    single.content[0].text.split(resultDivider)[0],
+    /Warning \(extraction_incomplete\).*\nOriginal HTML: /,
+  );
+  assert.equal(partial.truncated, true);
+  assert(partial.preview.length <= 1);
   assert.equal(readFileSync(partial.htmlPath, "utf8"), html);
   assert.match(readFileSync(partial.path, "utf8"), /\[Login\]/);
   assert.equal(partial.extractionWarning.code, "extraction_incomplete");
@@ -253,7 +370,9 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
     arguments: { urls: [partialUrl, cleanUrl, "https://github.com/"] },
   });
   assert(Array.isArray(batch.content));
-  const [incomplete, clean, failed] = JSON.parse(batch.content[0].text);
+  const [incomplete, clean, failed] = (
+    batch.structuredContent as { items: ReturnType<typeof JSON.parse> }
+  ).items;
   assert.match(incomplete.result.markdown, /\[Login\]/);
   assert.equal(readFileSync(incomplete.result.htmlPath, "utf8"), html);
   assert.match(clean.result.markdown, /steady increase in rainfall/);

@@ -98,7 +98,11 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
     return async (name: string, args: Record<string, unknown>) => {
       const response = await client.callTool({ name, arguments: args });
       assert(Array.isArray(response.content));
-      return response.content.map((item) => JSON.parse(item.text));
+      const data = response.structuredContent as Record<string, unknown>;
+      return [
+        data.items ?? data.results ?? data,
+        data.cached ? { cached: true } : undefined,
+      ] as ReturnType<typeof JSON.parse>;
     };
   }
 

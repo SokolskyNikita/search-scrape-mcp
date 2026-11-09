@@ -225,6 +225,7 @@ export function scrapflyBrowser(
             }
 
             return {
+              currentUrl: () => page.url(),
               async run(action, runSignal) {
                 runSignal?.throwIfAborted();
                 runSignal?.addEventListener("abort", abort, { once: true });
@@ -381,7 +382,7 @@ export function browserScraper(provider: BrowserProvider): ScrapeProvider {
           { action: "navigate", url: target.href },
           signal,
         );
-        if (typeof result === "string" || "type" in result)
+        if (typeof result === "string" || !("url" in result))
           throw new AppError(
             "internal",
             "Expected browser navigation details.",
@@ -391,7 +392,7 @@ export function browserScraper(provider: BrowserProvider): ScrapeProvider {
         const check = checkPage(markdown, target, final, status);
         if (check.code !== "ok" && !check.warning)
           throw new AppError(check.code, check.reason);
-        return { markdown, check };
+        return { markdown, check, finalUrl: final.href };
       } finally {
         await session.close();
       }

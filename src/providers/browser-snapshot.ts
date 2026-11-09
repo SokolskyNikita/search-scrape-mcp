@@ -196,23 +196,28 @@ export function browserSnapshots(page: Page) {
       }
     }
     visit(tree, clip);
-    if (full) return JSON.stringify(tree, null, 2);
+    if (full) return { text: JSON.stringify(tree, null, 2) };
     const rendered = await Promise.all(lines);
     if (version !== epoch)
       throw new AppError(
         "browser_navigation",
         "The page changed while taking the snapshot. Take a new snapshot.",
       );
-    if (viewportOnly) {
-      rendered.push(
-        "",
-        `${outside} interactive element${outside === 1 ? "" : "s"} outside the viewport. Scroll, use find, or set scope to page or full.`,
-      );
-    }
-    return (
-      rendered.join("\n").trimStart() ||
-      (query ? "No matching elements." : "No interactive elements or headings.")
-    );
+    const text = rendered.join("\n").trimStart();
+    const warning =
+      viewportOnly && outside
+        ? `${outside} interactive element${outside === 1 ? "" : "s"} outside the viewport. Scroll, use find, or set scope to page or full.`
+        : undefined;
+    return {
+      text,
+      warning:
+        warning ??
+        (text
+          ? undefined
+          : query
+            ? "No matching elements."
+            : "No interactive elements or headings."),
+    };
   }
 
   return { locator, read };

@@ -53,9 +53,10 @@ function domain(field: "site" | "exclude_domains") {
 }
 
 const locationHint = "Serper may ignore this. Put the place name in the query.";
+const queryHint = "Provide exactly one of q or query.";
 const fields = {
-  query: query.optional(),
-  q: query.optional().describe("Alias for query."),
+  query: query.optional().describe("Search text. An alternative to q."),
+  q: query.optional().describe("Search text. Use q or query."),
   recency: z.enum(["day", "week", "month", "year"]).optional(),
   location: z.string().trim().min(1).max(256).optional().describe(locationHint),
   gl: z
@@ -122,7 +123,7 @@ export function registerSearch(
   server.registerTool(
     "search",
     {
-      description: `Find web sources when you do not have a URL. The location field is a hint. ${locationHint}`,
+      description: `Find web sources when you do not have a URL. ${queryHint} ${locationHint}`,
       inputSchema: input,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -131,12 +132,18 @@ export function registerSearch(
         "search",
         (attempt, signal, deadline) => search(args, attempt, signal, deadline),
         settings,
+        {
+          presentation: {
+            operation: "Search results",
+            target: () => args.q ?? args.query,
+          },
+        },
       ),
   );
   server.registerTool(
     "search_batch",
     {
-      description: `Search up to five queries in order. The location field is a hint. ${locationHint}`,
+      description: `Search up to five queries in order. For each search: ${queryHint} ${locationHint}`,
       inputSchema: toolInput({
         searches: z.array(input).min(1).max(5),
       }),
@@ -151,8 +158,16 @@ export function registerSearch(
             (args, itemAttempt) => search(args, itemAttempt, signal, deadline),
             (args) => args.site,
             { tool: "search_batch", attempt, settings },
+            signal,
           ),
         settings,
+        {
+          partialOnTimeout: true,
+          presentation: {
+            operation: "Search results",
+            targets: searches.map(({ q, query }) => q ?? query),
+          },
+        },
       ),
   );
 }

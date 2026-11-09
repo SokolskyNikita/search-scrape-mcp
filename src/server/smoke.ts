@@ -54,16 +54,7 @@ async function smoke() {
     ) {
       const result = await invoke(name, args);
       if (result.isError) {
-        const first = Array.isArray(result.content)
-          ? result.content[0]
-          : undefined;
-        const text =
-          first?.type === "text" && typeof first.text === "string"
-            ? first.text
-            : "";
-        const reason = text.startsWith("{")
-          ? JSON.parse(text).code
-          : text.split(":", 1)[0];
+        const reason = (result.structuredContent as { code?: string })?.code;
         const code =
           typeof reason === "string" && /^[a-z_0-9]{1,30}$/.test(reason)
             ? reason
@@ -120,12 +111,17 @@ async function smoke() {
         },
         undefined,
       );
-      const first = Array.isArray(result.content)
-        ? result.content[0]
-        : undefined;
-      const items = first?.type === "text" ? JSON.parse(first.text) : [];
+      const items = (
+        result.structuredContent as {
+          items?: {
+            index: number;
+            error?: object;
+            result?: { tried?: string[] };
+          }[];
+        }
+      )?.items;
       if (
-        items.length !== 3 ||
+        items?.length !== 3 ||
         items.some(
           (item: { index: number; error?: object }, index: number) =>
             item.index !== index || item.error,
@@ -152,10 +148,8 @@ async function smoke() {
         /\\"code\\"\s*:\s*\\"ok\\"/i,
         "scrape protected page",
       );
-      const first = Array.isArray(result.content)
-        ? result.content[0]
-        : undefined;
-      const page = first?.type === "text" ? JSON.parse(first.text) : undefined;
+      const page = result.structuredContent as
+        { check?: { code: string }; tried?: string[] } | undefined;
       if (
         page?.check?.code !== "ok" ||
         page?.tried?.[0] !== "datacenter" ||
@@ -172,11 +166,7 @@ async function smoke() {
         undefined,
         "remembered Unblocker",
       );
-      const content = Array.isArray(second.content)
-        ? second.content[0]
-        : undefined;
-      const remembered =
-        content?.type === "text" ? JSON.parse(content.text) : undefined;
+      const remembered = second.structuredContent as typeof page;
       if (
         remembered?.check?.code !== "ok" ||
         remembered?.tried?.[0] !== "unblocker"
@@ -244,7 +234,7 @@ async function smoke() {
       await call(
         "browser",
         { command: { action: "press", ref, key: "Tab" } },
-        /outside the viewport/,
+        /Browser press.*Example Domain|Browser press.*e\d+ link/i,
         "browser ref press",
       );
       await call(

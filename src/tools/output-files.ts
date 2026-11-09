@@ -84,7 +84,12 @@ export class OutputFiles {
     return path;
   }
 
-  savePartial(markdown: string, html: string, inlineLimit: number) {
+  savePartial(
+    markdown: string,
+    html: string,
+    inlineLimit: number,
+    previewLimit?: number,
+  ) {
     const bytes =
       Buffer.byteLength(html) +
       (markdown.length > inlineLimit ? Buffer.byteLength(markdown) : 0);
@@ -92,7 +97,7 @@ export class OutputFiles {
       throw new AppError("output_size", "Output exceeds the file storage cap.");
     this.cleanup(bytes);
     return {
-      ...(this.spill(markdown, inlineLimit) ?? { markdown }),
+      ...(this.spill(markdown, inlineLimit, previewLimit) ?? { markdown }),
       htmlPath: this.save(html, "html"),
     };
   }
@@ -115,20 +120,25 @@ export class OutputFiles {
     };
   }
 
-  spill(markdown: string, inlineLimit: number) {
+  spill(markdown: string, inlineLimit: number, previewLimit?: number) {
     if (markdown.length <= inlineLimit) return undefined;
     const file = this.save(markdown, "md");
 
     let characters = 0;
     let lines = 1;
     let preview = "";
+    const maxPreview = this.settings.outputPreviewChars;
     for (const character of markdown) {
       characters++;
       if (character === "\n") lines++;
-      if (characters <= this.settings.outputPreviewChars) preview += character;
+      if (previewLimit === undefined && characters <= maxPreview)
+        preview += character;
     }
     return {
-      preview: preview.trimEnd(),
+      preview: (previewLimit === undefined
+        ? preview
+        : markdown.slice(0, previewLimit).replace(/[\uD800-\uDBFF]$/u, "")
+      ).trimEnd(),
       path: file,
       characters,
       approxTokens: Math.ceil(characters / 4),

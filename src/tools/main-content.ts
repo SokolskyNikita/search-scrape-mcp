@@ -30,6 +30,39 @@ function withTitle(markdown: string, title: string, h1: string) {
 export type ExtractionCause =
   "links_lost" | "unusable_output" | "extractor_exception";
 
+function redditFeed(document: Document, final: URL) {
+  if (
+    !/(^|\.)reddit\.com$/.test(final.hostname) ||
+    final.pathname.includes("/comments/") ||
+    !document.querySelector("shreddit-feed shreddit-post")
+  )
+    return undefined;
+
+  // Defuddle's Reddit extractor treats the first post in a feed as a thread.
+  const copy = document.cloneNode(true) as Document;
+  const feed = copy.createDocumentFragment();
+  for (const post of copy.querySelectorAll("shreddit-feed shreddit-post")) {
+    if (post.closest("shreddit-ad-post")) continue;
+    const title = oneLine(post.getAttribute("post-title") ?? "");
+    const permalink = post.getAttribute("permalink");
+    const href = permalink && urlKey(permalink, final);
+    if (!title || !href) continue;
+    const article = copy.createElement("article");
+    const heading = copy.createElement("h2");
+    const link = copy.createElement("a");
+    link.setAttribute("href", href);
+    link.textContent = title;
+    heading.append(link);
+    article.append(heading);
+    const body = post.querySelector('[slot="text-body"]');
+    if (body) article.append(...Array.from(body.childNodes));
+    feed.append(article);
+  }
+  if (!feed.firstChild) return undefined;
+  copy.body.replaceChildren(feed);
+  return copy;
+}
+
 export async function mainContent(
   html: string,
   target: URL,
@@ -104,8 +137,11 @@ export async function mainContent(
   // Defuddle's partial selector filtering can remove all of those bylines.
   const hasMultipleBylines =
     (body?.querySelectorAll('[itemprop~="author"]').length ?? 0) > 1;
-  const extract = (standardize: boolean, broad = false) => {
-    const copy = document.cloneNode(true) as Document;
+  const extract = (
+    standardize: boolean,
+    broad = false,
+    copy = document.cloneNode(true) as Document,
+  ) => {
     for (const picture of copy.querySelectorAll("picture")) picture.remove();
     if (broad) {
       for (const node of copy.querySelectorAll("script, style, template"))
@@ -129,6 +165,23 @@ export async function mainContent(
       },
     });
   };
+  const feed = redditFeed(document, final);
+  if (feed) {
+    try {
+      const extracted = await extract(false, true, feed);
+      const markdown = cleanPage(extracted.content);
+      if (markdown)
+        return {
+          markdown: withTitle(markdown, h1 || title, h1),
+          check: original.warning
+            ? original
+            : { code: "ok", reason: "Readable page content." },
+        };
+    } catch {
+      // Use the normal extraction path if the feed cannot be converted.
+    }
+  }
+
   let markdown = "";
   let extractedTitle = "";
   let missingLinks = false;

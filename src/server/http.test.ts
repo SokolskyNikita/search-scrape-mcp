@@ -1,3 +1,4 @@
+import { resultDivider } from "../tools/result-format.js";
 import { registerBrowser } from "../tools/browser.js";
 import type { SearchInput } from "../providers/types.js";
 import assert from "node:assert/strict";
@@ -90,26 +91,24 @@ test("authenticated MCP search uses a recorded Serper response", async (t) => {
       (await client.listTools()).tools.map(({ name }) => name),
       ["search", "search_batch"],
     );
-    assert.deepEqual(
-      await client.callTool({
-        name: "search",
-        arguments: { q: "example" },
-      }),
+    const response = await client.callTool({
+      name: "search",
+      arguments: { q: "example" },
+    });
+    const results = [
       {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify([
-              {
-                title: "Example Domain",
-                url: "https://example.com/",
-                snippet: "Example.",
-              },
-            ]),
-          },
-        ],
+        title: "Example Domain",
+        url: "https://example.com/",
+        snippet: "Example.",
       },
-    );
+    ];
+    assert.deepEqual(response.structuredContent, { results });
+    assert.deepEqual(response.content, [
+      {
+        type: "text",
+        text: `search-scrape-mcp · Search results · example\n\n${resultDivider}\n\n${JSON.stringify(results)}\n\n${resultDivider}`,
+      },
+    ]);
     assert(
       provider.mock.calls.some(
         ({ arguments: [url] }) =>
@@ -254,7 +253,10 @@ test(
         for (const result of await Promise.all(overflow.map(scrape))) {
           assert.equal(result.isError, true);
           assert(Array.isArray(result.content));
-          assert.equal(JSON.parse(result.content[0].text).code, code);
+          assert.equal(
+            (result.structuredContent as { code?: string })?.code,
+            code,
+          );
           assert.match(
             result.content[0].text,
             /Retry after an in-flight call finishes/,
@@ -326,14 +328,19 @@ test("an empty search is retried and a later hit can be cached", async (t) => {
   );
   const search = () =>
     client.callTool({ name: "search", arguments: { q: "site:iana.org" } });
-  assert.deepEqual((await search()).content, [{ type: "text", text: "[]" }]);
-  assert.deepEqual((await search()).content, [
-    { type: "text", text: JSON.stringify([hit]) },
-  ]);
-  assert.deepEqual((await search()).content, [
-    { type: "text", text: JSON.stringify([hit]) },
-    { type: "text", text: '{"cached":true}' },
-  ]);
+  const empty = await search();
+  assert.deepEqual(empty.structuredContent, { results: [] });
+  assert(Array.isArray(empty.content));
+  assert.equal(
+    empty.content[0].text,
+    `search-scrape-mcp · Search results · site:iana.org\nNo results found.\n\n${resultDivider}`,
+  );
+  assert.deepEqual((await search()).structuredContent, { results: [hit] });
+  const cached = await search();
+  assert.deepEqual(cached.structuredContent, { results: [hit], cached: true });
+  assert(Array.isArray(cached.content));
+  assert.match(cached.content[0].text, /Cached result/);
+  assert.ok(cached.content[0].text.endsWith(resultDivider));
   assert.equal(attempts, 2);
 });
 
@@ -374,7 +381,30 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     ),
   );
   const tools = (await client.listTools()).tools;
+  const browser = tools.find(({ name }) => name === "browser");
+  const commandSchema = JSON.stringify(
+    browser?.inputSchema.properties?.command,
+  );
+  assert.match(commandSchema, /"navigate"/);
+  assert.match(commandSchema, /"url"/);
+  assert.match(commandSchema, /"click"/);
+  assert.match(commandSchema, /"ref"/);
+  for (const [name, limit] of [
+    ["scrape", 16_000],
+    ["scrape_batch", 20_000],
+  ] as const) {
+    const tool = tools.find((tool) => tool.name === name);
+    assert.match(tool?.description ?? "", new RegExp(String(limit)));
+    assert(tool?.inputSchema.properties?.max_chars);
+    assert.match(
+      JSON.stringify(tool.inputSchema.properties.allow_higher_cost),
+      /retry at higher cost/,
+    );
+  }
   const search = tools.find(({ name }) => name === "search");
+  assert.match(search?.description ?? "", /exactly one of q or query/);
+  assert(search?.inputSchema.properties?.q);
+  assert(search.inputSchema.properties.query);
   assert.match(search?.description ?? "", /put the place name in the query/i);
   assert.match(
     JSON.stringify(search?.inputSchema.properties?.location),
@@ -406,7 +436,7 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     arguments: {
       searches: [
         { q: "default limit" },
-        { q: "max limit", limit: 10 },
+        { query: "max limit", limit: 10 },
         { q: "third", limit: 1 },
         { q: "fourth" },
         { q: "fifth" },
@@ -423,6 +453,8 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
   ]);
 
   const failures = [
+    ["search", {}, /Provide exactly one/],
+    ["search", { q: "test", query: "also test" }, /Provide exactly one/],
     [
       "search_batch",
       { searches: Array.from({ length: 6 }, () => ({ q: "test" })) },

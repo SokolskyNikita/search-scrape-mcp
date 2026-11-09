@@ -369,9 +369,13 @@ test(
       );
       await page.goto("http://1.1.1.1/fixture");
       const snapshots = browserSnapshots(page);
-      const viewport = await snapshots.read();
+      const viewportResult = await snapshots.read();
+      const viewport = viewportResult.text;
       assert.match(viewport, /heading "Fixture heading"/);
-      assert.match(viewport, /3 interactive elements outside the viewport/);
+      assert.match(
+        viewportResult.warning ?? "",
+        /3 interactive elements outside the viewport/,
+      );
       assert.doesNotMatch(viewport, /Lower|Skip to content/);
       const mainButton = /^(e\d+) button "Main button"/m.exec(viewport)?.[1];
       const mainField = /^(e\d+) textbox "Main field"/m.exec(viewport)?.[1];
@@ -392,7 +396,7 @@ test(
         await snapshots.locator(frameField).inputValue(),
         "frame input",
       );
-      const allControls = await snapshots.read({ scope: "page" });
+      const allControls = (await snapshots.read({ scope: "page" })).text;
       assert.match(allControls, /textbox "Main field" value="main input"/);
       assert.match(allControls, /textbox "Frame field" value="frame input"/);
       assert.match(
@@ -404,35 +408,38 @@ test(
       assert.match(allControls, /button "Clicked"/);
       assert.match(allControls, /button "Frame clicked"/);
       assert.match(allControls, /^f\d+e\d+ button "Frame button"/m);
-      const full = JSON.parse(await snapshots.read({ scope: "full" }));
+      const full = JSON.parse((await snapshots.read({ scope: "full" })).text);
       assert(Array.isArray(full));
-      const form = await snapshots.read({ query: "MAIN FORM" });
+      const form = (await snapshots.read({ query: "MAIN FORM" })).text;
       const formRef = /^(e\d+) form "Main form"/m.exec(form)?.[1];
       assert(formRef, form);
-      const subtree = await snapshots.read({ target: formRef });
+      const subtree = (await snapshots.read({ target: formRef })).text;
       assert.match(subtree, /Main field/);
       assert.doesNotMatch(subtree, /Frame|Lower/);
-      assert.match(await snapshots.read({ target: frameField }), /Frame field/);
       assert.match(
-        await snapshots.read({ query: "CLICKED" }),
+        (await snapshots.read({ target: frameField })).text,
+        /Frame field/,
+      );
+      assert.match(
+        (await snapshots.read({ query: "CLICKED" })).text,
         /button "Clicked" \(in form "Main form"\)/,
       );
       assert.match(
-        await snapshots.read({ query: "lower button" }),
+        (await snapshots.read({ query: "lower button" })).text,
         /button "Lower button"/,
       );
       assert.equal(
-        await snapshots.read({ query: "absent" }),
+        (await snapshots.read({ query: "absent" })).warning,
         "No matching elements.",
       );
       await page.getByRole("link", { name: "Follow link" }).click();
       assert.throws(() => snapshots.locator(mainField), /stale element ref/);
-      assert.match(await snapshots.read(), /Second page/);
+      assert.match((await snapshots.read()).text, /Second page/);
       await goBack(page);
       assert.equal(blocked(), undefined);
       assert.equal(doc.status, 200);
       await captcha.wait(() => doc.mitigated);
-      const restored = await snapshots.read();
+      const restored = (await snapshots.read()).text;
       assert.match(restored, /Fixture heading/);
       const ref = /^((?:f\d+)?e\d+) searchbox "Search Wikipedia"/m.exec(
         restored,
@@ -441,7 +448,7 @@ test(
       const inputs = browserInputs(page);
       await inputs.fill(snapshots.locator(ref), "Model Context Protocol", ref);
       assert.match(
-        await snapshots.read(),
+        (await snapshots.read()).text,
         /combobox "Search Wikipedia" value="Model Context Protocol"/,
       );
       await inputs.press(snapshots.locator(ref), "Enter", ref);

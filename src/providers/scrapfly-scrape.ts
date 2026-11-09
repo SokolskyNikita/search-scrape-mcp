@@ -574,6 +574,7 @@ async function requestPage(
       return {
         markdown: "",
         binary: await identifyDownload(bytes, type),
+        finalUrl: final.href,
         costWarning: costWarning(),
         check: { code: "ok", reason: "Binary download ready." },
       };
@@ -651,6 +652,7 @@ async function requestPage(
       markdown,
       check,
       extraction,
+      finalUrl: final.href,
       costWarning: costWarning(),
       transientTarget,
     };
@@ -838,12 +840,9 @@ export function scrapflyScrape(
         const checked = await attempt("datacenter", "head");
         if ("error" in checked) {
           if (
-            [
-              "provider_timeout",
-              "provider_down",
-              "provider_http",
-              "provider_cost_budget",
-            ].includes(checked.error.code)
+            ["provider_timeout", "provider_down", "provider_http"].includes(
+              checked.error.code,
+            )
           )
             throw refuseFile(
               { type: "unknown" },
@@ -879,7 +878,7 @@ export function scrapflyScrape(
       let advancedRung: ScrapeRung | undefined;
       let lastBudgetError: AppError | undefined;
       let lastThin: string | undefined;
-      let warning: { markdown: string; check: PageCheck } | undefined;
+      let warning: ScrapeResult | undefined;
       let protectedSite = false;
       for (
         let index = file ? 0 : Math.max(previous, start);
@@ -898,7 +897,7 @@ export function scrapflyScrape(
           const hint = `Retry with start_rung: "${rung}".`;
           if (warning) return { ...warning, hint };
           throw new AppError(
-            "stronger_rung_required",
+            lastBudgetError?.code ?? "stronger_rung_required",
             lastBudgetError?.message ??
               (defer
                 ? "Scrapfly needs another call for the next advanced rung."
@@ -940,7 +939,6 @@ export function scrapflyScrape(
           const error =
             file &&
             [
-              "provider_cost_budget",
               "provider_http",
               "provider_response",
               "provider_down",
@@ -956,8 +954,14 @@ export function scrapflyScrape(
             ...error.details,
           });
         }
-        const { markdown, check, binary, costWarning, transientTarget } =
-          result;
+        const {
+          markdown,
+          check,
+          binary,
+          costWarning,
+          transientTarget,
+          finalUrl,
+        } = result;
         if (binary || result.extraction) return result;
         if (file)
           throw refuseFile(
@@ -966,7 +970,7 @@ export function scrapflyScrape(
           );
         if (costWarning) {
           if (check.code === "ok" || check.warning)
-            return { markdown, check, costWarning };
+            return { markdown, check, costWarning, finalUrl };
           throw new AppError(
             "provider_cost_overrun",
             `${costWarning} ${check.reason}`,
@@ -999,7 +1003,12 @@ export function scrapflyScrape(
                 ? previous
                 : index,
             );
-          return { markdown, check, hint: check.next ? hint : undefined };
+          return {
+            markdown,
+            check,
+            finalUrl,
+            hint: check.next ? hint : undefined,
+          };
         }
         if (index === previous) hosts.delete(host);
         if (index === 0 && blocked.has(check.code)) protectedSite = true;
@@ -1010,7 +1019,7 @@ export function scrapflyScrape(
             hint: check.next ? hint : undefined,
           });
         }
-        if (check.warning && markdown) warning = { markdown, check };
+        if (check.warning && markdown) warning = { markdown, check, finalUrl };
         lastThin = check.code;
         index = next;
       }

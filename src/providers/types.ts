@@ -39,6 +39,7 @@ export const scrapeContentModes = ["main", "full"] as const;
 export type ScrapeContentMode = (typeof scrapeContentModes)[number];
 export type ScrapeResult = {
   markdown: string;
+  finalUrl?: string;
   check: PageCheck;
   hint?: string;
   binary?: { bytes: Buffer; mimeType: string; extension?: string };
@@ -69,6 +70,7 @@ export type BrowserNavigation = {
   title: string;
   text: string;
 };
+export type BrowserSnapshot = { text: string; warning?: string };
 export type BrowserTarget = { selector?: string; ref?: string };
 export type BrowserImage = {
   type: "image";
@@ -94,10 +96,11 @@ export type BrowserAction =
   | { action: "close" };
 
 export interface BrowserSession {
+  currentUrl?(): string;
   run(
     action: Exclude<BrowserAction, { action: "close" }>,
     signal?: AbortSignal,
-  ): Promise<string | BrowserImage | BrowserNavigation>;
+  ): Promise<string | BrowserImage | BrowserNavigation | BrowserSnapshot>;
   close(): Promise<void>;
 }
 

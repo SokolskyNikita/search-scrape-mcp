@@ -278,7 +278,7 @@ test("a per-request budget rejection escalates but insufficient account credit s
   await assert.rejects(
     scrapflyScrape("fixture").scrape(target, undefined, budget),
     {
-      code: "stronger_rung_required",
+      code: "provider_cost_budget",
       details: {
         tried: ["datacenter", "unblocker"],
         hint: 'Retry with start_rung: "render".',

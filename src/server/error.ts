@@ -6,6 +6,7 @@ export class AppError extends Error {
       tried?: string[];
       hint?: string;
       retryAt?: string;
+      retry?: { name: string; arguments: Record<string, unknown> };
       expectedCredits?: number;
       credits?: number;
     },

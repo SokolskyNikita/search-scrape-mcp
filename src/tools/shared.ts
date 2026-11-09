@@ -1,6 +1,11 @@
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { defaults } from "../config/tuning.js";
 import { toolTimeoutMs } from "../config/deadline.js";
-import type { BrowserImage } from "../providers/types.js";
+import {
+  presentedError,
+  presentedResult,
+  type ResultPresentation,
+} from "./result-format.js";
 import {
   statsContext,
   writeToolStats,
@@ -63,6 +68,10 @@ export async function fallback<T extends { name?: string }, R>(
     }
   }
   if (errors.length === 1) throw errors[0];
+  const costError = errors.findLast(
+    (error) => error.code === "provider_cost_budget",
+  );
+  if (costError) throw costError;
   if (errors.length === 0)
     throw new AppError("not_configured", "Provider is not configured.");
   throw new AppError(
@@ -81,8 +90,11 @@ export async function toolResult(
     deadline: number,
   ) => Promise<unknown>,
   settings = defaults,
-  { partialOnTimeout = false } = {},
-) {
+  {
+    partialOnTimeout = false,
+    presentation,
+  }: { partialOnTimeout?: boolean; presentation?: ResultPresentation } = {},
+): Promise<CallToolResult> {
   const start = performance.now();
   const request: RequestStats = { httpAttempts: 0 };
   let attempts = 0;
@@ -114,15 +126,9 @@ export async function toolResult(
       ),
       deadline,
     ]);
-    if (
-      result &&
-      typeof result === "object" &&
-      "type" in result &&
-      result.type === "image"
-    )
-      return { content: [result as BrowserImage] };
     const cached = isCachedSearch(result);
     const value = cached ? result.value : result;
+    if (presentation) return presentedResult(presentation, value, cached);
     return {
       content: [
         {
@@ -136,6 +142,7 @@ export async function toolResult(
     const failure = safeError(error);
     errorCode = failure.code;
     if (failure.code === "internal") console.error("Unexpected tool error.");
+    if (presentation) return presentedError(presentation, failure);
     return {
       isError: true,
       content: [

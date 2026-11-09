@@ -104,13 +104,19 @@ Batches preserve input order and report errors per item. They run up to two
 items concurrently and serialize items for the same hostname. The tool deadline
 can interrupt a batch before all items finish.
 
+Results open with the MCP name, operation, and URL or search query when
+available. Warnings, retry instructions, and saved-file paths appear before
+the content. A row of `#` characters separates the header from the content
+and closes the output. Each batch item gets its own header and divider.
+Programmatic clients can read `structuredContent` for results and status fields.
+
 Pass `fresh: true` to either scrape tool, a single search, or a search batch item
 to bypass the cache. Scrapes and search batch items report `cached: true` on a
-hit. A single search reports it in a separate text block.
+hit in structured output. A cached result is also labeled in the text.
 
 ### Search
 
-Use `query` or `q` for the search text. Filter by `site`, `exclude_domains`,
+Provide exactly one of `q` or `query` for the search text in each search. Filter by `site`, `exclude_domains`,
 country (`gl`), language (`hl`), or time (`recency` or `tbs`). Use `page` for
 pagination and `autocorrect` to control spelling correction. Serper may ignore
 `location`, so include the place name in the query when it matters.
@@ -147,8 +153,16 @@ or follow the returned hint when a stronger rung needs a fresh call.
 File URLs and known file hosts get a datacenter HEAD check. Downloads require
 a reported length of at most 5 MB. Binary results include a private file path,
 MIME type, and byte count. Long scrape and browser text results spill to the
-private `outputDirectory` with a preview and local path. The settings below
-list the inline thresholds and retention limits.
+private `outputDirectory` with a preview and local path. The default inline
+thresholds are 16,000 characters for `scrape` and 20,000 characters per page
+for `scrape_batch`. Set `max_chars` on either tool to cap inline Markdown
+per page. When shortened by the effective limit, the result includes a preview,
+`truncated: true`, and the path to the full Markdown. The settings below
+list the retention limits.
+
+On rare occasions a page is unusually costly to scrape. If the error includes
+a `retry` call, run it to allow a higher-cost fetch. For a batch, the retry
+call fetches only the affected URL.
 
 ### Browser
 
