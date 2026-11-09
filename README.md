@@ -1,8 +1,12 @@
 # Search Scrape MCP
 
 I built this because I wanted a web research MCP for coding agents that could
-recover from a bad scrape on its own and show me what each attempt cost. It
-runs locally on macOS and uses Serper for search and Scrapfly for web access.
+recover from a bad scrape on its own and show me what each attempt cost.
+
+The MCP server runs on your Mac. It gets Google results through Serper,
+fetches pages and runs interactive browser sessions through Scrapfly, and
+uses yt-dlp to fetch metadata and captions directly from YouTube. Defuddle
+extracts the main text from fetched HTML locally.
 
 [Bright Data MCP](https://github.com/brightdata/brightdata-mcp) covers more
 sites with dedicated scrapers. This project focuses on the search-and-read loop.
