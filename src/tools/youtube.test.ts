@@ -53,8 +53,11 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
       return {
         url: `https://www.youtube.com/watch?v=${id}`,
         title: "Fixture",
+        duration: 3800,
+        channel_id: "UCfixture",
+        uploader_id: "@fixture",
         description:
-          "A description.\n00:00 Intro\n00:15 - Basement\n1:02:03 Finale",
+          "A description.\n00:00 Intro\n00:15 - Basement\n00:30 123 !\n1:02:03 Finale",
         ...(transcript ? { transcript: { status: "no_captions" } } : {}),
       };
     },
@@ -69,6 +72,12 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
           return {
             url: `https://www.youtube.com/watch?v=${id}`,
             title: "Fixture",
+            description: "00:00 Intro\n00:15 Basement",
+            chapters: [
+              { start_seconds: 0, title: "" },
+              { start_seconds: 15, title: "2 - !" },
+              { start_seconds: 30, title: "3 - Finale" },
+            ],
             transcript: {
               status: "ok",
               language: "ja",
@@ -136,6 +145,9 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
     return response.structuredContent as {
       cached: boolean;
       cached_at?: string;
+      duration?: number;
+      channel_id?: string;
+      uploader_id?: string;
       chapters?: { start_seconds: number; title: string }[];
       transcript?: {
         language: string;
@@ -154,12 +166,16 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
   const metadataHit = await call(second, { url: watch });
   assert.equal(metadataHit.cached, true);
   assert(metadataHit.cached_at);
+  assert.equal(metadataHit.duration, 3800);
+  assert.equal(metadataHit.channel_id, "UCfixture");
+  assert.equal(metadataHit.uploader_id, "@fixture");
   assert.deepEqual(metadataHit.chapters, [
     { start_seconds: 0, title: "Intro" },
     { start_seconds: 15, title: "Basement" },
     { start_seconds: 3723, title: "Finale" },
   ]);
   const full = await call(second, { url: watch, transcript: true });
+  assert.deepEqual(full.chapters, [{ start_seconds: 30, title: "3 - Finale" }]);
   assert.equal(full.transcript?.language, "ja");
   assert.equal(full.transcript?.kind, "automatic");
   assert.equal(

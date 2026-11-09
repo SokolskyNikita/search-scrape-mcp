@@ -123,8 +123,10 @@ insertion timestamp `cached_at`. A cached result is also labeled in the text.
 ### YouTube
 
 The `youtube` tool accepts watch, Shorts, live, embed, and youtu.be video links. It returns
-metadata by default, including a `chapters` array with `start_seconds` and
-`title` when the description contains an ordered timestamp list. Set
+metadata by default, including `duration` in seconds, `channel_id`, and
+`uploader_id` when available. Chapters have `start_seconds` and `title`.
+The tool prefers yt-dlp's chapters and falls back to an ordered timestamp
+list in the description. Each returned chapter title contains an ASCII letter. Set
 `transcript: true` to request one caption track.
 It prefers original-language captions, then English, and reports when no
 captions are available or YouTube rate-limits the request. The transcript's

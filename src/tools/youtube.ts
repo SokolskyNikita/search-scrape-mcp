@@ -62,7 +62,11 @@ function descriptionChapters(description: string | undefined) {
     if (start <= (chapters.at(-1)?.start_seconds ?? -1)) continue;
     chapters.push({ start_seconds: start, title: title! });
   }
-  return chapters.length >= 2 ? chapters : undefined;
+  return chapters.length >= 2 ? chapters : [];
+}
+
+function hasChapterName(chapter: { title: string }) {
+  return /[a-zA-Z]/.test(chapter.title);
 }
 
 function transcriptText(segments: { start_seconds: number; text: string }[]) {
@@ -109,9 +113,16 @@ export function youtubeTool(
     const cacheInfo = cachedAt
       ? { cached: true, cached_at: cachedAt }
       : { cached: false };
-    const { transcript, ...metadata } = video;
-    const chapters = descriptionChapters(metadata.description);
-    const result = { ...metadata, ...cacheInfo, ...(chapters && { chapters }) };
+    const { transcript, chapters: extractedChapters, ...metadata } = video;
+    const chapters = extractedChapters?.filter(hasChapterName) ?? [];
+    const namedChapters = chapters.length
+      ? chapters
+      : descriptionChapters(metadata.description).filter(hasChapterName);
+    const result = {
+      ...metadata,
+      ...cacheInfo,
+      ...(namedChapters.length > 0 && { chapters: namedChapters }),
+    };
     if (transcript?.status === "ok") {
       const ranged = start !== undefined || end !== undefined;
       const segments = ranged
@@ -170,7 +181,7 @@ export function youtubeTool(
       "youtube",
       {
         description:
-          "Read a YouTube video's metadata and any chapters found in its description. Set transcript to true to retrieve caption text with timestamps every 15 seconds. Use start_seconds and end_seconds to request an excerpt.",
+          "Read a YouTube video's metadata and named chapters. Set transcript to true to retrieve caption text with timestamps every 15 seconds. Use start_seconds and end_seconds to request an excerpt.",
         inputSchema: input,
         annotations: { readOnlyHint: true, openWorldHint: true },
       },

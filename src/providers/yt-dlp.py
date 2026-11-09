@@ -118,9 +118,19 @@ def fetch(video_id, include_transcript, request_gap):
             return {"error": "rate_limited" if client.rate_limited else "unavailable",
                     "retry_after_ms": client.retry_after_ms}
         result = {"url": url}
-        for field in ("title", "channel", "description"):
+        for field in ("title", "channel", "description", "channel_id", "uploader_id"):
             if isinstance(info.get(field), str):
                 result[field] = info[field]
+        duration = info.get("duration")
+        if isinstance(duration, (int, float)):
+            result["duration"] = duration
+        if info.get("chapters"):
+            result["chapters"] = [
+                {"start_seconds": chapter["start_time"], "title": chapter["title"]}
+                for chapter in info["chapters"]
+                if isinstance(chapter.get("start_time"), (int, float))
+                and isinstance(chapter.get("title"), str)
+            ]
         date = info.get("upload_date")
         if date:
             result["upload_date"] = f"{date[:4]}-{date[4:6]}-{date[6:]}"

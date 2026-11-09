@@ -131,6 +131,10 @@ export interface YouTubeResult {
   url: string;
   title?: string;
   channel?: string;
+  channel_id?: string;
+  uploader_id?: string;
+  duration?: number;
+  chapters?: { start_seconds: number; title: string }[];
   upload_date?: string;
   description?: string;
   transcript?: YouTubeTranscript;
