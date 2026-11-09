@@ -1,3 +1,5 @@
+import { hostRule } from "../config/host-rules.js";
+import { mcpName, messages, noticeLabel } from "../config/messages.js";
 import { resultDivider } from "./result-format.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -22,6 +24,12 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   const rateLimited = "https://9.9.9.9/busy";
   const costly = "https://9.9.9.9/costly";
   const budgetRejected = "https://9.9.9.9/rejected";
+  const needsRender = "https://9.9.9.9/needs-render";
+  const renderRequired = new AppError(
+    "stronger_rung_required",
+    "Provider-specific diagnostic",
+    { retryRung: "render" },
+  );
   const content = "Public page content ".repeat(4_000).trim();
   const dir = mkdtempSync(join(tmpdir(), "scrape-tool-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -38,6 +46,8 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
               "Scrapfly is busy. Retry after 6 s.",
             );
           }
+          if (url === needsRender && options?.start !== "render")
+            throw renderRequired;
           if (url === budgetRejected)
             throw new AppError(
               "provider_cost_budget",
@@ -58,7 +68,9 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
         },
       },
       {
-        scrape: async (url) => {
+        scrape: async (url, _signal, options) => {
+          if (url === needsRender && options?.start !== "render")
+            throw renderRequired;
           if (url === budgetRejected)
             throw new AppError("blocked", "Page was blocked.");
           return {
@@ -96,11 +108,11 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert.equal(saved.markdown, undefined);
   assert.ok(
     single.content[0].text.startsWith(
-      `search-scrape-mcp · Scrape result · ${first}\nPreview only. Full text: ${saved.path}\n\n${resultDivider}\n\n`,
+      `${mcpName} · ${messages.operation.scrape} · ${first}\n${noticeLabel.note} ${messages.note.preview}\n${messages.label.fullText} ${saved.path}\n\n${resultDivider}\n\n`,
     ),
   );
   assert.ok(single.content[0].text.endsWith(resultDivider));
-  assert.match(saved.hint as string, /untrusted web content/);
+  assert.equal(saved.hint, messages.file.hint);
   assert.deepEqual(seen, [first]);
 
   const github = await client.callTool({
@@ -108,7 +120,8 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
     arguments: { url: "https://github.com/owner/repo", content_mode: "full" },
   });
   assert.equal(github.isError, true);
-  assert.match(JSON.stringify(github.content), /Use the GitHub CLI/);
+  assert(Array.isArray(github.content));
+  assert(github.content[0].text.includes(hostRule("github.com")!.accessError));
   assert.deepEqual(seen, [first]);
 
   const mixed = await client.callTool({
@@ -118,9 +131,10 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   const blocks = mixed.content;
   assert(Array.isArray(blocks));
   assert.equal(blocks.length, 3);
-  assert.match(
-    blocks[1].text,
-    /^search-scrape-mcp · Scrape result · https:\/\/www\.github\.com/,
+  assert(
+    blocks[1].text.startsWith(
+      `${mcpName} · ${messages.operation.scrape} · https://www.github.com`,
+    ),
   );
   assert.ok(blocks.every((block) => block.text.endsWith(resultDivider)));
   const result = (mixed.structuredContent as Record<string, unknown>)
@@ -133,7 +147,7 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert.equal(readFileSync(result[2].result.path, "utf8"), content);
   assert.notEqual(result[0].result.path, result[2].result.path);
   assert.match(result[1].error.code, /url|target/);
-  assert.match(result[1].error.message, /Use the GitHub CLI/);
+  assert.equal(result[1].error.message, hostRule("github.com")!.accessError);
   assert.deepEqual(seen, [first, second, first]);
 
   const busyBatch = await client.callTool({
@@ -146,8 +160,8 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
     .items as ReturnType<typeof JSON.parse>;
   assert.deepEqual(busyItems[0].error, {
     code: "provider_rate",
-    message: "Scrapfly is busy. Retry after 6 s.",
-    reason: "Scrapfly is busy. Retry after 6 s.",
+    message: messages.service.busy,
+    reason: messages.service.busy,
     tried: [],
   });
   assert.equal(busyItems[1].result.check.code, "ok");
@@ -164,15 +178,13 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   });
   assert.equal(rejected.isError, true);
   assert(Array.isArray(rejected.content));
-  assert.ok(rejected.content[0].text.includes(`\nRetry: `));
+  assert.ok(rejected.content[0].text.includes(`\n${messages.label.retry} `));
   assert.ok(rejected.content[0].text.endsWith(resultDivider));
   const failure = rejected.structuredContent as Record<string, unknown>;
   assert.deepEqual(failure, {
     code: "scrape_cost",
-    reason:
-      "This page is unusually costly to scrape. Retry using the supplied scrape call.",
-    message:
-      "This page is unusually costly to scrape. Retry using the supplied scrape call.",
+    reason: messages.page.costRetry,
+    message: messages.page.costRetry,
     retry: {
       name: "scrape",
       arguments: { url: costly, ...options, allow_higher_cost: true },
@@ -212,11 +224,43 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   const exhausted = await client.callTool(failed.error.retry);
   assert(Array.isArray(exhausted.content));
   assert.equal(exhausted.isError, true);
-  assert.match(
-    exhausted.content[0].text,
-    /Error \(scrape_cost\): This page is unusually costly to scrape/,
+  assert(
+    exhausted.content[0].text.includes(
+      `${noticeLabel.error} ${messages.page.costStopped}`,
+    ),
   );
   assert.ok(exhausted.content[0].text.endsWith(resultDivider));
+
+  const stronger = await client.callTool({
+    name: "scrape",
+    arguments: { url: needsRender, ...options },
+  });
+  assert.equal(stronger.isError, true);
+  assert(Array.isArray(stronger.content));
+  const details = stronger.structuredContent as Record<string, unknown>;
+  const retry = {
+    name: "scrape",
+    arguments: { url: needsRender, ...options, start_rung: "render" },
+  };
+  assert.deepEqual(details.retry, retry);
+  const [retryHeader] = (stronger.content[0].text as string).split(
+    resultDivider,
+  );
+  assert(
+    retryHeader?.includes(
+      `${noticeLabel.error} ${messages.page.differentMode}`,
+    ),
+  );
+  const retryLine = retryHeader
+    ?.split("\n")
+    .find((line) => line.startsWith(`${messages.label.retry} `));
+  assert(retryLine);
+  assert.deepEqual(
+    JSON.parse(retryLine.slice(messages.label.retry.length)),
+    retry,
+  );
+  assert(!retryHeader?.includes(renderRequired.message));
+  assert.equal((await client.callTool(retry)).isError, undefined);
 });
 
 test("main and full use separate caches and batch forwards content mode", async (t) => {
@@ -275,7 +319,7 @@ test("main and full use separate caches and batch forwards content mode", async 
   assert(Array.isArray(first.content));
   assert.equal(
     first.content[0].text,
-    `search-scrape-mcp · Scrape result · ${finalUrl}\nRequested URL: ${url}\n\n${resultDivider}\n\nmain\n\n${resultDivider}`,
+    `${mcpName} · ${messages.operation.scrape} · ${finalUrl}\n${messages.label.requestedUrl} ${url}\n\n${resultDivider}\n\nmain\n\n${resultDivider}`,
   );
   assert.equal(
     (await call("scrape", { url, content_mode: "main" })).cached,
@@ -353,10 +397,17 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
   });
   assert(Array.isArray(single.content));
   const partial = single.structuredContent as ReturnType<typeof JSON.parse>;
-  assert.match(
-    single.content[0].text.split(resultDivider)[0],
-    /Warning \(extraction_incomplete\).*\nOriginal HTML: /,
+  const [header] = single.content[0].text.split(resultDivider);
+  assert(
+    header?.includes(
+      `${noticeLabel.warning} ${messages.page.extractionPartial}`,
+    ),
   );
+  assert(
+    header?.includes(`${messages.label.originalHtml} ${partial.htmlPath}`),
+  );
+  assert(header?.includes(`${messages.label.fullText} ${partial.path}`));
+  assert(!header?.includes(noticeLabel.note));
   assert.equal(partial.truncated, true);
   assert(partial.preview.length <= 1);
   assert.equal(readFileSync(partial.htmlPath, "utf8"), html);
@@ -379,7 +430,7 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
   assert.equal(clean.result.htmlPath, undefined);
   assert.equal(clean.result.extractionWarning, undefined);
   assert.equal(failed.error.code, "unsafe_url");
-  assert.match(failed.error.reason, /GitHub CLI/);
+  assert.equal(failed.error.reason, hostRule("github.com")!.accessError);
   assert.equal(request.mock.callCount(), 3);
 
   const logs = logger.mock.calls.map(({ arguments: [line] }) =>

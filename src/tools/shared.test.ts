@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaults } from "../config/tuning.js";
@@ -40,7 +41,7 @@ test("deadline aborts provider work and returns a tool error before 60 seconds",
   t.mock.timers.tick(32_000);
   const response = await result;
   assert.equal(response.isError, true);
-  assert.match(JSON.stringify(response.content), /32-second deadline/);
+  assert(JSON.stringify(response.content).includes(messages.service.timeout));
   assert.equal(signal?.aborted, true);
 });
 
@@ -123,7 +124,13 @@ test("a scrape batch deadline returns successes and item errors for work still p
         signal,
       ),
     defaults,
-    { partialOnTimeout: true },
+    {
+      partialOnTimeout: true,
+      presentation: {
+        operation: messages.operation.scrape,
+        targets: ["first", "second", "third", "fourth"],
+      },
+    },
   );
   await new Promise<void>((resolve) => setImmediate(resolve));
   t.mock.timers.tick(defaults.toolDeadlineSeconds * 1_000);
@@ -132,9 +139,13 @@ test("a scrape batch deadline returns successes and item errors for work still p
   assert.deepEqual(started, [0, 1, 2]);
   const itemContent = response.content[0];
   assert(itemContent?.type === "text");
-  const items = JSON.parse(itemContent.text);
+  const items = response.structuredContent?.items as unknown[];
+  assert(response.content[2]?.type === "text");
+  assert(response.content[2].text.includes(messages.service.batchTimeout));
   assert.deepEqual(
-    items.map(
+    (
+      items as { index: number; result?: string; error?: { code: string } }[]
+    ).map(
       ({
         index,
         result,

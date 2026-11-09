@@ -105,10 +105,12 @@ items concurrently and serialize items for the same hostname. The tool deadline
 can interrupt a batch before all items finish.
 
 Results open with the MCP name, operation, and URL or search query when
-available. Warnings, retry instructions, and saved-file paths appear before
-the content. A row of `#` characters separates the header from the content
-and closes the output. Each batch item gets its own header and divider.
+available. When a result needs a notice, it shows the most relevant MCP-labeled
+warning, error, or note. Retry instructions and saved-file paths appear before
+the content. A row of `#` characters separates the header from the content and
+closes the output. Each batch item gets its own header and divider.
 Programmatic clients can read `structuredContent` for results and status fields.
+Tool argument errors use the same layout and identify the fields to correct.
 
 Pass `fresh: true` to either scrape tool, a single search, or a search batch item
 to bypass the cache. Scrapes and search batch items report `cached: true` on a
@@ -120,14 +122,18 @@ Provide exactly one of `q` or `query` for the search text in each search. Filter
 country (`gl`), language (`hl`), or time (`recency` or `tbs`). Use `page` for
 pagination and `autocorrect` to control spelling correction. Serper may ignore
 `location`, so include the place name in the query when it matters.
+Each search result header identifies the requested page number.
 
 ### Scrape
 
 Scrape and browser tools reject URLs on these GitHub domains and their
 subdomains: `github.com`, `githubusercontent.com`, `githubassets.com`, `github.io`,
 `github.dev`, `githubapp.com`, `githubcopilot.com`, and `ghcr.io`. Use the GitHub
-CLI (`gh`) for GitHub repository and API access. Web search still supports
-GitHub queries and results.
+CLI (`gh`) for GitHub repository and API access. Matching results from
+`search` and `search_batch` include an `accessHint` recommending `gh`.
+Reddit domains (`reddit.com` and `redd.it`, including subdomains) use
+`scrape` or `scrape_batch`. The browser rejects those destinations, and
+matching search hits include that guidance.
 
 Both scrape tools default to `content_mode: "main"`. Defuddle extracts the
 main text from Scrapfly HTML and retains links within that content. Set
@@ -144,13 +150,15 @@ as a secondary scrape provider, set
 `"scrapeProviders": ["scrapfly", "scrapfly-browser"]`. It returns page text
 in main mode. Full mode requires the Scrapfly Scrape API.
 
-Results report a page check and the rungs tried. Scrapfly starts with
-datacenter by default, tries Unblocker for blocked or challenged pages, and
-can jump to render for a JavaScript shell. The server remembers successful
+Results report a page check and the rungs tried. All page requests enable
+Scrapfly Unblocker, including the initial datacenter rung. The server can try
+the alternate proxy configuration or jump to render for a JavaScript shell.
+The server remembers successful
 rungs by hostname. Set `start_rung` to `datacenter`, `unblocker`, or `render`,
 or follow the returned hint when a stronger rung needs a fresh call.
 
-File URLs and known file hosts get a datacenter HEAD check. Downloads require
+File URLs and known file hosts get a datacenter HEAD check. File preflight
+and download requests use the datacenter pool without Unblocker. Downloads require
 a reported length of at most 5 MB. Binary results include a private file path,
 MIME type, and byte count. Long scrape and browser text results spill to the
 private `outputDirectory` with a preview and local path. The default inline

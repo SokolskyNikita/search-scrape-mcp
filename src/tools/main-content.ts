@@ -63,6 +63,42 @@ function redditFeed(document: Document, final: URL) {
   return copy;
 }
 
+function recoverLinkedHeading(body: Element | undefined, final: URL) {
+  const heading = body?.querySelector('main h1, article h1, [role="main"] h1');
+  const boundary = heading?.closest('main, article, [role="main"]');
+  const title = oneLine(heading?.textContent ?? "");
+  if (!heading || !boundary || !title) return undefined;
+
+  // Prefer the nearest content group containing a single external destination.
+  // The boundary keeps site navigation and related links outside the post out.
+  const site = final.hostname.replace(/^www\./, "");
+  for (
+    let group = heading.parentElement;
+    group && boundary.contains(group);
+    group = group.parentElement
+  ) {
+    const links = new Set<string>();
+    for (const anchor of group.querySelectorAll(
+      'a[href]:not([rel~="sponsored"])',
+    )) {
+      if (anchor.closest('nav, aside, footer, [role="navigation"]')) continue;
+      const url = URL.parse(anchor.getAttribute("href")!, final);
+      if (
+        !url ||
+        !/^https?:$/.test(url.protocol) ||
+        url.username ||
+        url.password ||
+        url.hostname.replace(/^www\./, "") === site
+      )
+        continue;
+      links.add(url.href);
+    }
+    if (links.size === 1)
+      return `# ${title}\n\n<${links.values().next().value}>`;
+    if (links.size > 1) return undefined;
+  }
+}
+
 export async function mainContent(
   html: string,
   target: URL,
@@ -240,6 +276,20 @@ export async function mainContent(
       extractorException = true;
     }
   }
+  const beyondHeading = markdown.replace(/^#{1,6}\s+[^\n]+(?:\n|$)/, "");
+  if (
+    !missingLinks &&
+    (unusable(markdown) || !words(beyondHeading.replace(markdownLink, ""))) &&
+    (!original.warning || original.code === "menus_only")
+  ) {
+    const recovered = recoverLinkedHeading(body, final);
+    if (recovered)
+      return {
+        markdown: recovered,
+        check: { code: "ok", reason: "Readable page content." },
+      };
+  }
+
   const extractionCause: ExtractionCause | undefined = missingLinks
     ? "links_lost"
     : unusable(markdown) ||

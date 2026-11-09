@@ -1,3 +1,5 @@
+import { hostRule } from "../config/host-rules.js";
+import { messages } from "../config/messages.js";
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
@@ -74,6 +76,20 @@ test("browser guard checks top-level redirects and leaves iframe requests to clo
     2,
   );
   assert.equal(error()?.code, "unsafe_url");
+  paused({
+    requestId: "reddit",
+    frameId: "main",
+    request: { url: "https://www.reddit.com/r/example/" },
+  });
+  await setImmediate();
+  assert.equal(error()?.message, hostRule("reddit.com")!.accessError);
+  assert(
+    commands.some(
+      ({ method, params }) =>
+        method === "Fetch.failRequest" &&
+        (params as { requestId: string }).requestId === "reddit",
+    ),
+  );
   const challenge = { status: 403, headers: { "CF-Mitigated": "challenge" } };
   received({ frameId: "iframe", type: "Document", response: challenge });
   received({ frameId: "main", type: "Fetch", response: challenge });
@@ -372,10 +388,7 @@ test(
       const viewportResult = await snapshots.read();
       const viewport = viewportResult.text;
       assert.match(viewport, /heading "Fixture heading"/);
-      assert.match(
-        viewportResult.warning ?? "",
-        /3 interactive elements outside the viewport/,
-      );
+      assert.equal(viewportResult.note, messages.note.offscreen(3));
       assert.doesNotMatch(viewport, /Lower|Skip to content/);
       const mainButton = /^(e\d+) button "Main button"/m.exec(viewport)?.[1];
       const mainField = /^(e\d+) textbox "Main field"/m.exec(viewport)?.[1];
@@ -429,11 +442,13 @@ test(
         /button "Lower button"/,
       );
       assert.equal(
-        (await snapshots.read({ query: "absent" })).warning,
-        "No matching elements.",
+        (await snapshots.read({ query: "absent" })).note,
+        messages.note.noElements,
       );
       await page.getByRole("link", { name: "Follow link" }).click();
-      assert.throws(() => snapshots.locator(mainField), /stale element ref/);
+      assert.throws(() => snapshots.locator(mainField), {
+        message: messages.browser.staleRef,
+      });
       assert.match((await snapshots.read()).text, /Second page/);
       await goBack(page);
       assert.equal(blocked(), undefined);
@@ -468,7 +483,7 @@ test("browser diagnostics use safe action details without quoting page data", ()
       ),
       "fill",
     ).message,
-    "The locator matched 3 elements. Use a ref or a more specific selector.",
+    messages.browser.ambiguous("3"),
   );
   assert.equal(
     browserActionError(
@@ -477,6 +492,6 @@ test("browser diagnostics use safe action details without quoting page data", ()
       ),
       "click",
     ).message,
-    "Browser click timed out after 15000 ms. The element is not visible.",
+    messages.browser.elementState("visible"),
   );
 });

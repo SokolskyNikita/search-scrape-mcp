@@ -11,11 +11,11 @@ export const scrapeReserveMs = 3_000;
 export const scrapeBudgetMs = (settings: Tuning) =>
   toolTimeoutMs(settings) - scrapeReserveMs;
 
-// Scrapfly rejects shorter timeouts. Use the minimum for both the API and HTTP
-// client so a datacenter attempt and one advanced attempt fit in the default budget.
-// https://scrapfly.io/docs/scrape-api/understand-timeout
+// The provider requires 30 seconds for Unblocker and 15 seconds for
+// the datacenter-only file preflight and download path.
+export const scrapflyFileTimeoutMs = 15_000;
 export const scrapflyTimeoutMs = {
-  datacenter: 15_000,
+  datacenter: 30_000,
   unblocker: 30_000,
   render: 30_000,
 } as const;

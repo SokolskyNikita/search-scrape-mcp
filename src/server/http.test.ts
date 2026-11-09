@@ -1,3 +1,4 @@
+import { mcpName, messages, noticeLabel } from "../config/messages.js";
 import { resultDivider } from "../tools/result-format.js";
 import { registerBrowser } from "../tools/browser.js";
 import type { SearchInput } from "../providers/types.js";
@@ -102,11 +103,11 @@ test("authenticated MCP search uses a recorded Serper response", async (t) => {
         snippet: "Example.",
       },
     ];
-    assert.deepEqual(response.structuredContent, { results });
+    assert.deepEqual(response.structuredContent, { results, page: 1 });
     assert.deepEqual(response.content, [
       {
         type: "text",
-        text: `search-scrape-mcp · Search results · example\n\n${resultDivider}\n\n${JSON.stringify(results)}\n\n${resultDivider}`,
+        text: `${mcpName} · ${messages.operation.search} · example · ${messages.label.searchPage(1)}\n\n${resultDivider}\n\n${JSON.stringify(results)}\n\n${resultDivider}`,
       },
     ]);
     assert(
@@ -257,9 +258,10 @@ test(
             (result.structuredContent as { code?: string })?.code,
             code,
           );
-          assert.match(
-            result.content[0].text,
-            /Retry after an in-flight call finishes/,
+          assert(
+            result.content[0].text.includes(
+              `${noticeLabel.error} ${messages.service.inFlight}`,
+            ),
           );
         }
       } finally {
@@ -329,17 +331,28 @@ test("an empty search is retried and a later hit can be cached", async (t) => {
   const search = () =>
     client.callTool({ name: "search", arguments: { q: "site:iana.org" } });
   const empty = await search();
-  assert.deepEqual(empty.structuredContent, { results: [] });
+  assert.deepEqual(empty.structuredContent, { results: [], page: 1 });
   assert(Array.isArray(empty.content));
   assert.equal(
     empty.content[0].text,
-    `search-scrape-mcp · Search results · site:iana.org\nNo results found.\n\n${resultDivider}`,
+    `${mcpName} · ${messages.operation.search} · site:iana.org · ${messages.label.searchPage(1)}\n${noticeLabel.note} ${messages.note.noResults}\n\n${resultDivider}`,
   );
-  assert.deepEqual((await search()).structuredContent, { results: [hit] });
+  assert.deepEqual((await search()).structuredContent, {
+    results: [hit],
+    page: 1,
+  });
   const cached = await search();
-  assert.deepEqual(cached.structuredContent, { results: [hit], cached: true });
+  assert.deepEqual(cached.structuredContent, {
+    results: [hit],
+    page: 1,
+    cached: true,
+  });
   assert(Array.isArray(cached.content));
-  assert.match(cached.content[0].text, /Cached result/);
+  assert(
+    cached.content[0].text.includes(
+      `${noticeLabel.note} ${messages.note.cached}`,
+    ),
+  );
   assert.ok(cached.content[0].text.endsWith(resultDivider));
   assert.equal(attempts, 2);
 });
@@ -358,8 +371,36 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
         },
       },
     ]);
-    registerScrape(mcp, [], files);
-    return registerBrowser(mcp, [], files);
+    registerScrape(
+      mcp,
+      [
+        {
+          async scrape() {
+            return {
+              markdown: "# Scrape fixture",
+              check: { code: "ok", reason: "fixture" },
+            };
+          },
+        },
+      ],
+      files,
+    );
+    return registerBrowser(
+      mcp,
+      [
+        {
+          async open() {
+            return {
+              async run() {
+                return "# Browser fixture";
+              },
+              async close() {},
+            };
+          },
+        },
+      ],
+      files,
+    );
   });
   server.listen(0, "127.0.0.1");
   t.after(() => {
@@ -452,9 +493,13 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     { query: "fifth", limit: 10 },
   ]);
 
+  const fields = (tool: string) =>
+    Object.keys(
+      tools.find(({ name }) => name === tool)?.inputSchema.properties ?? {},
+    );
   const failures = [
-    ["search", {}, /Provide exactly one/],
-    ["search", { q: "test", query: "also test" }, /Provide exactly one/],
+    ["search", {}, messages.input.query],
+    ["search", { q: "test", query: "also test" }, messages.input.query],
     [
       "search_batch",
       { searches: Array.from({ length: 6 }, () => ({ q: "test" })) },
@@ -468,54 +513,112 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     [
       "search",
       { q: "test", recent: "week" },
-      /Unknown field "recent". Valid fields are .*recency/,
+      messages.input.unknownFields(["recent"], fields("search")),
     ],
     [
       "search_batch",
       { searches: [{ q: "test", recent: "week" }] },
-      /Unknown field "recent". Valid fields are .*recency.* at searches\[0\]/,
+      messages.input.unknownFields(["recent"], fields("search")),
     ],
     [
       "search_batch",
       { searches: [{ q: "test" }], fresh: true },
-      /Unknown field "fresh". Valid fields are searches\./,
+      messages.input.unknownFields(["fresh"], fields("search_batch")),
     ],
     [
       "scrape",
       { url: "https://1.1.1.1/", format: "text" },
-      /Unknown field "format". Valid fields are url, content_mode, start_rung, fresh, allow_higher_cost/,
+      messages.input.unknownFields(["format"], fields("scrape")),
     ],
     [
       "scrape_batch",
       { urls: ["https://1.1.1.1/"], format: "text" },
-      /Unknown field "format". Valid fields are urls, content_mode, start_rung, fresh, allow_higher_cost/,
+      messages.input.unknownFields(["format"], fields("scrape_batch")),
     ],
     [
       "browser",
       { command: { action: "close" }, extra: true },
-      /Unknown field "extra". Valid fields are command\./,
+      messages.input.unknownFields(["extra"], fields("browser")),
     ],
     [
       "browser",
       { command: { action: "scroll", pixel: 200 } },
-      /Unknown field "pixel". Valid fields are action, pixels\. at command/,
+      messages.input.unknownFields(["pixel"], ["action", "pixels"]),
     ],
-    [
-      "search",
-      { q: "test", site: "invalid_domain" },
-      /site must be a domain like tokio\.rs/,
-    ],
+    ["search", { q: "test", site: "invalid_domain" }, messages.input.domain],
     [
       "search",
       { q: "test", exclude_domains: ["https://127.0.0.1/"] },
-      /Each exclude_domains entry must be a domain like tokio\.rs.* at exclude_domains\[0\]/,
+      messages.input.excludeDomains,
     ],
   ] as const;
   for (const [name, args, message] of failures) {
     const failure = await client.callTool({ name, arguments: args });
     assert.equal(failure.isError, true);
+    assert.deepEqual(
+      (failure.structuredContent as { code?: string })?.code,
+      "input",
+    );
     assert(Array.isArray(failure.content));
-    assert.match(failure.content[0].text, message);
+    assert(failure.content[0].text.startsWith(`${mcpName} · `));
+    assert(failure.content[0].text.includes(`\n${noticeLabel.error} `));
+    assert(failure.content[0].text.endsWith(resultDivider));
+    if (typeof message === "string")
+      assert(failure.content[0].text.includes(message));
+    else assert.match(failure.content[0].text, message);
   }
   assert.equal(searches.length, 6);
+
+  const url = "https://1.1.1.1/";
+  const cases = [
+    [
+      "search",
+      { q: "empty", page: 2 },
+      messages.operation.search,
+      "empty",
+      undefined,
+      2,
+    ],
+    [
+      "search_batch",
+      { searches: [{ q: "empty", page: 3 }] },
+      messages.operation.search,
+      "empty",
+      undefined,
+      3,
+    ],
+    ["scrape", { url }, messages.operation.scrape, url, "# Scrape fixture"],
+    [
+      "scrape_batch",
+      { urls: [url] },
+      messages.operation.scrape,
+      url,
+      "# Scrape fixture",
+    ],
+    [
+      "browser",
+      { command: { action: "navigate", url } },
+      messages.operation.browser("navigate"),
+      url,
+      "# Browser fixture",
+    ],
+  ] as const;
+  for (const [name, args, operation, target, body, page] of cases) {
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, undefined, name);
+    assert(Array.isArray(result.content));
+    const heading = `${mcpName} · ${operation} · ${target}${page ? ` · ${messages.label.searchPage(page)}` : ""}`;
+    assert.deepEqual(
+      result.content,
+      [
+        {
+          type: "text",
+          text: body
+            ? `${heading}\n\n${resultDivider}\n\n${body}\n\n${resultDivider}`
+            : `${heading}\n${noticeLabel.note} ${messages.note.noResults}\n\n${resultDivider}`,
+        },
+      ],
+      name,
+    );
+  }
 });

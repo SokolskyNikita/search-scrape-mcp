@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import { MAX_REQUEST_BODY_BYTES } from "../config/safety-limits.js";
 import { defaults } from "../config/tuning.js";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -12,6 +13,11 @@ import {
 import { AppError } from "./error.js";
 import { writeLimitEvent } from "./stats.js";
 import { toolResult } from "../tools/shared.js";
+import {
+  ToolTransport,
+  toolCallContext,
+  toolCallPresentation,
+} from "./tool-transport.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest();
 
@@ -35,7 +41,10 @@ async function readBody(req: AsyncIterable<Buffer>): Promise<unknown> {
   for await (const chunk of req) {
     bytes += chunk.length;
     if (bytes > MAX_REQUEST_BODY_BYTES)
-      throw new AppError("body_size", "Request exceeds 64 KB.");
+      throw new AppError(
+        "body_size",
+        messages.input.requestSize(MAX_REQUEST_BODY_BYTES),
+      );
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
@@ -140,31 +149,33 @@ export function createMcpHttp(
           const request =
             req.method === "POST" && isJSONRPCRequest(body) ? body : undefined;
           const isToolCall = request?.method === "tools/call";
+          const call = isToolCall
+            ? CallToolRequestSchema.safeParse(request)
+            : undefined;
+          const presentation = call?.success
+            ? toolCallPresentation(call.data.params)
+            : undefined;
           const sessionBusy =
             session.active >= settings.mcpSessionInFlightLimit;
           const serverBusy =
             isToolCall && toolCalls >= settings.mcpConcurrentToolCalls;
           if (request && (sessionBusy || serverBusy)) {
             const code = sessionBusy ? "mcp_session_busy" : "mcp_server_busy";
-            const message = sessionBusy
-              ? "MCP session is busy."
-              : "MCP server is busy.";
-            const hint = "Retry after an in-flight call finishes.";
-            const call = CallToolRequestSchema.safeParse(request);
-            if (!call.success)
+            const message = messages.service.inFlight;
+            if (!call?.success)
               writeLimitEvent({ code, outcome: "rejected" }, settings);
-            const payload = call.success
+            const payload = call?.success
               ? {
                   result: await toolResult(
                     call.data.params.name,
                     async () => {
-                      throw new AppError(code, message, { hint });
+                      throw new AppError(code, message);
                     },
                     settings,
-                    { presentation: { operation: call.data.params.name } },
+                    { presentation },
                   ),
                 }
-              : { error: { code: -32000, message: `${message} ${hint}` } };
+              : { error: { code: -32000, message } };
             session.used = Date.now();
             res.writeHead(200, {
               "Content-Type": "application/json",
@@ -178,7 +189,11 @@ export function createMcpHttp(
           if (isToolCall) toolCalls++;
           session.active++;
           try {
-            await session.transport.handleRequest(req, res, body);
+            if (request && presentation)
+              await toolCallContext.run({ id: request.id, presentation }, () =>
+                session.transport.handleRequest(req, res, body),
+              );
+            else await session.transport.handleRequest(req, res, body);
           } finally {
             session.active--;
             if (isToolCall) toolCalls--;
@@ -203,7 +218,7 @@ export function createMcpHttp(
           },
         );
         const cleanup = register(mcp);
-        const transport = new StreamableHTTPServerTransport({
+        const transport = new ToolTransport({
           sessionIdGenerator: randomUUID,
           enableJsonResponse: true,
           onsessioninitialized: (sessionId) => {

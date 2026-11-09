@@ -1,3 +1,5 @@
+import { messages } from "../config/messages.js";
+import { hostRule, type HostAccess } from "../config/host-rules.js";
 import { MAX_URL_CHARS } from "../config/safety-limits.js";
 import { Resolver } from "node:dns/promises";
 import ipaddr from "ipaddr.js";
@@ -8,16 +10,6 @@ const globalV6 = ipaddr.parseCIDR("2000::/3");
 const specialV4 = ["192.0.0.0/24", "192.88.99.0/24"].map((cidr) =>
   ipaddr.IPv4.parseCIDR(cidr),
 );
-const githubDomains = [
-  "github.com",
-  "githubusercontent.com",
-  "githubassets.com",
-  "github.io",
-  "github.dev",
-  "githubapp.com",
-  "githubcopilot.com",
-  "ghcr.io",
-];
 
 function publicIp(value: string): boolean {
   const ip = ipaddr.parse(value);
@@ -29,33 +21,35 @@ function publicIp(value: string): boolean {
 
 const forbidden = (message: string) => new AppError("unsafe_url", message);
 
-export async function validatePublicUrl(value: string): Promise<URL> {
+export function validatePublicUrl(value: string) {
+  return validateUrl(value, "scrape");
+}
+
+export function validateBrowserUrl(value: string) {
+  return validateUrl(value, "browser");
+}
+
+async function validateUrl(value: string, access: HostAccess): Promise<URL> {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw forbidden("The URL is invalid.");
+    throw forbidden(messages.input.publicUrl);
   }
   if (
     value.length > MAX_URL_CHARS ||
     /[\u0000-\u0020\u007f\\]/.test(value) ||
     !["http:", "https:"].includes(url.protocol)
   )
-    throw forbidden("Use a valid public HTTP or HTTPS URL.");
-  if (url.username || url.password)
-    throw forbidden("URL credentials are not allowed.");
-  if (url.port) throw forbidden("Use the standard port for the URL scheme.");
+    throw forbidden(messages.input.publicUrl);
+  if (url.username || url.password) throw forbidden(messages.input.credentials);
+  if (url.port) throw forbidden(messages.input.port);
 
   const host = url.hostname.replace(/^\[|\]$|\.$/g, "");
-  if (
-    githubDomains.some(
-      (domain) => host === domain || host.endsWith(`.${domain}`),
-    )
-  )
-    throw forbidden("Use the GitHub CLI (`gh`) directly for GitHub URLs.");
+  const rule = hostRule(host);
+  if (rule?.denied.includes(access)) throw forbidden(rule.accessError);
   if (ipaddr.isValid(host)) {
-    if (!publicIp(host))
-      throw forbidden("The URL points to a private or reserved IP address.");
+    if (!publicIp(host)) throw forbidden(messages.input.publicUrl);
     return url;
   }
   if (
@@ -64,7 +58,7 @@ export async function validatePublicUrl(value: string): Promise<URL> {
       host,
     )
   ) {
-    throw forbidden("The URL hostname is local or reserved.");
+    throw forbidden(messages.input.publicUrl);
   }
   const answers = await Promise.allSettled([
     dns.resolve4(`${host}.`),
@@ -76,15 +70,12 @@ export async function validatePublicUrl(value: string): Promise<URL> {
     else {
       const code = (answer.reason as NodeJS.ErrnoException).code;
       if (code !== "ENODATA" && code !== "ENOTFOUND") {
-        throw new AppError("dns", "Could not verify target DNS.");
+        throw new AppError("dns", messages.input.dns);
       }
     }
   }
-  if (!addresses.length)
-    throw new AppError("dns", "Target hostname did not resolve.");
+  if (!addresses.length) throw new AppError("dns", messages.input.dns);
   if (addresses.some((address) => !publicIp(address)))
-    throw forbidden(
-      "The URL hostname resolves to a private or reserved IP address.",
-    );
+    throw forbidden(messages.input.publicUrl);
   return url;
 }

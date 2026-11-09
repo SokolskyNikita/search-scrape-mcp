@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import type { RequestLimits } from "../server/request-limits.js";
 import type { Usage } from "../server/usage.js";
 import { defaults } from "../config/tuning.js";
@@ -150,6 +151,9 @@ export function serper(
             throw new AppError(
               "provider_limit",
               "Serper rate or quota limit reached.",
+              response.status === 429
+                ? { publicReason: messages.service.busy }
+                : undefined,
             );
           if (!response.ok) throw new SerperHttpError(response.status);
           const parsed = responseSchema.safeParse(body);

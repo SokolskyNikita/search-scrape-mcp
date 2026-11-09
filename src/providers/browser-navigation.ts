@@ -1,6 +1,6 @@
 import type { CDPSession, Page } from "playwright-core";
 import { safeError } from "../server/error.js";
-import { validatePublicUrl } from "../server/target.js";
+import { validateBrowserUrl } from "../server/target.js";
 
 export async function guardNavigations(
   cdp: CDPSession,
@@ -44,7 +44,7 @@ export async function guardNavigations(
       }
       let release: (() => void) | undefined;
       try {
-        const url = await validatePublicUrl(event.request.url);
+        const url = await validateBrowserUrl(event.request.url);
         if (pace) {
           disconnected?.throwIfAborted();
           controller.signal.throwIfAborted();

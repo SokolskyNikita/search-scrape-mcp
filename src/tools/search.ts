@@ -1,4 +1,6 @@
+import { messages } from "../config/messages.js";
 import { isIP } from "node:net";
+import { hostRule } from "../config/host-rules.js";
 import { MAX_URL_CHARS } from "../config/safety-limits.js";
 import { toolInput } from "./input.js";
 import type { ResultCache } from "./result-cache.js";
@@ -25,9 +27,7 @@ const hostname =
 
 function domain(field: "site" | "exclude_domains") {
   const error =
-    field === "site"
-      ? "site must be a domain like tokio.rs."
-      : "Each exclude_domains entry must be a domain like tokio.rs.";
+    field === "site" ? messages.input.domain : messages.input.excludeDomains;
   return z
     .string({ error })
     .trim()
@@ -82,6 +82,14 @@ const input = toolInput({
   limit: z.number().int().min(1).max(10).default(10),
 });
 
+function withAccessHints(hits: SearchHit[]) {
+  return hits.map((hit) => {
+    const url = URL.parse(hit.url);
+    const hint = url && hostRule(url.hostname)?.searchHint;
+    return hint ? { ...hit, accessHint: hint } : hit;
+  });
+}
+
 export function registerSearch(
   server: McpServer,
   providers: SearchProvider[],
@@ -95,10 +103,10 @@ export function registerSearch(
     deadline: number,
   ) {
     if ((query === undefined) === (q === undefined)) {
-      throw new AppError("input", "Provide exactly one of query or q.");
+      throw new AppError("input", messages.input.query);
     }
     if (options.recency && options.tbs) {
-      throw new AppError("input", "Provide either recency or tbs.");
+      throw new AppError("input", messages.input.timeFilter);
     }
     const args: SearchInput = { query: (query ?? q)!, ...options };
     const key = JSON.stringify({
@@ -108,7 +116,7 @@ export function registerSearch(
       exclude_domains: args.exclude_domains ?? [],
     });
     const hit = cache?.get(key, fresh);
-    if (hit) return cachedSearch(hit);
+    if (hit) return cachedSearch(withAccessHints(hit));
     const result = await fallback(
       providers,
       (provider) =>
@@ -118,7 +126,7 @@ export function registerSearch(
     );
     signal.throwIfAborted();
     if (result.length) cache?.set(key, result);
-    return result;
+    return withAccessHints(result);
   }
   server.registerTool(
     "search",
@@ -134,8 +142,10 @@ export function registerSearch(
         settings,
         {
           presentation: {
-            operation: "Search results",
+            operation: messages.operation.search,
+            service: "search",
             target: () => args.q ?? args.query,
+            page: args.page ?? 1,
           },
         },
       ),
@@ -164,8 +174,10 @@ export function registerSearch(
         {
           partialOnTimeout: true,
           presentation: {
-            operation: "Search results",
+            operation: messages.operation.search,
+            service: "search",
             targets: searches.map(({ q, query }) => q ?? query),
+            pages: searches.map(({ page }) => page ?? 1),
           },
         },
       ),

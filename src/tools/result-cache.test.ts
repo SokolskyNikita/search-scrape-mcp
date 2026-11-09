@@ -1,3 +1,4 @@
+import { hostRule } from "../config/host-rules.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -53,6 +54,20 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
         assert.equal(site, "github.com");
         return [
           { title: "Fixture repo", url: "https://github.com/owner/repo" },
+          {
+            title: "Raw file",
+            url: "https://RAW.GitHubUserContent.com./owner/repo/main/file",
+          },
+          {
+            title: "Lookalike",
+            url: "https://github.com.example.com/owner/repo",
+          },
+          { title: "Other", url: "https://example.com/github.com" },
+          {
+            title: "Reddit thread",
+            url: "https://old.reddit.com/r/example/comments/abc/thread/",
+          },
+          { title: "Reddit short link", url: "https://redd.it/abc" },
         ];
       }
       return [{ title: String(searches), url: "https://example.com" }];
@@ -102,6 +117,7 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
       return [
         data.items ?? data.results ?? data,
         data.cached ? { cached: true } : undefined,
+        response.content[0].text,
       ] as ReturnType<typeof JSON.parse>;
     };
   }
@@ -127,11 +143,27 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
     assert.equal(failed[0].error.code, "provider_down");
   }
   assert.equal(searches, 5);
-  const [github] = await first("search", {
-    query: "github fixture",
-    site: "github.com",
-  });
+  const githubArgs = { query: "github fixture", site: "github.com", page: 2 };
+  const [github, , rendered] = await first("search", githubArgs);
+  const hint = hostRule("github.com")!.searchHint;
+  const redditHint = hostRule("reddit.com")!.searchHint;
   assert.equal(github[0].url, "https://github.com/owner/repo");
+  assert.deepEqual(
+    github.map((hit: { accessHint?: string }) => hit.accessHint),
+    [hint, hint, undefined, undefined, redditHint, redditHint],
+  );
+  assert(rendered.includes(JSON.stringify(github)));
+  const [githubBatch, , renderedBatch] = await second("search_batch", {
+    searches: [githubArgs, { ...githubArgs, page: 3 }],
+  });
+  assert.equal(githubBatch[0].cached, true);
+  assert.deepEqual(
+    githubBatch.map((item: { page: number }) => item.page),
+    [2, 3],
+  );
+  assert.deepEqual(githubBatch[0].result, github);
+  assert(renderedBatch.includes(JSON.stringify(github)));
+  assert.equal(searches, 7);
 
   const url = "https://1.1.1.1/page";
   await first("scrape", { url });

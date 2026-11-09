@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import assert from "node:assert/strict";
 import {
   existsSync,
@@ -44,10 +45,7 @@ test("overflow saves complete Markdown with a short preview, counts, and a safe-
   assert.equal(result.characters, Array.from(markdown).length);
   assert.equal(result.approxTokens, Math.ceil(result.characters / 4));
   assert.equal(result.lines, 81);
-  assert.match(
-    result.hint,
-    /read or search.*file tools.*untrusted web content/i,
-  );
+  assert.equal(result.hint, messages.file.hint);
 });
 
 test("spill refuses a symlink or an insecure output folder", (t) => {

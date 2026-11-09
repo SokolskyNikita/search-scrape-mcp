@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import type { Page } from "playwright-core";
 import { AppError } from "../server/error.js";
 
@@ -81,10 +82,7 @@ export function browserSnapshots(page: Page) {
 
   function locator(ref?: string) {
     if (!ref || !refs.has(ref))
-      throw new AppError(
-        "browser_ref",
-        "Unknown or stale element ref. Take a new snapshot.",
-      );
+      throw new AppError("browser_ref", messages.browser.staleRef);
     return page.getByRef(ref);
   }
 
@@ -108,10 +106,7 @@ export function browserSnapshots(page: Page) {
         }))
       : undefined;
     if (version !== epoch)
-      throw new AppError(
-        "browser_navigation",
-        "The page changed while taking the snapshot. Take a new snapshot.",
-      );
+      throw new AppError("browser_navigation", messages.browser.changed);
 
     const lines: Promise<string>[] = [];
     let outside = 0;
@@ -199,25 +194,17 @@ export function browserSnapshots(page: Page) {
     if (full) return { text: JSON.stringify(tree, null, 2) };
     const rendered = await Promise.all(lines);
     if (version !== epoch)
-      throw new AppError(
-        "browser_navigation",
-        "The page changed while taking the snapshot. Take a new snapshot.",
-      );
+      throw new AppError("browser_navigation", messages.browser.changed);
     const text = rendered.join("\n").trimStart();
-    const warning =
+    const note =
       viewportOnly && outside
-        ? `${outside} interactive element${outside === 1 ? "" : "s"} outside the viewport. Scroll, use find, or set scope to page or full.`
-        : undefined;
-    return {
-      text,
-      warning:
-        warning ??
-        (text
+        ? messages.note.offscreen(outside)
+        : text
           ? undefined
           : query
-            ? "No matching elements."
-            : "No interactive elements or headings."),
-    };
+            ? messages.note.noElements
+            : messages.note.emptyView;
+    return { text, note };
   }
 
   return { locator, read };

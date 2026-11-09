@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 export type PageCheck = {
   code: string;
   reason: string;
@@ -119,7 +120,7 @@ export function checkPage(
   )
     return {
       code: "not_found",
-      reason: "The site says the page was not found.",
+      reason: messages.page.not_found,
     };
   if (
     (isChallengeUrl(final) && !isChallengeUrl(requested)) ||
@@ -127,7 +128,7 @@ export function checkPage(
   )
     return {
       code: "challenge",
-      reason: "The site returned an anti-bot challenge.",
+      reason: messages.page.challenge,
       next: "stronger",
     };
   if (
@@ -145,17 +146,17 @@ export function checkPage(
           text,
         )))
   )
-    return { code: "sign_in", reason: "The site requires sign-in." };
+    return { code: "sign_in", reason: messages.page.sign_in };
   if (looksBlocked(markdown, status, heading))
     return {
       code: "blocked",
-      reason: "The target blocked access.",
+      reason: messages.page.blocked,
       next: "stronger",
     };
   if (status < 200 || status >= 300)
     return {
       code: "target_http",
-      reason: `The target returned HTTP ${status}.`,
+      reason: messages.page.targetHttp(status),
     };
   if (
     final.hostname.replace(/^www\.|\.$/g, "") ===
@@ -165,7 +166,7 @@ export function checkPage(
   )
     return {
       code: "content_moved",
-      reason: "The deep link redirected to the home page.",
+      reason: messages.page.content_moved,
     };
   const shell =
     /enable javascript to (?:run this app|continue|view this (?:page|site))|this (?:app|site) requires javascript/i;
@@ -198,7 +199,9 @@ export function checkPage(
   )
     return {
       code: "empty_page",
-      reason: "The page is empty or needs JavaScript.",
+      reason: shell.test(text)
+        ? messages.page.render
+        : messages.page.empty_page,
       next: "render",
     };
   if (
@@ -213,7 +216,7 @@ export function checkPage(
   )
     return {
       code: "paywall",
-      reason: "Only the free portion of the page is available.",
+      reason: messages.page.paywall,
       warning: true,
     };
 
@@ -253,7 +256,7 @@ export function checkPage(
   )
     return {
       code: "menus_only",
-      reason: "The response is mostly navigation with little page content.",
+      reason: messages.page.menus_only,
       next: "stronger",
       warning: true,
     };

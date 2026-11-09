@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import { AppError } from "../server/error.js";
 
 import { looksBlocked, looksChallenged } from "./page-check.js";
@@ -54,23 +55,17 @@ export function pageContent(
 ): string {
   const clean = cleanPage(text);
   if (looksChallenged(clean) || (title && looksChallenged(clean, title)))
-    throw new AppError(
-      "challenge",
-      "Anti-bot challenge remains. Try the site’s API, CLI or local browser.",
-    );
+    throw new AppError("challenge", messages.page.challenge);
   if (
     status === 401 ||
     looksBlocked(clean, status) ||
     (title && looksBlocked(clean, status, title))
   )
-    throw new AppError(
-      "blocked",
-      "Target blocked access. Try the site’s API, CLI or local browser.",
-    );
+    throw new AppError("blocked", messages.page.blocked);
   if (status !== undefined && (status < 200 || status >= 300)) {
-    throw new AppError("target_http", `Target returned HTTP ${status}.`);
+    throw new AppError("target_http", messages.page.targetHttp(status));
   }
   if (!/[\p{L}\p{N}]/u.test(clean))
-    throw new AppError("empty_page", "Target returned no readable content.");
+    throw new AppError("empty_page", messages.page.empty_page);
   return clean;
 }

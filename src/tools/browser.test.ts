@@ -1,3 +1,5 @@
+import { hostRule } from "../config/host-rules.js";
+import { mcpName, messages, noticeLabel } from "../config/messages.js";
 import { resultDivider } from "./result-format.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -32,7 +34,7 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
           if (action.action === "snapshot")
             return {
               text: snapshot,
-              warning: "One control is outside the viewport.",
+              note: messages.note.offscreen(1),
             };
           if (action.action === "navigate" && action.url.endsWith("/long"))
             return page;
@@ -73,19 +75,34 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
       url: "https://github.com/owner/repo",
     });
     assert.equal(github.isError, true);
-    assert.match(JSON.stringify(github.content), /Use the GitHub CLI/);
+    assert(Array.isArray(github.content));
+    assert(
+      github.content[0].text.includes(hostRule("github.com")!.accessError),
+    );
+    assert.equal(opened, 0);
+    for (const url of [
+      "https://old.reddit.com./r/example/",
+      "https://redd.it/abc",
+    ]) {
+      const reddit = await a.call({ action: "navigate", url });
+      assert.equal(reddit.isError, true);
+      assert(Array.isArray(reddit.content));
+      assert(
+        reddit.content[0].text.includes(hostRule("reddit.com")!.accessError),
+      );
+    }
     assert.equal(opened, 0);
     const command = { action: "navigate", url: "https://1.1.1.1/" } as const;
     assert.deepEqual((await a.call(command)).content, [
       {
         type: "text",
-        text: `search-scrape-mcp · Browser navigate · https://1.1.1.1/\n\n${resultDivider}\n\nBrowser 1\n\n${resultDivider}`,
+        text: `${mcpName} · ${messages.operation.browser("navigate")} · https://1.1.1.1/\n\n${resultDivider}\n\nBrowser 1\n\n${resultDivider}`,
       },
     ]);
     assert.deepEqual((await b.call(command)).content, [
       {
         type: "text",
-        text: `search-scrape-mcp · Browser navigate · https://1.1.1.1/\n\n${resultDivider}\n\nBrowser 2\n\n${resultDivider}`,
+        text: `${mcpName} · ${messages.operation.browser("navigate")} · https://1.1.1.1/\n\n${resultDivider}\n\nBrowser 2\n\n${resultDivider}`,
       },
     ]);
     for (const ref of ["e2", "f1e2"]) {
@@ -105,7 +122,7 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
     assert.deepEqual(screenshot.content, [
       {
         type: "text",
-        text: `search-scrape-mcp · Browser screenshot · https://1.1.1.1/\n\n${resultDivider}`,
+        text: `${mcpName} · ${messages.operation.browser("screenshot")} · https://1.1.1.1/\n\n${resultDivider}`,
       },
       { type: "image", mimeType: "image/jpeg", data: "YQ==" },
       { type: "text", text: resultDivider },
@@ -163,7 +180,7 @@ test("browser marks access pages until a readable navigation", async (t) => {
                 return { type: "image", mimeType: "image/jpeg", data: "YQ==" };
               return {
                 text: 'e1 link "Example"',
-                warning: "One control is outside the viewport.",
+                note: messages.note.offscreen(1),
               };
             },
             async close() {},
@@ -193,18 +210,24 @@ test("browser marks access pages until a readable navigation", async (t) => {
 
   const denied = await call({ action: "navigate", url: blocked });
   assert.equal(denied.response.isError, true);
-  assert.match(denied.text, /Error \(blocked\)/);
+  assert(denied.text.includes(`${noticeLabel.error} ${messages.page.blocked}`));
 
   url += "#details";
   const scroll = await call({ action: "scroll", pixels: 600 });
   assert.equal(scroll.response.isError, undefined);
-  assert.match(
-    scroll.text,
-    /Warning: Target blocked access\..*This output shows the access page\. One control/,
+  const [header] = scroll.text.split(resultDivider);
+  assert(
+    header?.includes(
+      `${noticeLabel.warning} ${messages.browser.accessPage.blocked}`,
+    ),
   );
-  assert(scroll.text.indexOf("Warning:") < scroll.text.indexOf(resultDivider));
+  assert(!header?.includes(messages.note.offscreen(1)));
   const screenshot = await call({ action: "screenshot" });
-  assert.match(screenshot.text, /Warning: Target blocked access/);
+  assert(
+    screenshot.text.includes(
+      `${noticeLabel.warning} ${messages.browser.accessPage.blocked}`,
+    ),
+  );
   assert.equal(
     (screenshot.response.content as { type: string }[])[1]?.type,
     "image",
@@ -212,11 +235,14 @@ test("browser marks access pages until a readable navigation", async (t) => {
 
   const redirected = await call({ action: "navigate", url: thread });
   assert.equal(redirected.response.isError, true);
-  assert.match(redirected.text, /Error \(sign_in\): The site requires sign-in/);
+  assert(
+    redirected.text.includes(`${noticeLabel.error} ${messages.page.sign_in}`),
+  );
   const snapshot = await call({ action: "snapshot" });
-  assert.match(
-    snapshot.text,
-    /Warning: The site requires sign-in\. This output shows the access page/,
+  assert(
+    snapshot.text.includes(
+      `${noticeLabel.warning} ${messages.browser.accessPage.sign_in}`,
+    ),
   );
 
   assert.equal(
@@ -224,6 +250,10 @@ test("browser marks access pages until a readable navigation", async (t) => {
     undefined,
   );
   const recovered = await call({ action: "snapshot" });
-  assert.match(recovered.text, /Warning: One control is outside the viewport/);
-  assert.doesNotMatch(recovered.text, /blocked access|sign-in|access page/);
+  assert(
+    recovered.text.includes(
+      `${noticeLabel.note} ${messages.note.offscreen(1)}`,
+    ),
+  );
+  assert(!recovered.text.includes(noticeLabel.warning));
 });

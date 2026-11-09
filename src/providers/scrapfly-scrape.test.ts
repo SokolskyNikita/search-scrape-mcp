@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
@@ -93,21 +94,15 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
       "https://api.scrapfly.io/scrape",
     );
     assert.equal(input.searchParams.get("url"), target);
-    assert.equal(
-      input.searchParams.get("proxy_pool"),
-      "public_datacenter_pool",
-    );
     assert.equal(init.redirect, "error");
     const rung = input.searchParams.has("render_js")
       ? "render"
-      : input.searchParams.has("unblocker")
+      : input.searchParams.get("proxy_pool") === "public_residential_pool"
         ? "unblocker"
         : "datacenter";
     assert.equal(input.searchParams.get("cost_budget"), "100");
-    assert.equal(
-      input.searchParams.get("timeout"),
-      { datacenter: "15000", unblocker: "30000", render: "30000" }[rung],
-    );
+    assert.equal(input.searchParams.get("unblocker"), "true");
+    assert.equal(input.searchParams.get("timeout"), "30000");
     if (rung === "render")
       assert.equal(input.searchParams.get("rendering_wait"), "1000");
     observed.push(rung);
@@ -119,7 +114,10 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
       return Response.json(success("# Page not found", target, 404));
     return Response.json(success());
   });
-  const provider = scrapflyScrape("fake-key");
+  const provider = scrapflyScrape("fake-key", {
+    ...defaults,
+    scrapflyUnblockerPool: "public_residential_pool",
+  });
   await assert.rejects(provider.scrape("http://127.0.0.1/"), {
     code: "unsafe_url",
   });
@@ -132,7 +130,8 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
     details: {
       tried: ["unblocker"],
       credits: 1,
-      hint: 'Retry with start_rung: "render".',
+      hint: messages.page.retryRung("render"),
+      retryRung: "render",
     },
   });
   const next: ScrapeOptions = { start: "render", tried: [] };
@@ -281,7 +280,8 @@ test("a per-request budget rejection escalates but insufficient account credit s
       code: "provider_cost_budget",
       details: {
         tried: ["datacenter", "unblocker"],
-        hint: 'Retry with start_rung: "render".',
+        hint: messages.page.retryRung("render"),
+        retryRung: "render",
       },
     },
   );
@@ -299,10 +299,10 @@ test("a per-request budget rejection escalates but insufficient account credit s
 
 test("the real tool deadline prevents an unfunded retry", async (t) => {
   const request = t.mock.method(globalThis, "fetch", async (url: URL) => {
-    assert.equal(url.searchParams.get("timeout"), "15000");
+    assert.equal(url.searchParams.get("timeout"), "30000");
     return Response.json({}, { status: 503, headers: { "Retry-After": "6" } });
   });
-  const deadline = performance.now() + 23_000;
+  const deadline = performance.now() + 38_000;
   await assert.rejects(
     scrapflyScrape("fixture").scrape(target, undefined, {
       deadline,
@@ -314,10 +314,13 @@ test("the real tool deadline prevents an unfunded retry", async (t) => {
 });
 
 test("escalation stops with the stronger rung hint if its minimum cannot fit", async (t) => {
-  const request = t.mock.method(globalThis, "fetch", async () =>
-    Response.json(success("# Access denied", target, 403)),
-  );
-  const deadline = performance.now() + 32_000;
+  let now = 1_000;
+  t.mock.method(performance, "now", () => now);
+  const request = t.mock.method(globalThis, "fetch", async () => {
+    now += 3_000;
+    return Response.json(success("# Access denied", target, 403));
+  });
+  const deadline = performance.now() + 35_000;
   await assert.rejects(
     scrapflyScrape("fixture").scrape(target, undefined, {
       deadline,
@@ -328,7 +331,8 @@ test("escalation stops with the stronger rung hint if its minimum cannot fit", a
       details: {
         tried: ["datacenter"],
         credits: 1,
-        hint: 'Retry with start_rung: "unblocker".',
+        hint: messages.page.retryRung("unblocker"),
+        retryRung: "unblocker",
       },
     },
   );
@@ -341,17 +345,21 @@ test("deferred escalation returns a usable warning and the next rung", async (t)
     (_, i) =>
       `[Read related stories for topic ${i}](https://example.com/topic/${i})`,
   ).join("\n");
-  const request = t.mock.method(globalThis, "fetch", async () =>
-    Response.json(success(menu)),
-  );
+  let now = 1_000;
+  t.mock.method(performance, "now", () => now);
+  const request = t.mock.method(globalThis, "fetch", async () => {
+    now += 3_000;
+    return Response.json(success(menu));
+  });
   const result = await scrapflyScrape("fixture").scrape(target, undefined, {
     tried: [],
-    deadline: performance.now() + 32_000,
+    deadline: performance.now() + 35_000,
   });
   assert.equal(result.markdown, menu);
   assert.equal(result.check.code, "menus_only");
   assert.equal(result.check.warning, true);
-  assert.equal(result.hint, 'Retry with start_rung: "unblocker".');
+  assert.equal(result.hint, messages.page.retryRung("unblocker"));
+  assert.equal(result.retryRung, "unblocker");
   assert.equal(request.mock.callCount(), 1);
 });
 
@@ -486,6 +494,7 @@ test("datacenter HEAD gates files by headers before paying for a download", asyn
     assert.equal(url.searchParams.get("proxy_pool"), "public_datacenter_pool");
     assert.equal(url.searchParams.get("cost_budget"), "100");
     assert.equal(url.searchParams.has("unblocker"), false);
+    assert.equal(url.searchParams.get("timeout"), "15000");
     assert.equal(url.searchParams.has("render_js"), false);
     if (init.method === "HEAD")
       return new Response(null, {
@@ -843,14 +852,17 @@ test("provider 429 logs unknown cost and prevents new calls during Retry-After",
     undefined,
     new FileHosts([], state),
   );
+  const retryAt = new Date(now + 30_000).toISOString();
   await assert.rejects(provider.scrape(target), {
     code: "provider_rate",
-    message: /busy.*30 s/,
+    message: messages.service.busy,
+    details: { retryAt, tried: ["datacenter"] },
   });
   now += 2000;
   await assert.rejects(provider.scrape(redirected), {
     code: "provider_rate",
-    message: /busy.*28 s/,
+    message: messages.service.busy,
+    details: { retryAt },
   });
   assert.equal(fetch.mock.callCount(), 1);
   now += 28000;
@@ -929,7 +941,7 @@ test("a challenge in the original HTML cannot become a successful extraction", a
   t.mock.method(globalThis, "fetch", async (url: URL) => {
     formats.push(url.searchParams.get("format")!);
     return htmlResponse(
-      url.searchParams.has("unblocker")
+      formats.length > 1
         ? article
         : article.replace(
             "<title>Weather station report</title>",
@@ -983,18 +995,22 @@ test("empty extraction returns original HTML without another request or charge",
 test("transient target failures escalate at 100 credits and stop above 100", async (t) => {
   let status = 503;
   let charge = 100;
-  const request = t.mock.method(globalThis, "fetch", async (url: URL) =>
-    Response.json(
-      url.searchParams.has("unblocker")
+  let firstAttempt = true;
+  const request = t.mock.method(globalThis, "fetch", async () => {
+    const first = firstAttempt;
+    firstAttempt = false;
+    return Response.json(
+      !first
         ? success()
         : {
             ...success("Try again later.", target, status),
             context: { cost: charge },
           },
-    ),
-  );
+    );
+  });
   for (const code of [503, 429]) {
     status = code;
+    firstAttempt = true;
     const tried: string[] = [];
     const provider = scrapflyScrape(
       "fixture",
@@ -1015,11 +1031,13 @@ test("transient target failures escalate at 100 credits and stop above 100", asy
     new FileHosts([], fileState(t)),
   );
   charge = 101;
+  firstAttempt = true;
   await assert.rejects(provider.scrape(target), {
     code: "provider_cost_overrun",
   });
   assert.equal(request.mock.callCount(), 5);
   charge = 0;
+  firstAttempt = true;
   status = 400;
   await assert.rejects(provider.scrape(target), { code: "target_http" });
   assert.equal(request.mock.callCount(), 6);

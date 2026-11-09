@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import { AppError } from "../server/error.js";
 
 export function browserActionError(error: unknown, action: string): AppError {
@@ -18,38 +19,26 @@ export function browserActionError(error: unknown, action: string): AppError {
     )
     .find(Boolean);
   if (count)
-    return new AppError(
-      "browser_action",
-      `The locator matched ${count} elements. Use a ref or a more specific selector.`,
-    );
+    return new AppError("browser_action", messages.browser.ambiguous(count));
   if (
     /Selector "aria-ref=(?:f\d+)?e\d+" does not match any element/.test(
       headline,
     )
   )
-    return new AppError(
-      "browser_ref",
-      "Unknown or stale element ref. Take a new snapshot.",
-    );
+    return new AppError("browser_ref", messages.browser.staleRef);
   if (
     /Element is not an <input>, <textarea> or \[contenteditable\] element/.test(
       headline,
     )
   )
-    return new AppError(
-      "browser_action",
-      "The target cannot be filled. Use an editable field.",
-    );
+    return new AppError("browser_action", messages.browser.notEditable);
   if (timeout) {
     const detail = state
       ? state[1]
-        ? ` The element is not ${state[1]}.`
-        : " The element is outside the viewport."
-      : "";
-    return new AppError(
-      "browser_action",
-      `Browser ${action} timed out after ${timeout} ms.${detail}`,
-    );
+        ? messages.browser.elementState(state[1])
+        : messages.browser.elementOffscreen
+      : messages.browser.actionTimeout(action);
+    return new AppError("browser_action", detail);
   }
-  return new AppError("browser_action", `Browser ${action} failed.`);
+  return new AppError("browser_action", messages.browser.actionFailed(action));
 }

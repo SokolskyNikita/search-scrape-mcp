@@ -42,6 +42,7 @@ export type ScrapeResult = {
   finalUrl?: string;
   check: PageCheck;
   hint?: string;
+  retryRung?: ScrapeRung;
   binary?: { bytes: Buffer; mimeType: string; extension?: string };
   extraction?: { cause: ExtractionCause; html: string };
   credits?: number;
@@ -70,7 +71,7 @@ export type BrowserNavigation = {
   title: string;
   text: string;
 };
-export type BrowserSnapshot = { text: string; warning?: string };
+export type BrowserSnapshot = { text: string; note?: string };
 export type BrowserTarget = { selector?: string; ref?: string };
 export type BrowserImage = {
   type: "image";

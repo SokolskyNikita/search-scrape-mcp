@@ -1,3 +1,4 @@
+import { hostRule } from "../config/host-rules.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { validatePublicUrl } from "./target.js";
@@ -17,7 +18,7 @@ test("target URL policy rejects GitHub domains and subdomains before DNS", async
   ]) {
     await assert.rejects(
       validatePublicUrl(`https://${host}/`),
-      { code: "unsafe_url", message: /Use the GitHub CLI/ },
+      { code: "unsafe_url", message: hostRule(host)!.accessError },
       host,
     );
   }

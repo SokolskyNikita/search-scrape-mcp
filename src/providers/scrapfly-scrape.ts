@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import { FileHosts, normalizeFileHost } from "../config/file-hosts.js";
 import {
   SCRAPFLY_COST_OBSERVATIONS_REQUIRED,
@@ -19,6 +20,7 @@ import type { Usage } from "../server/usage.js";
 import {
   scrapeReserveMs,
   scrapflyTimeoutMs,
+  scrapflyFileTimeoutMs,
   toolTimeoutMs,
 } from "../config/deadline.js";
 import { defaults, type Tuning } from "../config/tuning.js";
@@ -116,11 +118,9 @@ function creditHeader(response: Response, name: string) {
 }
 
 function busy(retryAt: number) {
-  const seconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
-  return new AppError(
-    "provider_rate",
-    `Scrapfly is busy. Retry after ${seconds} s.`,
-  );
+  return new AppError("provider_rate", messages.service.busy, {
+    retryAt: new Date(retryAt).toISOString(),
+  });
 }
 
 function retryDelay(response: Response): number | undefined {
@@ -142,10 +142,7 @@ function providerError(status: number, code: string) {
       `Scrapfly rejected the proxy pool for this host (${code}). Scrapfly may require residential access, which starts at ${residentialBaseCredits} credits.`,
     );
   if (code === "ERR::SCRAPE::DOMAIN_NOT_ALLOWED")
-    return new AppError(
-      "unsafe_url",
-      "Scrapfly refused a restricted target or redirect.",
-    );
+    return new AppError("unsafe_url", messages.input.publicUrl);
   if (code.includes("COST_BUDGET"))
     return new AppError(
       "provider_cost_budget",
@@ -298,7 +295,7 @@ async function requestPage(
   }).toString();
   if (settings.scrapflyCountry)
     endpoint.searchParams.set("country", settings.scrapflyCountry);
-  if (rung !== "datacenter") endpoint.searchParams.set("unblocker", "true");
+  if (!operation) endpoint.searchParams.set("unblocker", "true");
   if (rung === "render") {
     endpoint.searchParams.set("render_js", "true");
     endpoint.searchParams.set(
@@ -405,11 +402,7 @@ async function requestPage(
     }
     function redirect(from: string, location: string) {
       const url = URL.parse(location, from);
-      if (!url)
-        throw new AppError(
-          "unsafe_url",
-          "Scrapfly reported an invalid redirect.",
-        );
+      if (!url) throw new AppError("unsafe_url", messages.input.redirect);
       hops.add(url.href);
     }
     for (const hop of data?.context?.redirects ?? []) {
@@ -440,10 +433,7 @@ async function requestPage(
       if (location) {
         const redirected = URL.parse(location, target);
         if (!redirected)
-          throw new AppError(
-            "unsafe_url",
-            "Scrapfly reported an invalid redirect.",
-          );
+          throw new AppError("unsafe_url", messages.input.redirect);
         await validatePublicUrl(redirected.href);
       }
     }
@@ -457,6 +447,7 @@ async function requestPage(
         throw refuseFile(
           { type: "unknown" },
           "the target timed out during the HEAD check. A retry may work.",
+          messages.file.unknownSize,
         );
       const metadata = fileHeaders(
         response.headers.get("content-type"),
@@ -466,6 +457,7 @@ async function requestPage(
         throw refuseFile(
           { type: "unknown" },
           "datacenter HEAD did not verify the target.",
+          messages.file.unknownSize,
         );
       const warning = costWarning();
       if (warning) throw new AppError("provider_cost_overrun", warning);
@@ -531,6 +523,7 @@ async function requestPage(
         throw refuseFile(
           metadata,
           `Scrapfly returned a BLOB (over 5 MB).${credits === null ? "" : ` Scrapfly reported ${credits} credits for the scrape.`}`,
+          messages.file.tooLarge,
         );
       if (
         result.status_code < 200 ||
@@ -552,6 +545,7 @@ async function requestPage(
         throw refuseFile(
           { type: metadata.type, size: bytes.length },
           "the downloaded file exceeded 5 MB.",
+          messages.file.tooLarge,
         );
       if (
         !bytes.length ||
@@ -793,7 +787,9 @@ export function scrapflyScrape(
             `Scrapfly reported ${overrunCredits} credits on a previous attempt.`,
           );
         checkBackoff();
-        const timeout = scrapflyTimeoutMs[rung];
+        const timeout = operation
+          ? scrapflyFileTimeoutMs
+          : scrapflyTimeoutMs[rung];
         const dispatch: DispatchScrape = (task, requestSignal) => {
           if (!limits || !admission) return task();
           return limits.run(
@@ -832,10 +828,11 @@ export function scrapflyScrape(
       }
       const filePath = looksLikeFile(target);
       if (filePath || knownFile) {
-        if (remaining() < scrapflyTimeoutMs.datacenter)
+        if (remaining() < scrapflyFileTimeoutMs)
           throw refuseFile(
             { type: "unknown" },
             "too little time remains for the HEAD check.",
+            messages.service.timeout,
           );
         const checked = await attempt("datacenter", "head");
         if ("error" in checked) {
@@ -847,6 +844,7 @@ export function scrapflyScrape(
             throw refuseFile(
               { type: "unknown" },
               `datacenter HEAD failed. ${checked.error.message}`,
+              messages.file.unknownSize,
             );
           throw checked.error;
         }
@@ -856,18 +854,28 @@ export function scrapflyScrape(
           throw refuseFile(
             checked.head,
             "datacenter HEAD reported an HTML page for the file URL.",
+            messages.file.html,
           );
         if (!isHtml(checked.head.type)) {
           file = checked.head;
           if (options.start && options.start !== "datacenter")
-            throw refuseFile(file, "downloads are allowed only on datacenter.");
+            throw refuseFile(
+              file,
+              "downloads are allowed only on datacenter.",
+              messages.file.mode,
+            );
           if (file.size === undefined)
             throw refuseFile(
               file,
               "datacenter HEAD did not report a valid content length.",
+              messages.file.unknownSize,
             );
           if (file.size > maxFileBytes)
-            throw refuseFile(file, "the size exceeds 5 MB.");
+            throw refuseFile(
+              file,
+              "the size exceeds 5 MB.",
+              messages.file.tooLarge,
+            );
         }
       }
       const known = hosts.get(host);
@@ -885,7 +893,7 @@ export function scrapflyScrape(
         index < scrapeRungs.length;
       ) {
         const rung = scrapeRungs[index]!;
-        const timeout = scrapflyTimeoutMs[rung];
+        const timeout = file ? scrapflyFileTimeoutMs : scrapflyTimeoutMs[rung];
         const defer = advancedRung !== undefined && advancedRung !== rung;
         if (signal.aborted || remaining() < timeout || defer) {
           if (protectedSite && !hosts.has(host)) remember(host, 1);
@@ -893,9 +901,10 @@ export function scrapflyScrape(
             throw refuseFile(
               file,
               "too little time remains for a datacenter download.",
+              messages.service.timeout,
             );
-          const hint = `Retry with start_rung: "${rung}".`;
-          if (warning) return { ...warning, hint };
+          const hint = messages.page.retryRung(rung);
+          if (warning) return { ...warning, hint, retryRung: rung };
           throw new AppError(
             lastBudgetError?.code ?? "stronger_rung_required",
             lastBudgetError?.message ??
@@ -905,6 +914,7 @@ export function scrapflyScrape(
             {
               tried: options.tried,
               hint,
+              retryRung: rung,
             },
           );
         }
@@ -981,16 +991,15 @@ export function scrapflyScrape(
           if (remaining() < scrapflyTimeoutMs.unblocker || signal.aborted)
             throw new AppError(check.code, check.reason, {
               tried: options.tried,
-              hint: 'Try start_rung: "unblocker".',
+              hint: messages.page.retryRung("unblocker"),
+              retryRung: "unblocker",
             });
           index++;
           continue;
         }
         const next = check.next === "render" ? 2 : index + 1;
         const stronger = scrapeRungs[next];
-        const hint = stronger
-          ? `Try start_rung: "${stronger}" for a stronger fetch.`
-          : undefined;
+        const hint = stronger ? messages.page.retryRung(stronger) : undefined;
         if (
           check.code === "ok" ||
           (check.warning &&
@@ -1008,6 +1017,7 @@ export function scrapflyScrape(
             check,
             finalUrl,
             hint: check.next ? hint : undefined,
+            ...(check.next && stronger ? { retryRung: stronger } : {}),
           };
         }
         if (index === previous) hosts.delete(host);
@@ -1017,6 +1027,7 @@ export function scrapflyScrape(
           throw new AppError(check.code, check.reason, {
             tried: options.tried,
             hint: check.next ? hint : undefined,
+            ...(check.next && stronger ? { retryRung: stronger } : {}),
           });
         }
         if (check.warning && markdown) warning = { markdown, check, finalUrl };

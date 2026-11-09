@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { defaults } from "../config/tuning.js";
 import { toolTimeoutMs } from "../config/deadline.js";
@@ -101,10 +102,7 @@ export async function toolResult(
   let errorCode: string | null = null;
   const providers = new Set<string>();
   const controller = new AbortController();
-  const timeoutError = new AppError(
-    "tool_timeout",
-    `Tool exceeded its ${settings.toolDeadlineSeconds}-second deadline.`,
-  );
+  const timeoutError = new AppError("tool_timeout", messages.service.timeout);
   let timer: NodeJS.Timeout | undefined;
   try {
     const deadline = new Promise<never>((_, reject) => {
@@ -128,34 +126,12 @@ export async function toolResult(
     ]);
     const cached = isCachedSearch(result);
     const value = cached ? result.value : result;
-    if (presentation) return presentedResult(presentation, value, cached);
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: typeof value === "string" ? value : JSON.stringify(value),
-        },
-        ...(cached ? [{ type: "text" as const, text: '{"cached":true}' }] : []),
-      ],
-    };
+    return presentedResult(presentation ?? { operation: name }, value, cached);
   } catch (error) {
     const failure = safeError(error);
     errorCode = failure.code;
     if (failure.code === "internal") console.error("Unexpected tool error.");
-    if (presentation) return presentedError(presentation, failure);
-    return {
-      isError: true,
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify({
-            code: failure.code,
-            reason: failure.message,
-            ...failure.details,
-          }),
-        },
-      ],
-    };
+    return presentedError(presentation ?? { operation: name }, failure);
   } finally {
     clearTimeout(timer);
     writeToolStats(

@@ -1,3 +1,4 @@
+import { messages } from "../config/messages.js";
 import { toolInput } from "./input.js";
 import { checkPage } from "./page-check.js";
 import { pageContent } from "./page-content.js";
@@ -7,7 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { BrowserProvider, BrowserSession } from "../providers/types.js";
 import { AppError } from "../server/error.js";
-import { validatePublicUrl } from "../server/target.js";
+import { validateBrowserUrl } from "../server/target.js";
 import type { OutputFiles } from "./output-files.js";
 import { fallback, toolResult } from "./shared.js";
 
@@ -40,18 +41,18 @@ const schema = z.discriminatedUnion("action", [
   }),
   toolInput({ action: z.literal("click"), ...target }).refine(
     oneTarget,
-    "Provide one ref or selector.",
+    messages.input.target,
   ),
   toolInput({
     action: z.literal("fill"),
     ...target,
     text: z.string().max(2000),
-  }).refine(oneTarget, "Provide one ref or selector."),
+  }).refine(oneTarget, messages.input.target),
   toolInput({
     action: z.literal("press"),
     ...target,
     key: z.string().min(1).max(32),
-  }).refine(oneTarget, "Provide one ref or selector."),
+  }).refine(oneTarget, messages.input.target),
   toolInput({
     action: z.literal("scroll"),
     pixels: z.number().int().min(-10000).max(10000).default(600),
@@ -116,27 +117,22 @@ export function registerBrowser(
       return toolResult(
         "browser",
         async (attempt, signal) => {
-          if (closed || active)
-            throw new AppError(
-              "browser_busy",
-              "Browser session is busy or closed.",
-            );
+          if (closed)
+            throw new AppError("browser_closed", messages.browser.closed);
+          if (active) throw new AppError("browser_busy", messages.browser.busy);
           clearTimeout(idle);
           const run = async () => {
             if (command.action === "close") {
               if (browser) attempt(browserProvider);
               await close();
-              return "Browser closed.";
+              return messages.browser.closedResult;
             }
             if (!browser && command.action !== "navigate") {
-              throw new AppError(
-                "browser_closed",
-                "Navigate to a URL to open the browser.",
-              );
+              throw new AppError("browser_closed", messages.browser.closed);
             }
             const target =
               !browser && command.action === "navigate"
-                ? await validatePublicUrl(command.url)
+                ? await validateBrowserUrl(command.url)
                 : undefined;
             if (browser) attempt(browserProvider);
             else
@@ -159,7 +155,7 @@ export function registerBrowser(
                 return result;
               }
               let markdown: string;
-              let warning: string | undefined;
+              let note: string | undefined;
               if (typeof result === "string") {
                 markdown = result;
               } else if ("url" in result) {
@@ -179,11 +175,9 @@ export function registerBrowser(
                 markdown = heading + readable;
               } else {
                 markdown = result.text;
-                warning = result.warning;
+                note = result.note;
               }
-              const notices = [currentWarning(), warning]
-                .filter(Boolean)
-                .join(" ");
+              const warning = currentWarning();
               const output = files.spill(
                 markdown,
                 settings.browserInlineChars,
@@ -191,7 +185,8 @@ export function registerBrowser(
               return {
                 ...output,
                 ...(responseUrl ? { url: responseUrl } : {}),
-                ...(notices ? { warning: notices } : {}),
+                ...(warning ? { warning } : {}),
+                ...(note ? { note } : {}),
               };
             } catch (error) {
               responseUrl = pageUrl() ?? responseUrl;
@@ -199,11 +194,14 @@ export function registerBrowser(
               if (
                 url &&
                 error instanceof AppError &&
-                ["blocked", "challenge", "sign_in"].includes(error.code)
+                Object.hasOwn(messages.browser.accessPage, error.code)
               )
                 accessWarning = {
                   url,
-                  message: `${error.message} This output shows the access page.`,
+                  message:
+                    messages.browser.accessPage[
+                      error.code as keyof typeof messages.browser.accessPage
+                    ],
                 };
               if (
                 signal.aborted ||
@@ -232,7 +230,8 @@ export function registerBrowser(
         settings,
         {
           presentation: {
-            operation: `Browser ${command.action}`,
+            operation: messages.operation.browser(command.action),
+            service: "browser",
             target: () => requested ?? responseUrl,
             imageWarning: () => imageWarning,
           },
