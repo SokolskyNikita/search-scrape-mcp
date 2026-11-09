@@ -615,8 +615,10 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     assert.equal(result.isError, undefined, name);
     assert(Array.isArray(result.content));
     const heading = `${mcpName} · ${operation} · ${target}${page ? ` · ${messages.label.searchPage(page)}` : ""}`;
+    if (name === "scrape_batch")
+      assert.match(result.content[0].text, /Batch status:.*1. readable/s);
     assert.deepEqual(
-      result.content,
+      name === "scrape_batch" ? result.content.slice(1) : result.content,
       [
         {
           type: "text",

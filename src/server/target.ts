@@ -1,5 +1,5 @@
 import { messages } from "../config/messages.js";
-import { hostRule, type HostAccess } from "../config/host-rules.js";
+import { urlRule, type HostAccess } from "../config/host-rules.js";
 import { MAX_URL_CHARS } from "../config/safety-limits.js";
 import { Resolver } from "node:dns/promises";
 import ipaddr from "ipaddr.js";
@@ -46,7 +46,7 @@ async function validateUrl(value: string, access: HostAccess): Promise<URL> {
   if (url.port) throw forbidden(messages.input.port);
 
   const host = url.hostname.replace(/^\[|\]$|\.$/g, "");
-  const rule = hostRule(host);
+  const rule = urlRule(url);
   if (rule?.denied.includes(access)) throw forbidden(rule.accessError);
   if (ipaddr.isValid(host)) {
     if (!publicIp(host)) throw forbidden(messages.input.publicUrl);

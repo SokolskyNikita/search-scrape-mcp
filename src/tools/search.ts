@@ -1,6 +1,6 @@
 import { messages } from "../config/messages.js";
 import { isIP } from "node:net";
-import { hostRule } from "../config/host-rules.js";
+import { urlRule, youtubeVideoId } from "../config/host-rules.js";
 import { MAX_URL_CHARS } from "../config/safety-limits.js";
 import { toolInput } from "./input.js";
 import type { ResultCache } from "./result-cache.js";
@@ -87,8 +87,56 @@ const input = toolInput({
 function withAccessHints(hits: SearchHit[]) {
   return hits.map((hit) => {
     const url = URL.parse(hit.url);
-    const hint = url && hostRule(url.hostname)?.searchHint;
+    const hint = url && urlRule(url)?.searchHint;
     return hint ? { ...hit, accessHint: hint } : hit;
+  });
+}
+
+function searchUrlKey(value: string) {
+  const url = URL.parse(value);
+  if (!url) return value;
+  url.hash = "";
+  for (const key of [...url.searchParams.keys()]) {
+    if (key.startsWith("utm_") || ["srsltid", "fbclid", "gclid"].includes(key))
+      url.searchParams.delete(key);
+  }
+  const id = youtubeVideoId(url);
+  return id ? `youtube:${id}` : url.href;
+}
+
+type BatchHit = SearchHit & {
+  also_found_in?: { query_index: number; rank: number }[];
+};
+
+function deduplicateBatch<T extends { index: number; result?: SearchHit[] }>(
+  items: T[],
+) {
+  const seen = new Map<string, { queryIndex: number; hit: BatchHit }>();
+  return items.map((item) => {
+    if (!item.result) return item;
+    const queryIndex = item.index + 1;
+    const result: BatchHit[] = [];
+    for (const [index, hit] of item.result.entries()) {
+      const key = searchUrlKey(hit.url);
+      const first = seen.get(key);
+      if (first) {
+        if (first.queryIndex !== queryIndex)
+          (first.hit.also_found_in ??= []).push({
+            query_index: queryIndex,
+            rank: index + 1,
+          });
+      } else {
+        const copy = { ...hit };
+        seen.set(key, { queryIndex, hit: copy });
+        result.push(copy);
+      }
+    }
+    const removed = item.result.length - result.length;
+    return {
+      ...item,
+      result,
+      ...(removed ? { duplicates_removed: removed } : {}),
+    };
   });
 }
 
@@ -164,13 +212,16 @@ export function registerSearch(
     ({ searches }) =>
       toolResult(
         "search_batch",
-        (attempt, signal, deadline) =>
-          batch(
-            searches,
-            (args, itemAttempt) => search(args, itemAttempt, signal, deadline),
-            (args) => args.site,
-            { tool: "search_batch", attempt, settings },
-            signal,
+        async (attempt, signal, deadline) =>
+          deduplicateBatch(
+            await batch(
+              searches,
+              (args, itemAttempt) =>
+                search(args, itemAttempt, signal, deadline),
+              (args) => args.site,
+              { tool: "search_batch", attempt, settings },
+              signal,
+            ),
           ),
         settings,
         {

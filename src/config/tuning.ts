@@ -40,6 +40,30 @@ export const tuningSchema = z.object({
     10,
     "Maximum accumulated Scrapfly scrape request tokens.",
   ),
+  youtubeJobGapMs: integer(
+    1,
+    60_000,
+    5_000,
+    "Rest after a yt-dlp job exits. At most one job runs at a time.",
+  ),
+  youtubeLimitWaitMs: integer(
+    0,
+    550_000,
+    240_000,
+    "Maximum wait for a yt-dlp job permit, within the tool deadline.",
+  ),
+  youtubeRequestGapMs: integer(
+    0,
+    60_000,
+    3_000,
+    "Delay between yt-dlp extraction requests and before the caption fetch.",
+  ),
+  youtubeCooldownMs: integer(
+    1_000,
+    3_600_000,
+    120_000,
+    "Server-wide yt-dlp cooldown after an HTTP 429.",
+  ),
   providerConcurrency: integer(
     1,
     32,
@@ -86,19 +110,19 @@ export const tuningSchema = z.object({
     0,
     3_600_000,
     600_000,
-    "Successful search and scrape cache lifetime in milliseconds. Zero disables caching.",
+    "Successful tool result cache lifetime in milliseconds. Zero disables caching.",
   ),
   cacheMaxEntries: integer(
     1,
     10_000,
     128,
-    "Maximum entries in each of the search and scrape caches.",
+    "Maximum entries in each result cache.",
   ),
   cacheMaxBytes: integer(
     1,
     100_000_000,
     16_000_000,
-    "Maximum serialized bytes in each of the search and scrape caches.",
+    "Maximum serialized bytes in each result cache.",
   ),
 
   toolDeadlineSeconds: integer(

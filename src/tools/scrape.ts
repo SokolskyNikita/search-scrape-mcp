@@ -269,7 +269,16 @@ export function registerScrape(
         " " +
         messages.page.untrusted,
       inputSchema: toolInput({
-        urls: z.array(urlInput).min(1).max(3),
+        urls: z
+          .array(urlInput)
+          .min(1)
+          .max(
+            3,
+            "Use at most three URLs per call. Split larger lists into separate scrape_batch calls.",
+          )
+          .describe(
+            "One to three URLs. Split larger lists into groups of at most three.",
+          ),
         ...scrapeFields,
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -299,7 +308,11 @@ export function registerScrape(
         settings,
         {
           partialOnTimeout: true,
-          presentation: { operation: messages.operation.scrape, targets: urls },
+          presentation: {
+            operation: messages.operation.scrape,
+            targets: urls,
+            batchSummary: true,
+          },
         },
       ),
   );

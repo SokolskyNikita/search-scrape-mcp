@@ -9,10 +9,12 @@ import {
 } from "../providers/scrapfly-browser.js";
 import { scrapflyScrape } from "../providers/scrapfly-scrape.js";
 import { serper } from "../providers/serper.js";
+import { ytDlp } from "../providers/yt-dlp.js";
 import { registerBrowser } from "../tools/browser.js";
 import { OutputFiles } from "../tools/output-files.js";
 import { registerScrape } from "../tools/scrape.js";
 import { registerSearch } from "../tools/search.js";
+import { youtubeTool } from "../tools/youtube.js";
 import { createMcpHttp } from "./http.js";
 
 export function createApp(config: Config) {
@@ -36,9 +38,11 @@ export function createApp(config: Config) {
 
   const files = new OutputFiles(config.outputDirectory, config);
   files.cleanup();
+  const registerYouTube = youtubeTool([ytDlp(limits, config)], files, config);
   const server = createMcpHttp(
     config.token,
     (mcp) => {
+      registerYouTube(mcp);
       registerSearch(
         mcp,
         config.searchProviders.map((name) => search[name]),

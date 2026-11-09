@@ -220,7 +220,8 @@ export function createMcpHttp(
         const cleanup = register(mcp);
         const transport = new ToolTransport({
           sessionIdGenerator: randomUUID,
-          enableJsonResponse: true,
+          // Related progress notifications travel on the request’s SSE stream.
+          enableJsonResponse: false,
           onsessioninitialized: (sessionId) => {
             sessions.set(sessionId, { transport, active: 0, used: Date.now() });
           },

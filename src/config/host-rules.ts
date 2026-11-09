@@ -7,6 +7,13 @@ type HostRule = {
   searchHint: string;
 };
 
+const youtubeRule: HostRule = {
+  domains: ["youtube.com", "youtu.be"],
+  denied: ["scrape"],
+  accessError: "Use the youtube tool to open YouTube video links.",
+  searchHint: "Use the youtube tool for YouTube video metadata and captions.",
+};
+
 const hostRules: readonly HostRule[] = [
   {
     domains: [
@@ -24,6 +31,7 @@ const hostRules: readonly HostRule[] = [
     searchHint:
       "search-scrape-mcp doesn't support opening GitHub links. Use gh instead.",
   },
+  youtubeRule,
   {
     domains: ["reddit.com", "redd.it"],
     denied: ["browser"],
@@ -37,4 +45,34 @@ export function hostRule(hostname: string) {
   return hostRules.find(({ domains }) =>
     domains.some((domain) => host === domain || host.endsWith(`.${domain}`)),
   );
+}
+
+export function youtubeVideoId(url: URL) {
+  if (
+    hostRule(url.hostname) !== youtubeRule ||
+    !["http:", "https:"].includes(url.protocol) ||
+    url.port ||
+    url.username ||
+    url.password
+  )
+    return undefined;
+
+  const host = url.hostname.replace(/\.$/, "");
+  const id =
+    host === "youtu.be"
+      ? /^\/([\w-]{11})\/?$/.exec(url.pathname)?.[1]
+      : url.pathname === "/watch"
+        ? url.searchParams.get("v")
+        : /^\/(?:shorts|live|embed)\/([\w-]{11})\/?$/.exec(url.pathname)?.[1];
+  return id && /^[\w-]{11}$/.test(id) ? id : undefined;
+}
+
+export function urlRule(url: URL) {
+  const rule = hostRule(url.hostname);
+  if (rule === youtubeRule && !youtubeVideoId(url)) {
+    const message =
+      "Use browser for this YouTube page. The youtube tool accepts individual video links.";
+    return { ...rule, accessError: message, searchHint: message };
+  }
+  return rule;
 }

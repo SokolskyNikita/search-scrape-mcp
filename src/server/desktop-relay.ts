@@ -29,12 +29,24 @@ try {
   relay.setRequestHandler(ListToolsRequestSchema, (request, { signal }) =>
     client.listTools(request.params, { signal }),
   );
-  relay.setRequestHandler(CallToolRequestSchema, (request, { signal }) =>
-    client.callTool(request.params, undefined, {
-      signal,
+  relay.setRequestHandler(CallToolRequestSchema, (request, extra) => {
+    const progressToken = request.params._meta?.progressToken;
+    return client.callTool(request.params, undefined, {
+      signal: extra.signal,
       timeout: relayTimeoutMs(settings),
-    }),
-  );
+      onprogress:
+        progressToken === undefined
+          ? undefined
+          : (progress) => {
+              void extra
+                .sendNotification({
+                  method: "notifications/progress",
+                  params: { ...progress, progressToken },
+                })
+                .catch(() => {});
+            },
+    });
+  });
 
   let closing = false;
   async function close() {

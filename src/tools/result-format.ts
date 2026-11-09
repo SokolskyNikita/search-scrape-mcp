@@ -12,6 +12,8 @@ export type ResultPresentation = {
   targets?: (string | undefined)[];
   page?: number;
   pages?: number[];
+  jsonBody?: true;
+  batchSummary?: true;
   imageWarning?: () => string | undefined;
 };
 
@@ -23,6 +25,7 @@ type ResultItem = {
   result?: unknown;
   error?: ResultError;
   cached?: true;
+  duplicates_removed?: number;
 };
 type PageResult = {
   markdown?: string;
@@ -168,6 +171,7 @@ function resultFrame(
   value: unknown,
   cached = false,
   pageNumber?: number,
+  duplicatesRemoved?: number,
 ) {
   const page: PageResult =
     typeof value === "string"
@@ -181,6 +185,10 @@ function resultFrame(
           : { note: messages.note.noResults }
         : (value as PageResult);
   const notices: string[] = [];
+  if (duplicatesRemoved)
+    notices.push(
+      notice("note", `Duplicate search hits removed: ${duplicatesRemoved}.`),
+    );
   const body =
     [
       page.markdown ?? page.preview,
@@ -232,13 +240,61 @@ export function presentedResult(
       ...(pages ? { page: pages[item.index] } : {}),
       ...(item.error ? { error: publicError(item.error, service, true) } : {}),
     }));
+    const summary = presentation.batchSummary
+      ? items.map(({ index, target, result, error }) => {
+          const page = result as PageResult | undefined;
+          const status =
+            error || !page || (page.check && page.check.code !== "ok")
+              ? "failed"
+              : page.extractionWarning
+                ? "partial"
+                : page.path
+                  ? "saved_to_file"
+                  : "readable";
+          const code =
+            error?.code ?? page?.extractionWarning?.code ?? page?.check?.code;
+          return {
+            index,
+            target,
+            url: page?.url ?? target,
+            status,
+            ...(code && code !== "ok" ? { code } : {}),
+          };
+        })
+      : undefined;
     return {
-      content: items.map(({ result, error, target, cached, page }) =>
-        error
-          ? frame(operation, target, errorNotices(error), undefined, page)
-          : resultFrame(operation, target, result, cached, page),
-      ),
-      structuredContent: { items },
+      content: [
+        ...(summary
+          ? [
+              frame(
+                operation,
+                undefined,
+                [],
+                [
+                  "Batch status:",
+                  ...summary.map(
+                    ({ index, url, status, code }) =>
+                      `${index + 1}. ${status}${code ? ` (${code})` : ""} — ${oneLine(url ?? "")}`,
+                  ),
+                ].join("\n"),
+              ),
+            ]
+          : []),
+        ...items.map(
+          ({ result, error, target, cached, page, duplicates_removed }) =>
+            error
+              ? frame(operation, target, errorNotices(error), undefined, page)
+              : resultFrame(
+                  operation,
+                  target,
+                  result,
+                  cached,
+                  page,
+                  duplicates_removed,
+                ),
+        ),
+      ],
+      structuredContent: { items, ...(summary ? { summary } : {}) },
     };
   }
   if (
@@ -262,7 +318,15 @@ export function presentedResult(
   }
   return {
     content: [
-      resultFrame(operation, target?.(), value, Boolean(cachedAt), page),
+      resultFrame(
+        operation,
+        target?.(),
+        presentation.jsonBody
+          ? { ...(value as PageResult), markdown: JSON.stringify(value) }
+          : value,
+        Boolean(cachedAt),
+        page,
+      ),
     ],
     structuredContent: Array.isArray(value)
       ? {

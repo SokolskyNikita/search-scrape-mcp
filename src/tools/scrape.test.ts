@@ -130,9 +130,13 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   });
   const blocks = mixed.content;
   assert(Array.isArray(blocks));
-  assert.equal(blocks.length, 3);
+  assert.equal(blocks.length, 4);
+  assert.match(
+    blocks[0].text,
+    /1. saved_to_file.*2. failed.*3. saved_to_file/s,
+  );
   assert(
-    blocks[1].text.startsWith(
+    blocks[2].text.startsWith(
       `${mcpName} · ${messages.operation.scrape} · https://www.github.com`,
     ),
   );

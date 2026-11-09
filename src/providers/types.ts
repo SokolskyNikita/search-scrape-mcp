@@ -1,3 +1,4 @@
+import type { YouTubeProgress } from "../server/youtube-queue.js";
 import type { ExtractionCause } from "../tools/main-content.js";
 import type { PageCheck } from "../tools/page-check.js";
 
@@ -114,4 +115,34 @@ export interface BrowserSession {
 export interface BrowserProvider {
   readonly name?: string;
   open(signal?: AbortSignal, target?: URL): Promise<BrowserSession>;
+}
+
+export type YouTubeTranscript =
+  | {
+      status: "ok";
+      language: string;
+      kind: "manual" | "automatic";
+      translated: boolean;
+      segments: { start_seconds: number; text: string }[];
+    }
+  | { status: "no_captions" | "rate_limited" | "unavailable" };
+
+export interface YouTubeResult {
+  url: string;
+  title?: string;
+  channel?: string;
+  upload_date?: string;
+  description?: string;
+  transcript?: YouTubeTranscript;
+}
+
+export interface YouTubeProvider {
+  name: string;
+  fetch(
+    videoId: string,
+    transcript: boolean,
+    signal: AbortSignal,
+    deadline: number,
+    notify?: (progress: YouTubeProgress) => void,
+  ): Promise<YouTubeResult>;
 }

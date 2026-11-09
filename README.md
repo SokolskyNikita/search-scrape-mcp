@@ -99,8 +99,12 @@ The relay forwards requests to the shared HTTP process.
 | `scrape`       | `{"url":"https://example.com/"}`                                 | Markdown or a saved binary download.                                |
 | `scrape_batch` | `{"urls":["https://example.com/"]}`                              | Up to three scrapes.                                                |
 | `browser`      | `{"command":{"action":"navigate","url":"https://example.com/"}}` | Open a remote browser tab and return page text.                     |
+| `youtube`      | `{"url":"https://youtu.be/0yIfx7JlkiM","transcript":true}`       | Video metadata and optional timestamped captions.                   |
 
-Batches preserve input order and report errors per item. They run up to two
+Batches preserve input order and report errors per item. Search batches keep a
+duplicate link in its first query, with `also_found_in` listing later query
+indices and original ranks. Affected queries report `duplicates_removed`.
+Scrape batches start with a per-URL status summary. They run up to two
 items concurrently and serialize items for the same hostname. The tool deadline
 can interrupt a batch before all items finish.
 
@@ -115,6 +119,29 @@ Tool argument errors use the same layout and identify the fields to correct.
 Pass `fresh: true` to either scrape tool, a single search, or a search batch item
 to bypass the cache. Structured cache hits include `cached: true` and the
 insertion timestamp `cached_at`. A cached result is also labeled in the text.
+
+### YouTube
+
+The `youtube` tool accepts watch, Shorts, live, embed, and youtu.be video links. It returns
+metadata by default. Set `transcript: true` to request one caption track.
+It prefers original-language captions, then English, and reports when no
+captions are available or YouTube rate-limits the request. Large transcripts
+return a bounded preview and a local JSON file reference. With
+`transcript: true`, use `start_seconds` (inclusive) and `end_seconds` (exclusive)
+to select captions by their start times. Excerpts reuse the cached full
+transcript. Set `fresh: true` to bypass the MCP result cache. If captions are missing or unavailable, the result suggests
+trying a different video. Use `youtube` for YouTube links, since `scrape` and
+`scrape_batch` reject them.
+
+The server runs one yt-dlp job at a time in arrival order. Clients that request
+MCP progress get an estimated start and finish when the job joins the queue.
+Estimates use 8 seconds for metadata and 20 seconds for transcripts, plus the
+configured rest and any active cooldown.
+
+Install yt-dlp with Homebrew on Apple Silicon, or set `YT_DLP_PYTHON` in the
+server environment to an absolute path to a Python interpreter with the
+`yt_dlp` module installed. The server uses the Homebrew yt-dlp interpreter when
+present and falls back to `python3`.
 
 ### Search
 
@@ -217,6 +244,10 @@ the generated table.
 | `scrapflyRequestsPerMinute` | `30` | Server-wide Scrapfly scrape request rate, including retries and escalation. |
 | `serperBurstCapacity` | `20` | Maximum accumulated Serper request tokens. |
 | `scrapflyBurstCapacity` | `10` | Maximum accumulated Scrapfly scrape request tokens. |
+| `youtubeJobGapMs` | `5000` | Rest after a yt-dlp job exits. At most one job runs at a time. |
+| `youtubeLimitWaitMs` | `240000` | Maximum wait for a yt-dlp job permit, within the tool deadline. |
+| `youtubeRequestGapMs` | `3000` | Delay between yt-dlp extraction requests and before the caption fetch. |
+| `youtubeCooldownMs` | `120000` | Server-wide yt-dlp cooldown after an HTTP 429. |
 | `providerConcurrency` | `5` | Maximum in-flight HTTP attempts per provider across all sessions. |
 | `providerGapMs` | `500` | Minimum time between HTTP attempt starts for each provider. |
 | `localLimitWaitMs` | `210000` | Maximum wait for a provider or hostname permit, within the call deadline. |
@@ -224,9 +255,9 @@ the generated table.
 | `siteGapMs` | `1000` | Minimum time between request starts for the same target hostname. |
 | `browserConcurrency` | `5` | Maximum simultaneous Cloud Browser sessions, including scrape fallback. |
 | `browserDailyMinutes` | `120` | Daily Cloud Browser session-minutes across all sessions. Resets at midnight UTC. |
-| `cacheTtlMs` | `600000` | Successful search and scrape cache lifetime in milliseconds. Zero disables caching. |
-| `cacheMaxEntries` | `128` | Maximum entries in each of the search and scrape caches. |
-| `cacheMaxBytes` | `16000000` | Maximum serialized bytes in each of the search and scrape caches. |
+| `cacheTtlMs` | `600000` | Successful tool result cache lifetime in milliseconds. Zero disables caching. |
+| `cacheMaxEntries` | `128` | Maximum entries in each result cache. |
+| `cacheMaxBytes` | `16000000` | Maximum serialized bytes in each result cache. |
 | `toolDeadlineSeconds` | `270` | Overall tool deadline in seconds (35–600). The relay allows three additional seconds. |
 | `serperBackupDelayMs` | `4500` | Delay before hedging a slow Serper request. Transient failures can trigger an earlier backup. |
 | `serperTimeoutMs` | `12000` | Shared Serper primary and backup budget in milliseconds, within the tool deadline. |

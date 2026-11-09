@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import PQueue from "p-queue";
 import type { Tuning } from "../config/tuning.js";
+import { YouTubeQueue } from "./youtube-queue.js";
 import { AppError } from "./error.js";
 import { writeLimitEvent } from "./stats.js";
 
@@ -24,15 +25,24 @@ export class RequestLimits {
   };
   private readonly sites = new Map<string, Site>();
 
+  readonly youtube: YouTubeQueue;
+
   constructor(private readonly settings: Tuning) {
-    const queue = () =>
+    this.youtube = new YouTubeQueue(settings);
+    const queue = (
+      concurrency = settings.providerConcurrency,
+      interval = settings.providerGapMs,
+    ) =>
       new PQueue({
-        concurrency: settings.providerConcurrency,
+        concurrency,
         intervalCap: 1,
-        interval: settings.providerGapMs,
+        interval,
         strict: true,
       });
-    this.queues = { serper: queue(), scrapfly: queue() };
+    this.queues = {
+      serper: queue(),
+      scrapfly: queue(),
+    };
     const bucket = (capacity: number, requestsPerMinute: number): Bucket => ({
       capacity,
       refillPerMs: requestsPerMinute / 60_000,

@@ -117,7 +117,7 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
       return [
         data.items ?? data.results ?? data,
         data.cached ? { cached: true, cached_at: data.cached_at } : undefined,
-        response.content[0].text,
+        response.content.map((block) => block.text).join("\n"),
       ] as ReturnType<typeof JSON.parse>;
     };
   }
@@ -163,8 +163,17 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
     githubBatch.map((item: { page: number }) => item.page),
     [2, 3],
   );
-  assert.deepEqual(githubBatch[0].result, github);
-  assert(renderedBatch.includes(JSON.stringify(github)));
+  const deduped = github.map((hit: object, index: number) => ({
+    ...hit,
+    also_found_in: [{ query_index: 2, rank: index + 1 }],
+  }));
+  assert.deepEqual(githubBatch[0].result, deduped);
+  assert.deepEqual(githubBatch[1].result, []);
+  assert.equal(githubBatch[1].duplicates_removed, github.length);
+  assert(renderedBatch.includes(JSON.stringify(deduped)));
+  assert(renderedBatch.includes("Duplicate search hits removed: 6."));
+  const [unchanged] = await first("search", githubArgs);
+  assert.deepEqual(unchanged, github);
   assert.equal(searches, 7);
 
   const url = "https://1.1.1.1/page";
