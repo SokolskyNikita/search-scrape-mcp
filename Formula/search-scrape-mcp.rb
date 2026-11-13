@@ -8,8 +8,8 @@ class SearchScrapeMcp < Formula
   desc "Local MCP server giving AI agents web search, scraping and a remote browser"
   homepage "https://github.com/SokolskyNikita/search-scrape-mcp"
   url "https://github.com/SokolskyNikita/search-scrape-mcp.git",
-      tag:      "v2.0.4",
-      revision: "8add3f2afb3ff7319de15bdf967af40e431131a3"
+      tag:      "v2.0.5",
+      revision: "35f4add96be1dfbd5af6620ad95dc3887364344a"
   license "MIT"
   head "https://github.com/SokolskyNikita/search-scrape-mcp.git", branch: "main"
 
