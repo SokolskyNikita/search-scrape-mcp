@@ -5,6 +5,7 @@ import { serper } from "../providers/serper.js";
 import { test } from "node:test";
 import { defaults } from "../config/tuning.js";
 import { RequestLimits } from "./request-limits.js";
+import type { AppError } from "./error.js";
 
 test("a sustained flood drains each provider bucket and returns a retry time", async (t) => {
   let now = 0;
@@ -166,4 +167,56 @@ test("an expired queue wait never dispatches and shares the operation's admissio
     await active;
   }
   await limits.run("serper", signal, Infinity, limits.budget(), async () => {});
+});
+
+test("a provider pause holds admissions until it ends, or reports the provider busy past the deadline", async () => {
+  const limits = new RequestLimits(defaults);
+  const signal = new AbortController().signal;
+  limits.pause("scrapfly", 80);
+  await assert.rejects(
+    limits.acquire(signal, performance.now() + 20, "scrapfly"),
+    (error: AppError) =>
+      error.code === "provider_rate" &&
+      /^\d{4}-/.test(String(error.details?.retryAt)),
+  );
+  // Other providers are not held.
+  (await limits.acquire(signal, performance.now() + 20, "serper"))();
+  const start = performance.now();
+  (await limits.acquire(signal, Infinity, "scrapfly"))();
+  assert(performance.now() - start >= 50);
+});
+
+test("calls arriving during a Scrapfly 429 back-off wait it out instead of failing", async (t) => {
+  const settings = { ...defaults, providerGapMs: 1, siteGapMs: 0 };
+  let limited = true;
+  const fetch = t.mock.method(globalThis, "fetch", async (endpoint: URL) => {
+    if (limited) {
+      limited = false;
+      return new Response(null, {
+        status: 429,
+        headers: { "Retry-After": "0.2" },
+      });
+    }
+    return Response.json({
+      result: {
+        content: "# An article\n\nPublic content.",
+        status_code: 200,
+        success: true,
+        url: endpoint.searchParams.get("url"),
+      },
+    });
+  });
+  const limits = new RequestLimits(settings);
+  const scrape = scrapflyScrape("fixture", settings, limits);
+  const signal = AbortSignal.timeout(5_000);
+  await assert.rejects(scrape.scrape("https://8.8.8.1/", signal), {
+    code: "provider_rate",
+  });
+  const start = performance.now();
+  const results = await Promise.all(
+    [2, 3, 4].map((n) => scrape.scrape(`https://8.8.8.${n}/`, signal)),
+  );
+  assert(results.every((result) => result.check.code === "ok"));
+  assert(performance.now() - start >= 150);
+  assert.equal(fetch.mock.callCount(), 4);
 });

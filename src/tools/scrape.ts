@@ -23,6 +23,9 @@ const startRung = z
   .describe(
     "Page scrapes render JavaScript by default, except on sites known to load better without it. Select datacenter to start without rendering, or residential_render to render with residential IPs.",
   );
+/** Position of a rung in the escalation order, or -1 for a provider step that is not a Scrapfly rung. */
+const rungRank = (rung: string | undefined) =>
+  scrapeRungs.indexOf(rung as (typeof scrapeRungs)[number]);
 const retryAtHigherCost =
   "In rare cases a page is unusually costly to scrape. If the error includes a retry call, use that call.";
 const scrapeFields = {
@@ -158,12 +161,15 @@ export function scrapeTools(
       if (stats) stats.host = target.hostname;
       checkRecentlyDown(target.href, fresh);
       checkSettledFailure(target.href, fresh);
-      const key = JSON.stringify([
-        target.href,
-        start ?? "default",
-        contentMode,
-      ]);
-      const hit = cache?.get(key, fresh);
+      // The start rung is left out of the key: only clean results are stored, so one from any rung
+      // answers a default or datacenter request. A request that starts higher still needs a result
+      // that was fetched at least that high.
+      const key = JSON.stringify([target.href, contentMode]);
+      const hit = cache?.get(
+        key,
+        fresh,
+        (value) => !start || rungRank(value.tried.at(-1)) >= rungRank(start),
+      );
       const {
         markdown,
         check: pageCheck,
@@ -176,7 +182,11 @@ export function scrapeTools(
         finalUrl,
       } = hit?.value ?? (await fetched());
       async function fetched(): Promise<Fetched> {
-        const jobKey = JSON.stringify([key, Boolean(allowHigherCost)]);
+        const jobKey = JSON.stringify([
+          key,
+          start ?? "default",
+          Boolean(allowHigherCost),
+        ]);
         let job = fresh ? undefined : inFlight.get(jobKey);
         if (job)
           writeLimitEvent(

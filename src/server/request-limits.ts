@@ -3,6 +3,7 @@ import PQueue from "p-queue";
 import type { Tuning } from "../config/tuning.js";
 import { YouTubeQueue } from "./youtube-queue.js";
 import { AppError } from "./error.js";
+import { messages } from "../config/messages.js";
 import { writeLimitEvent } from "./stats.js";
 
 type LimitCode = "local_site_limit" | "local_rate_limit";
@@ -24,6 +25,11 @@ export class RequestLimits {
     scrapfly: -Infinity,
   };
   private readonly sites = new Map<string, Site>();
+  /** When a provider asked us to back off (performance.now() time); admissions wait until then. */
+  private readonly pausedUntil: Record<Provider, number> = {
+    serper: 0,
+    scrapfly: 0,
+  };
 
   readonly youtube: YouTubeQueue;
 
@@ -74,6 +80,17 @@ export class RequestLimits {
       hostname,
       this.budget(),
       (release) => release,
+    );
+  }
+
+  /**
+   * Holds admissions for a provider that answered "too many requests". Callers already queued or
+   * arriving wait out the pause within their deadline instead of failing at once.
+   */
+  pause(provider: Provider, ms: number) {
+    this.pausedUntil[provider] = Math.max(
+      this.pausedUntil[provider],
+      performance.now() + Math.max(0, ms),
     );
   }
 
@@ -136,14 +153,20 @@ export class RequestLimits {
 
     const eligibility = (now: number) => {
       const site = host ? this.sites.get(host) : undefined;
-      let providerWait = 0;
+      const pauseWait = provider
+        ? Math.max(0, this.pausedUntil[provider] - now)
+        : 0;
+      let providerWait = pauseWait;
       if (bucket) {
         bucket.tokens = Math.min(
           bucket.capacity,
           bucket.tokens + (now - bucket.updated) * bucket.refillPerMs,
         );
         bucket.updated = now;
-        providerWait = Math.max(0, (1 - bucket.tokens) / bucket.refillPerMs);
+        providerWait = Math.max(
+          providerWait,
+          (1 - bucket.tokens) / bucket.refillPerMs,
+        );
       }
       // Check actual admissions as well as the queue’s callback start times.
       if (queue && provider)
@@ -155,7 +178,7 @@ export class RequestLimits {
         site ? site.next - now : 0,
         site && site.active >= this.settings.siteConcurrency ? 100 : 0,
       );
-      return { site, providerWait, siteWait };
+      return { site, providerWait, siteWait, pauseWait };
     };
 
     const take = () => {
@@ -187,7 +210,7 @@ export class RequestLimits {
       for (;;) {
         signal.throwIfAborted();
         const now = performance.now();
-        const { providerWait, siteWait } = eligibility(now);
+        const { providerWait, siteWait, pauseWait } = eligibility(now);
         const wait = Math.ceil(Math.max(providerWait, siteWait));
         if (wait <= 0 && now <= deadline && (now <= stop || immediate)) {
           if (!queue) {
@@ -276,6 +299,11 @@ export class RequestLimits {
           }
         }
         if (fail) {
+          // The provider's own back-off outlasts this call: report it as the provider being busy.
+          if (pauseWait > 0 && pauseWait >= siteWait)
+            throw new AppError("provider_rate", messages.service.busy, {
+              retryAt,
+            });
           const target = code === "local_site_limit" ? host : provider;
           throw new AppError(
             code,

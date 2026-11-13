@@ -748,11 +748,15 @@ export function scrapflyScrape(
 ): ScrapeProvider {
   // The app shares this provider across all MCP sessions.
   let busyUntil = 0;
+  // With request limits, admission waits out a back-off within each call's deadline; without them,
+  // calls during a back-off fail at once.
   function checkBackoff() {
-    if (Date.now() < busyUntil) throw busy(busyUntil);
+    if (!limits && Date.now() < busyUntil) throw busy(busyUntil);
   }
-  const rateLimited = (ms: number) =>
-    (busyUntil = Math.max(busyUntil, Date.now() + ms));
+  const rateLimited = (ms: number) => {
+    limits?.pause("scrapfly", ms);
+    return (busyUntil = Math.max(busyUntil, Date.now() + ms));
+  };
   const hosts = new Map<string, { rung: number; expires: number }>();
   function remember(host: string, rung: number) {
     hosts.delete(host);

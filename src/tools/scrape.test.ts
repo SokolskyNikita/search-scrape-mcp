@@ -342,6 +342,65 @@ test("main and full use separate caches and batch forwards content mode", async 
   assert.equal(browserAttempts, 1);
 });
 
+test("the cache answers any start rung up to the rung that fetched the page", async (t) => {
+  const mcp = new McpServer({ name: "scrape-test", version: "1.0.0" });
+  const dir = mkdtempSync(join(tmpdir(), "scrape-rung-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const settings = { ...defaults, cacheTtlMs: 60_000 };
+  const fetched: string[] = [];
+  registerScrape(
+    mcp,
+    [
+      {
+        name: "scrapfly",
+        scrape: async (_url, _signal, options) => {
+          const rung = options?.start ?? "render";
+          fetched.push(rung);
+          options?.tried.push(rung);
+          return {
+            markdown: `fetched with ${rung}`,
+            check: { code: "ok", reason: "Readable page." },
+          };
+        },
+      },
+    ],
+    new OutputFiles(join(dir, "spills")),
+    settings,
+    new ResultCache<ScrapeResult & { tried: string[] }>(settings),
+  );
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "1.0.0" });
+  await mcp.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await mcp.close();
+  });
+  const url = "https://8.8.8.8/rungs";
+  const scrape = async (start_rung?: string) =>
+    (
+      await client.callTool({
+        name: "scrape",
+        arguments: start_rung ? { url, start_rung } : { url },
+      })
+    ).structuredContent as { markdown: string; cached?: boolean };
+
+  assert.equal((await scrape("datacenter")).cached, undefined);
+  // A default request accepts the clean datacenter result.
+  assert.equal((await scrape()).markdown, "fetched with datacenter");
+  // Asking to start at render needs a page fetched at least that high.
+  const rendered = await scrape("render");
+  assert.equal(rendered.cached, undefined);
+  assert.equal(rendered.markdown, "fetched with render");
+  for (const rung of ["datacenter", undefined, "render"]) {
+    const hit = await scrape(rung);
+    assert.equal(hit.cached, true);
+    assert.equal(hit.markdown, "fetched with render");
+  }
+  assert.deepEqual(fetched, ["datacenter", "render"]);
+});
+
 test("scrape returns partial Markdown and original HTML only for extraction trouble", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "scrape-extraction-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

@@ -13,9 +13,10 @@ const historyLimit = 10_000;
 /**
  * Why a lookup missed: "new" (first lookup this run), "expired" (stored but older than cacheTtlMs),
  * "evicted" (pushed out by cacheMaxEntries or cacheMaxBytes before it would have expired), "not_stored" (looked up
- * before but the result was never stored, for example a failure or an oversized result).
+ * before but the result was never stored, for example a failure or an oversized result), "unsuitable" (stored and
+ * fresh, but the caller's accept check turned it down, for example a page fetched without the rendering it asks for).
  */
-type MissReason = "new" | "expired" | "evicted" | "not_stored";
+type MissReason = "new" | "expired" | "evicted" | "not_stored" | "unsuitable";
 
 /** A key looked up before, or evicted while still fresh with the time it would have expired. */
 type Past = "looked_up" | { evictedUntil: number };
@@ -30,7 +31,8 @@ export class ResultCache<T> {
 
   constructor(private readonly settings: Tuning) {}
 
-  get(key: string, fresh?: boolean) {
+  /** Returns a fresh entry, unless `accept` turns its value down. A turned-down entry stays until replaced or expired. */
+  get(key: string, fresh?: boolean, accept?: (value: T) => boolean) {
     if (!this.settings.cacheTtlMs) return;
     const hash = keyHash(key);
     if (fresh) {
@@ -58,6 +60,18 @@ export class ResultCache<T> {
       this.remember(hash, "looked_up");
       writeLimitEvent(
         { code: "cache", outcome: "miss", keyHash: hash, reason },
+        this.settings,
+      );
+      return;
+    }
+    if (accept && !accept(entry.value)) {
+      writeLimitEvent(
+        {
+          code: "cache",
+          outcome: "miss",
+          keyHash: hash,
+          reason: "unsuitable" satisfies MissReason,
+        },
         this.settings,
       );
       return;
