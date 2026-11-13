@@ -106,6 +106,7 @@ function searchUrlKey(value: string) {
 }
 
 type BatchHit = SearchHit & {
+  /** query_index matches the batch item's 0-based index; rank is the hit's 1-based position in that query. */
   also_found_in?: { query_index: number; rank: number }[];
 };
 
@@ -115,7 +116,7 @@ function deduplicateBatch<T extends { index: number; result?: SearchHit[] }>(
   const seen = new Map<string, { queryIndex: number; hit: BatchHit }>();
   return items.map((item) => {
     if (!item.result) return item;
-    const queryIndex = item.index + 1;
+    const queryIndex = item.index;
     const result: BatchHit[] = [];
     for (const [index, hit] of item.result.entries()) {
       const key = searchUrlKey(hit.url);

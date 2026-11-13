@@ -214,7 +214,7 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
   );
   const deduped = github.map((hit: object, index: number) => ({
     ...hit,
-    also_found_in: [{ query_index: 2, rank: index + 1 }],
+    also_found_in: [{ query_index: 1, rank: index + 1 }],
   }));
   assert.deepEqual(githubBatch[0].result, deduped);
   assert.deepEqual(githubBatch[1].result, []);
