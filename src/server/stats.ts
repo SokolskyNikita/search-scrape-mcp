@@ -79,6 +79,7 @@ export function writeToolStats(
     cached?: boolean;
     truncated?: boolean;
     creditsSpent?: number;
+    era?: "legacy" | "modern";
   },
   settings = defaults,
 ) {

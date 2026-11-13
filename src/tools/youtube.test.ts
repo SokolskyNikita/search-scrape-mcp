@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { Client } from "@modelcontextprotocol/client";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { once } from "node:events";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { defaults } from "../config/tuning.js";
 import { createMcpHttp } from "../server/http.js";
 import type { YouTubeProvider } from "../providers/types.js";
@@ -114,7 +114,10 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
   assert(address && typeof address === "object");
   const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
   async function connect() {
-    const client = new Client({ name: "fixture", version: "1" });
+    const client = new Client(
+      { name: "fixture", version: "1" },
+      { versionNegotiation: { mode: "auto" } },
+    );
     await client.connect(
       new StreamableHTTPClientTransport(url, {
         requestInit: { headers: { Authorization: `Bearer ${token}` } },
@@ -132,8 +135,10 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
         name: "youtube",
         arguments: args,
       },
-      undefined,
-      { onprogress: (update) => updates.push(update.message) },
+      {
+        onprogress: (update: { message?: string }) =>
+          updates.push(update.message),
+      },
     );
     assert(!response.isError);
     assert(response.structuredContent);
@@ -250,7 +255,6 @@ test("YouTube normalizes URLs, keeps metadata and transcript cache entries disti
         name: "youtube",
         arguments: { url: `https://youtu.be/${canceledVideo}` },
       },
-      undefined,
       { signal: controller.signal, onprogress: () => progress.resolve() },
     );
     return { controller, progress: progress.promise, result };

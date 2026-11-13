@@ -1,16 +1,17 @@
 import { mcpName, messages, noticeLabel } from "../config/messages.js";
 import { resultDivider } from "../tools/result-format.js";
 import { registerBrowser } from "../tools/browser.js";
-import type { SearchInput } from "../providers/types.js";
+import type { SearchHit, SearchInput } from "../providers/types.js";
 import assert from "node:assert/strict";
+import { firstText } from "../tools/first-text.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 import { get } from "node:http";
 import { test } from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { defaults } from "../config/tuning.js";
 import { serper } from "../providers/serper.js";
 import { OutputFiles } from "../tools/output-files.js";
@@ -52,7 +53,7 @@ test("authenticated MCP search uses a recorded Serper response", async (t) => {
   const server = createMcpHttp(
     token,
     (mcp) => registerSearch(mcp, [serper("fake-key")]),
-    { ...defaults, mcpSessionLimit: 256 },
+    { ...defaults, mcpMaxConnections: 256 },
   );
   assert.equal(server.maxConnections, 256);
   server.listen(0, "127.0.0.1");
@@ -123,14 +124,11 @@ test("authenticated MCP search uses a recorded Serper response", async (t) => {
   }
 });
 
-test("expired MCP sessions return 404 and a fresh initialize works", async (t) => {
-  let now = Date.now();
-  t.mock.method(Date, "now", () => now);
-  let closed = 0;
+test("requests need no session, so a restarted server keeps serving old clients", async (t) => {
   const token = "x".repeat(40);
-  const server = createMcpHttp(token, () => async () => {
-    closed++;
-  });
+  const server = createMcpHttp(token, (mcp) =>
+    registerSearch(mcp, [serper("fake-key")]),
+  );
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => {
@@ -141,32 +139,34 @@ test("expired MCP sessions return 404 and a fresh initialize works", async (t) =
   assert(addr && typeof addr === "object");
   const url = new URL(`http://127.0.0.1:${addr.port}/mcp`);
   const headers = { Authorization: `Bearer ${token}` };
-  async function connect() {
-    const transport = new StreamableHTTPClientTransport(url, {
-      requestInit: { headers },
-    });
-    const client = new Client({ name: "expiry-fixture", version: "1.0.0" });
-    await client.connect(transport);
-    t.after(() => client.close());
-    return transport;
-  }
-  const old = await connect();
-  now += 2 * 60 * 60_000 + 1;
-  assert.equal(
-    (
-      await fetch(url, {
-        headers: { ...headers, "Mcp-Session-Id": old.sessionId! },
-      })
-    ).status,
-    404,
-  );
-  assert.equal(closed, 1);
-  const fresh = await connect();
-  assert(fresh.sessionId && fresh.sessionId !== old.sessionId);
+  const client = new Client({ name: "stateless-fixture", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(url, {
+    requestInit: { headers },
+  });
+  await client.connect(transport);
+  t.after(() => client.close());
+  assert.equal(transport.sessionId, undefined);
+  assert.equal((await client.listTools()).tools.length, 2);
+
+  // A client that still sends the session ID of a server run that is gone.
+  const stale = await fetch(url, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "Mcp-Session-Id": "5b1f0c0e-0000-4000-8000-000000000000",
+      "Mcp-Protocol-Version": "2025-06-18",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list" }),
+  });
+  assert.equal(stale.status, 200);
+  assert.match(await stale.text(), /"search_batch"/);
+  assert.equal((await fetch(url, { headers })).status, 405);
 });
 
 test(
-  "parallel scrapes return per-call results at the session and server limits",
+  "parallel scrapes from several clients run together up to the server limit",
   { timeout: 10_000 },
   async (t) => {
     const token = "b".repeat(40);
@@ -203,7 +203,7 @@ test(
           ],
           files,
         ),
-      { ...defaults, mcpConcurrentToolCalls: 16, mcpSessionBusyWaitMs: 200 },
+      { ...defaults, mcpConcurrentToolCalls: 16, mcpBusyWaitMs: 200 },
     );
     const log = t.mock.method(console, "log", () => {});
     server.listen(0, "127.0.0.1");
@@ -236,13 +236,12 @@ test(
           name: "scrape",
           arguments: { url: "https://1.1.1.1/" },
         },
-        undefined,
         { timeout: 5_000 },
       );
     async function phase(
       accepted: Client[],
       overflow: Client[],
-      code?: string,
+      code = "mcp_server_busy",
     ) {
       entered = 0;
       expected = accepted.length;
@@ -260,7 +259,7 @@ test(
             code,
           );
           assert(
-            result.content[0].text.includes(
+            firstText(result).includes(
               `${noticeLabel.error} ${messages.service.inFlight}`,
             ),
           );
@@ -270,13 +269,8 @@ test(
         for (const result of await successes) assert(!result.isError);
       }
     }
-    await phase(Array(6).fill(a), []);
-    await phase(Array(8).fill(a), [a, a], "mcp_session_busy");
-    await phase(
-      [...Array(8).fill(a), ...Array(8).fill(b)],
-      [c],
-      "mcp_server_busy",
-    );
+    await phase(Array(12).fill(a), []);
+    await phase([...Array(8).fill(a), ...Array(8).fill(b)], [c]);
     const events = log.mock.calls.map(({ arguments: [line] }) =>
       JSON.parse(String(line)),
     );
@@ -284,22 +278,14 @@ test(
       events
         .filter((event) => event.errorCode)
         .map((event) => [event.tool, event.attempts, event.errorCode]),
-      [
-        ["scrape", 0, "mcp_session_busy"],
-        ["scrape", 0, "mcp_session_busy"],
-        ["scrape", 0, "mcp_server_busy"],
-      ],
+      [["scrape", 0, "mcp_server_busy"]],
     );
-    // Session rejections come after a short wait and record how full the session was.
+    // The rejection comes after a short wait and records how full the server was.
     assert.deepEqual(
       events
         .filter((event) => event.event === "local_limit")
         .map((event) => [event.code, event.outcome, event.inFlight]),
-      [
-        ["mcp_session_busy", "rejected", 8],
-        ["mcp_session_busy", "rejected", 8],
-        ["mcp_server_busy", "rejected", 16],
-      ],
+      [["mcp_server_busy", "rejected", 16]],
     );
   },
 );
@@ -308,6 +294,7 @@ test("an empty search is retried and a later hit can be cached", async (t) => {
   let attempts = 0;
   const hit = { title: "IANA", url: "https://www.iana.org/" };
   const token = "c".repeat(40);
+  const cache = new ResultCache<SearchHit[]>(defaults);
   const server = createMcpHttp(token, (mcp) =>
     registerSearch(
       mcp,
@@ -319,7 +306,7 @@ test("an empty search is retried and a later hit can be cached", async (t) => {
         },
       ],
       defaults,
-      new ResultCache(defaults),
+      cache,
     ),
   );
   server.listen(0, "127.0.0.1");
@@ -346,7 +333,7 @@ test("an empty search is retried and a later hit can be cached", async (t) => {
   assert.deepEqual(empty.structuredContent, { results: [], page: 1 });
   assert(Array.isArray(empty.content));
   assert.equal(
-    empty.content[0].text,
+    firstText(empty),
     `${mcpName} · ${messages.operation.search} · site:iana.org · ${messages.label.searchPage(1)}\n${noticeLabel.note} ${messages.note.noResults}\n\n${resultDivider}`,
   );
   assert.deepEqual((await search()).structuredContent, {
@@ -364,11 +351,9 @@ test("an empty search is retried and a later hit can be cached", async (t) => {
   });
   assert(Array.isArray(cached.content));
   assert(
-    cached.content[0].text.includes(
-      `${noticeLabel.note} ${messages.note.cached}`,
-    ),
+    firstText(cached).includes(`${noticeLabel.note} ${messages.note.cached}`),
   );
-  assert.ok(cached.content[0].text.endsWith(resultDivider));
+  assert.ok(firstText(cached).endsWith(resultDivider));
   assert.equal(attempts, 2);
 });
 
@@ -522,12 +507,12 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     [
       "search_batch",
       { searches: Array.from({ length: 6 }, () => ({ q: "test" })) },
-      /expected array to have <=5 items at searches/,
+      /searches: Too big: expected array to have <=5 items/,
     ],
     [
       "search_batch",
       { searches: [{ q: "test", limit: 11 }] },
-      /expected number to be <=10 at searches\[0\]\.limit/,
+      /searches\W+0\W+limit\W*: Too big: expected number to be <=10/,
     ],
     [
       "search",
@@ -579,12 +564,12 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
       "input",
     );
     assert(Array.isArray(failure.content));
-    assert(failure.content[0].text.startsWith(`${mcpName} · `));
-    assert(failure.content[0].text.includes(`\n${noticeLabel.error} `));
-    assert(failure.content[0].text.endsWith(resultDivider));
+    assert(firstText(failure).startsWith(`${mcpName} · `));
+    assert(firstText(failure).includes(`\n${noticeLabel.error} `));
+    assert(firstText(failure).endsWith(resultDivider));
     if (typeof message === "string")
-      assert(failure.content[0].text.includes(message));
-    else assert.match(failure.content[0].text, message);
+      assert(firstText(failure).includes(message));
+    else assert.match(firstText(failure), message);
   }
   assert.equal(searches.length, 6);
 
@@ -628,7 +613,18 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
     assert(Array.isArray(result.content));
     const heading = `${mcpName} · ${operation} · ${target}${page ? ` · ${messages.label.searchPage(page)}` : ""}`;
     if (name === "scrape_batch")
-      assert.match(result.content[0].text, /Batch status:.*1. readable/s);
+      assert.match(firstText(result), /Batch status:.*1. readable/s);
+    if (name === "browser") {
+      // Navigate names the browser it opened so later calls can pass it back.
+      const first = (result.content as { text: string }[])[0]!;
+      const session = /\nBrowser session \(pass as session\): b[a-f0-9]{8}/;
+      assert.match(first.text, session);
+      assert.match(
+        (result.structuredContent as { session: string }).session,
+        /^b[a-f0-9]{8}$/,
+      );
+      first.text = first.text.replace(session, "");
+    }
     assert.deepEqual(
       name === "scrape_batch" ? result.content.slice(1) : result.content,
       [

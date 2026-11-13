@@ -1,5 +1,5 @@
 import { messages } from "../config/messages.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { defaults } from "../config/tuning.js";
 import { toolTimeoutMs } from "../config/deadline.js";
 import {
@@ -66,6 +66,7 @@ export async function fallback<T extends { name?: string }, R>(
           "provider_rate",
           "local_rate_limit",
           "local_site_limit",
+          "local_credit_limit",
           "not_found",
           "sign_in",
           "content_moved",
@@ -208,6 +209,7 @@ export async function toolResult(
         cached: request.cached,
         truncated: request.truncated,
         creditsSpent: request.creditsSpent,
+        era: toolCallContext.getStore()?.era,
       },
       settings,
     );
@@ -243,7 +245,9 @@ export async function batch<I, O>(
   }));
   const busy = new Set<string>();
   const workers = Promise.all(
-    Array.from({ length: Math.min(2, inputs.length) }, async () => {
+    // Batches are small, so every item starts at once. Items for the same host still
+    // take turns, and the provider queues pace the requests.
+    Array.from({ length: inputs.length }, async () => {
       while (!signal?.aborted) {
         const next = pending.findIndex(({ key }) => !key || !busy.has(key));
         if (next < 0) return;

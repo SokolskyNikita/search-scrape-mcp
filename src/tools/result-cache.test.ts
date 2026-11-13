@@ -1,9 +1,9 @@
 import { hostRule } from "../config/host-rules.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/client";
+import { McpServer } from "@modelcontextprotocol/server";
+import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { defaults } from "../config/tuning.js";
 import { AppError } from "../server/error.js";
 import type { ScrapeResult, SearchHit } from "../providers/types.js";
@@ -117,7 +117,9 @@ test("search and scrape cache hits cross sessions and batches, with fresh bypass
       return [
         data.items ?? data.results ?? data,
         data.cached ? { cached: true, cached_at: data.cached_at } : undefined,
-        response.content.map((block) => block.text).join("\n"),
+        (response.content as { text: string }[])
+          .map((block) => block.text)
+          .join("\n"),
       ] as ReturnType<typeof JSON.parse>;
     };
   }

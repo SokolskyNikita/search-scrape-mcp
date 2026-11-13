@@ -5,7 +5,7 @@ import { MAX_URL_CHARS } from "../config/safety-limits.js";
 import { toolInput } from "./input.js";
 import type { ResultCache } from "./result-cache.js";
 import { defaults } from "../config/tuning.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type {
   SearchHit,
@@ -186,13 +186,13 @@ export function registerSearch(
       inputSchema: input,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    (args, extra) =>
+    (args, ctx) =>
       toolResult(
         "search",
         (attempt, signal, deadline) => search(args, attempt, signal, deadline),
         settings,
         {
-          signal: extra.signal,
+          signal: ctx.mcpReq.signal,
           presentation: {
             operation: messages.operation.search,
             service: "search",
@@ -211,7 +211,7 @@ export function registerSearch(
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ searches }, extra) =>
+    ({ searches }, ctx) =>
       toolResult(
         "search_batch",
         async (attempt, signal, deadline) =>
@@ -228,7 +228,7 @@ export function registerSearch(
         settings,
         {
           partialOnTimeout: true,
-          signal: extra.signal,
+          signal: ctx.mcpReq.signal,
           presentation: {
             operation: messages.operation.search,
             service: "search",

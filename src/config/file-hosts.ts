@@ -13,6 +13,7 @@ import { z } from "zod";
 import { AppError } from "../server/error.js";
 import {
   SCRAPFLY_COST_OBSERVATIONS_REQUIRED,
+  SCRAPFLY_COSTLY_CHARGE,
   SCRAPFLY_STANDARD_COST,
 } from "./safety-limits.js";
 
@@ -96,7 +97,8 @@ export class FileHosts {
       costs: new Map(
         [...costs].filter(
           ([, cost]) =>
-            cost.observations >= SCRAPFLY_COST_OBSERVATIONS_REQUIRED,
+            cost.observations >= SCRAPFLY_COST_OBSERVATIONS_REQUIRED ||
+            cost.expectedCredits >= SCRAPFLY_COSTLY_CHARGE,
         ),
       ),
     };

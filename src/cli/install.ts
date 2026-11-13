@@ -421,7 +421,7 @@ export function restart(say: Say = console.log) {
   const done = run("launchctl", ["kickstart", "-k", `${domain()}/${LABEL}`]);
   if (!done.ok)
     return fail(`The background agent isn't loaded. Run \`${COMMAND} setup\`.`);
-  say("Restarted. Open MCP sessions reconnect on their next call.");
+  say("Restarted. Clients carry on with their next call.");
   return 0;
 }
 

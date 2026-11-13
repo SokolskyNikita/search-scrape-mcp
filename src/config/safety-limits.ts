@@ -7,5 +7,7 @@ export const MAX_SEARCH_HIT_URL_CHARS = 1_024;
 export const MAX_PRIVATE_CONFIG_BYTES = 16_384;
 export const SCRAPFLY_STANDARD_COST = 100;
 export const SCRAPFLY_COST_OBSERVATIONS_REQUIRED = 3;
+// One charge this far over the standard budget is enough to ask before paying again.
+export const SCRAPFLY_COSTLY_CHARGE = 2 * SCRAPFLY_STANDARD_COST;
 
 export const MAX_SCRAPE_FILE_BYTES = 5_000_000;

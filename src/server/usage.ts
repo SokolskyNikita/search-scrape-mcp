@@ -174,6 +174,17 @@ export class Usage {
     }
   }
 
+  /** Scrapfly credits recorded so far today (UTC). Zero when the state can't be read. */
+  scrapflyCreditsToday() {
+    try {
+      return (
+        readState(this.file).days[dayKey(this.now())]?.scrapflyCredits ?? 0
+      );
+    } catch {
+      return 0;
+    }
+  }
+
   async open<T>(
     connect: (lease: BrowserLease) => Promise<T>,
     signal?: AbortSignal,

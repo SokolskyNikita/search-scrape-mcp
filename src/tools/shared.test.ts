@@ -6,7 +6,7 @@ import { AppError } from "../server/error.js";
 import { writeProviderAttempt } from "../server/stats.js";
 import { batch, toolResult } from "./shared.js";
 
-test("batch runs two items at once and keeps original ordering", async () => {
+test("batch starts every item at once and keeps original ordering", async () => {
   const started: number[] = [];
   const finish: (() => void)[] = [];
   const result = batch([0, 1, 2], async (index) => {
@@ -16,10 +16,8 @@ test("batch runs two items at once and keeps original ordering", async () => {
     });
     return index;
   });
-  assert.deepEqual(started, [0, 1]);
-  finish[1]!();
-  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(started, [0, 1, 2]);
+  finish[1]!();
   finish[2]!();
   finish[0]!();
   assert.deepEqual(
@@ -173,7 +171,7 @@ test("a scrape batch deadline returns successes and item errors for work still p
   assert.deepEqual(started, [0, 1, 2]);
   const itemContent = response.content[0];
   assert(itemContent?.type === "text");
-  const items = response.structuredContent?.items as unknown[];
+  const items = (response.structuredContent as { items: unknown[] }).items;
   assert(response.content[2]?.type === "text");
   assert(response.content[2].text.includes(messages.service.batchTimeout));
   assert.deepEqual(

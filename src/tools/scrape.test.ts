@@ -2,13 +2,14 @@ import { hostRule } from "../config/host-rules.js";
 import { mcpName, messages, noticeLabel } from "../config/messages.js";
 import { resultDivider } from "./result-format.js";
 import assert from "node:assert/strict";
+import { firstText } from "./first-text.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/client";
+import { McpServer } from "@modelcontextprotocol/server";
+import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { FileHosts } from "../config/file-hosts.js";
 import { scrapflyScrape } from "../providers/scrapfly-scrape.js";
 import { defaults } from "../config/tuning.js";
@@ -107,11 +108,11 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert.equal(saved.preview, content.slice(0, 600).trimEnd());
   assert.equal(saved.markdown, undefined);
   assert.ok(
-    single.content[0].text.startsWith(
+    firstText(single).startsWith(
       `${mcpName} · ${messages.operation.scrape} · ${first}\n${noticeLabel.note} ${messages.note.preview}\n${messages.label.fullText} ${saved.path}\n\n${resultDivider}\n\n`,
     ),
   );
-  assert.ok(single.content[0].text.endsWith(resultDivider));
+  assert.ok(firstText(single).endsWith(resultDivider));
   assert.equal(saved.hint, messages.file.hint);
   assert.deepEqual(seen, [first]);
 
@@ -121,22 +122,22 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   });
   assert.equal(github.isError, true);
   assert(Array.isArray(github.content));
-  assert(github.content[0].text.includes(hostRule("github.com")!.accessError));
+  assert(firstText(github).includes(hostRule("github.com")!.accessError));
   assert.deepEqual(seen, [first]);
 
   const mixed = await client.callTool({
     name: "scrape_batch",
     arguments: { urls: [second, "https://www.github.com./owner/repo", first] },
   });
-  const blocks = mixed.content;
+  const blocks = mixed.content as { text: string }[];
   assert(Array.isArray(blocks));
   assert.equal(blocks.length, 4);
   assert.match(
-    blocks[0].text,
+    blocks[0]!.text,
     /1. saved_to_file.*2. failed.*3. saved_to_file/s,
   );
   assert(
-    blocks[2].text.startsWith(
+    blocks[2]!.text.startsWith(
       `${mcpName} · ${messages.operation.scrape} · https://www.github.com`,
     ),
   );
@@ -173,7 +174,7 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   const options = {
     content_mode: "main",
     fresh: true,
-    start_rung: "unblocker",
+    start_rung: "datacenter",
     max_chars: 20,
   };
   const rejected = await client.callTool({
@@ -182,8 +183,8 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   });
   assert.equal(rejected.isError, true);
   assert(Array.isArray(rejected.content));
-  assert.ok(rejected.content[0].text.includes(`\n${messages.label.retry} `));
-  assert.ok(rejected.content[0].text.endsWith(resultDivider));
+  assert.ok(firstText(rejected).includes(`\n${messages.label.retry} `));
+  assert.ok(firstText(rejected).endsWith(resultDivider));
   const failure = rejected.structuredContent as Record<string, unknown>;
   assert.deepEqual(failure, {
     code: "scrape_cost",
@@ -229,11 +230,11 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
   assert(Array.isArray(exhausted.content));
   assert.equal(exhausted.isError, true);
   assert(
-    exhausted.content[0].text.includes(
+    firstText(exhausted).includes(
       `${noticeLabel.error} ${messages.page.costStopped}`,
     ),
   );
-  assert.ok(exhausted.content[0].text.endsWith(resultDivider));
+  assert.ok(firstText(exhausted).endsWith(resultDivider));
 
   const stronger = await client.callTool({
     name: "scrape",
@@ -247,9 +248,7 @@ test("scrape tools use fallback, bound content, and preserve batch order", async
     arguments: { url: needsRender, ...options, start_rung: "render" },
   };
   assert.deepEqual(details.retry, retry);
-  const [retryHeader] = (stronger.content[0].text as string).split(
-    resultDivider,
-  );
+  const [retryHeader] = firstText(stronger).split(resultDivider);
   assert(
     retryHeader?.includes(
       `${noticeLabel.error} ${messages.page.differentMode}`,
@@ -322,7 +321,7 @@ test("main and full use separate caches and batch forwards content mode", async 
   const first = await client.callTool({ name: "scrape", arguments: { url } });
   assert(Array.isArray(first.content));
   assert.equal(
-    first.content[0].text,
+    firstText(first),
     `${mcpName} · ${messages.operation.scrape} · ${finalUrl}\n${messages.label.requestedUrl} ${url}\n\n${resultDivider}\n\nmain\n\n${resultDivider}`,
   );
   assert.equal(
@@ -416,7 +415,7 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
   });
   assert(Array.isArray(single.content));
   const partial = single.structuredContent as ReturnType<typeof JSON.parse>;
-  const [header] = single.content[0].text.split(resultDivider);
+  const [header] = firstText(single).split(resultDivider);
   assert(
     header?.includes(
       `${noticeLabel.warning} ${messages.page.extractionPartial}`,
@@ -536,7 +535,7 @@ test("a provider_down failure makes repeats of the same URL fail fast until fres
   const repeat = await call({ url: down });
   assert.equal(code(repeat), "recently_down");
   assert(Array.isArray(repeat.content));
-  assert(repeat.content[0].text.includes(messages.page.recentlyDown));
+  assert(firstText(repeat).includes(messages.page.recentlyDown));
   assert.deepEqual(seen, [down]);
 
   await call({ url: "https://9.9.9.9/other" });
@@ -554,4 +553,82 @@ test("a provider_down failure makes repeats of the same URL fail fast until fres
   const tools = rows.filter((row) => row.tool === "scrape" && !row.event);
   assert(tools.every((row) => row.host === "9.9.9.9" && row.requestId));
   assert.equal(new Set(tools.map((row) => row.requestId)).size, tools.length);
+});
+
+test("identical scrapes in flight share one fetch, and a missing page is remembered", async (t) => {
+  const mcp = new McpServer({ name: "scrape-test", version: "1.0.0" });
+  const seen: string[] = [];
+  const dir = mkdtempSync(join(tmpdir(), "scrape-tool-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const markdown = "This is a readable fixture page. ".repeat(30);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let aborted = false;
+  registerScrape(
+    mcp,
+    [
+      {
+        scrape: async (url, signal) => {
+          seen.push(url);
+          if (url.endsWith("/missing"))
+            throw new AppError("not_found", "The page was not found.");
+          signal?.addEventListener("abort", () => (aborted = true));
+          await gate;
+          return {
+            markdown,
+            check: { code: "ok", reason: "Readable page content." },
+          };
+        },
+      },
+    ],
+    new OutputFiles(join(dir, "spills")),
+  );
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "1.0.0" });
+  await mcp.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await mcp.close();
+  });
+  const log = t.mock.method(console, "log", () => {});
+  const call = (args: Record<string, unknown>, signal?: AbortSignal) =>
+    client.callTool({ name: "scrape", arguments: args }, { signal });
+  const code = (result: Awaited<ReturnType<typeof call>>) =>
+    (result.structuredContent as { code?: string })?.code;
+
+  const page = "https://9.9.9.9/page";
+  const leaving = new AbortController();
+  const left = call({ url: page }, leaving.signal).catch(() => "left");
+  const others = [call({ url: page }), call({ url: page })];
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  // One caller giving up doesn't stop the fetch the others are waiting on.
+  leaving.abort();
+  assert.equal(await left, "left");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(aborted, false);
+  release();
+  for (const result of await Promise.all(others)) {
+    assert.equal(result.isError, undefined);
+    assert(firstText(result).includes("readable fixture page"));
+  }
+  assert.deepEqual(seen, [page]);
+
+  const missing = "https://9.9.9.9/missing";
+  assert.equal(code(await call({ url: missing })), "not_found");
+  assert.equal(code(await call({ url: missing })), "not_found");
+  assert.deepEqual(seen, [page, missing]);
+  assert.equal(code(await call({ url: missing, fresh: true })), "not_found");
+  assert.deepEqual(seen, [page, missing, missing]);
+
+  const events = log.mock.calls
+    .map(({ arguments: [line] }) => JSON.parse(String(line)))
+    .filter((row) => row.event === "local_limit" && row.outcome === "hit")
+    .map((row) => row.code);
+  assert.deepEqual(events, [
+    "scrape_in_flight",
+    "scrape_in_flight",
+    "failure_memory",
+  ]);
 });

@@ -2,18 +2,23 @@ import { hostRule } from "../config/host-rules.js";
 import { mcpName, messages, noticeLabel } from "../config/messages.js";
 import { resultDivider } from "./result-format.js";
 import assert from "node:assert/strict";
+import { firstText } from "./first-text.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport } from "@modelcontextprotocol/server";
+import { McpServer } from "@modelcontextprotocol/server";
 import type { BrowserAction, BrowserProvider } from "../providers/types.js";
 import { OutputFiles } from "./output-files.js";
 import { registerBrowser } from "./browser.js";
 
-test("browser state and cleanup are isolated by MCP session", async (t) => {
+const sessionPattern = new RegExp(
+  `\\n${messages.label.browserSession.replace(/[()]/g, "\\$&")} (b[a-f0-9]{8})`,
+);
+
+test("browser state and cleanup are kept per browser session", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const dir = mkdtempSync(join(tmpdir(), "browser-tool-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -53,9 +58,19 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
     const client = new Client({ name: "fixture-client", version: "1.0.0" });
     await mcp.connect(upstream);
     await client.connect(downstream);
+    let current: string | undefined;
     return {
-      call: async (command: BrowserAction) =>
-        client.callTool({ name: "browser", arguments: { command } }),
+      // Like a client would: remember the session from each result and pass it back.
+      call: async (command: BrowserAction) => {
+        const response = await client.callTool({
+          name: "browser",
+          arguments: { command, ...(current ? { session: current } : {}) },
+        });
+        const [first] = response.content as { text: string }[];
+        current = sessionPattern.exec(first!.text)?.[1];
+        first!.text = first!.text.replace(sessionPattern, "");
+        return response;
+      },
       close: async () => {
         await client.close();
         await cleanup();
@@ -76,9 +91,7 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
     });
     assert.equal(github.isError, true);
     assert(Array.isArray(github.content));
-    assert(
-      github.content[0].text.includes(hostRule("github.com")!.accessError),
-    );
+    assert(firstText(github).includes(hostRule("github.com")!.accessError));
     assert.equal(opened, 0);
     for (const [url, hint] of [
       ["https://youtu.be/0yIfx7JlkiM", hostRule("youtu.be")!.accessError],
@@ -90,7 +103,7 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
       const youtube = await a.call({ action: "navigate", url });
       assert.equal(youtube.isError, true);
       assert(Array.isArray(youtube.content));
-      assert(youtube.content[0].text.includes(hint));
+      assert(firstText(youtube).includes(hint));
     }
     assert.equal(opened, 0);
     for (const url of [
@@ -100,9 +113,7 @@ test("browser state and cleanup are isolated by MCP session", async (t) => {
       const reddit = await a.call({ action: "navigate", url });
       assert.equal(reddit.isError, true);
       assert(Array.isArray(reddit.content));
-      assert(
-        reddit.content[0].text.includes(hostRule("reddit.com")!.accessError),
-      );
+      assert(firstText(reddit).includes(hostRule("reddit.com")!.accessError));
     }
     assert.equal(opened, 0);
     const command = { action: "navigate", url: "https://1.1.1.1/" } as const;
@@ -212,13 +223,15 @@ test("browser marks access pages until a readable navigation", async (t) => {
     await client.close();
     await mcp.close();
   });
+  let current: string | undefined;
   async function call(command: BrowserAction) {
     const response = await client.callTool({
       name: "browser",
-      arguments: { command },
+      arguments: { command, ...(current ? { session: current } : {}) },
     });
     assert(Array.isArray(response.content));
-    return { response, text: response.content[0].text as string };
+    current = sessionPattern.exec(firstText(response))?.[1];
+    return { response, text: firstText(response) };
   }
 
   const denied = await call({ action: "navigate", url: blocked });

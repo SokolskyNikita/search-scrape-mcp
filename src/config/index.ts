@@ -131,6 +131,13 @@ export function readSettings(file = settingsFile()) {
   delete settings.scrapflyDatacenterCost;
   delete settings.scrapflyUnblockerCost;
   delete settings.scrapflyRenderCost;
+  // The unblocker rung repeated the datacenter request and was removed.
+  delete settings.scrapflyUnblockerPool;
+  // MCP sessions were removed along with their limits.
+  delete settings.mcpSessionExpiryMs;
+  delete settings.mcpSessionLimit;
+  delete settings.mcpSessionInFlightLimit;
+  delete settings.mcpSessionBusyWaitMs;
   return {
     settings: parseSettings(settings),
     legacyKeys: serperKey !== undefined || scrapflyKey !== undefined,

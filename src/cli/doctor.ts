@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { loadProviderKeys, loadSettings } from "../config/index.js";
 import { version } from "../config/version.js";
 import { safeError } from "../server/error.js";
@@ -75,6 +75,17 @@ function desktopEntry(): { command?: string } | undefined {
   }
 }
 
+/**
+ * Node 26 before 26.13.1 can exit on an idle HTTP/2 connection to a provider
+ * (nodejs/undici#5936). launchd restarts the server, but calls in flight fail.
+ */
+export function nodeHttp2Warning(version: string) {
+  const [major = 0, minor = 0, patch = 0] = version.split(".").map(Number);
+  return major === 26 && (minor < 13 || (minor === 13 && patch < 1))
+    ? `Node ${version} can crash the server on an idle provider connection; 26.13.1 fixes it`
+    : undefined;
+}
+
 export async function checks(): Promise<Check[]> {
   const found: Check[] = [];
   const setup = `Run \`${COMMAND} setup\`.`;
@@ -83,6 +94,9 @@ export async function checks(): Promise<Check[]> {
     `${COMMAND} ${version}, Node ${process.versions.node}, ${process.platform}`,
     process.platform === "darwin" ? "" : "The background agent needs macOS.",
   ]);
+
+  const node = nodeHttp2Warning(process.versions.node);
+  if (node) found.push([WARN, node, "brew upgrade node"]);
 
   try {
     const keys = loadProviderKeys();

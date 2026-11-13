@@ -1,4 +1,4 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { youtubeVideoId } from "../config/host-rules.js";
 import { MAX_URL_CHARS } from "../config/safety-limits.js";
@@ -187,7 +187,7 @@ export function youtubeTool(
       },
       (
         { url, transcript, fresh, start_seconds: start, end_seconds: end },
-        extra,
+        ctx,
       ) =>
         toolResult(
           "youtube",
@@ -211,9 +211,9 @@ export function youtubeTool(
                 cached.cached_at,
               );
 
-            const caller = AbortSignal.any([signal, extra.signal]);
+            const caller = AbortSignal.any([signal, ctx.mcpReq.signal]);
             caller.throwIfAborted();
-            const token = extra._meta?.progressToken;
+            const token = ctx.mcpReq._meta?.progressToken;
             let sequence = 0;
             let previous: YouTubeProgress | undefined;
             const notify: ProgressListener = (update) => {
@@ -229,8 +229,8 @@ export function youtubeTool(
               previous = update;
               const start = Math.ceil(update.startMs / 1_000);
               const result = Math.ceil(update.resultMs / 1_000);
-              void extra
-                .sendNotification({
+              void ctx.mcpReq
+                .notify({
                   method: "notifications/progress",
                   params: {
                     progressToken: token,

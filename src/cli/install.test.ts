@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { version } from "../config/version.js";
 import { parseSettings } from "../config/index.js";
+import { nodeHttp2Warning } from "./doctor.js";
 import {
   chosenSettings,
   claudeCodeEntry,
@@ -97,4 +98,11 @@ test("the command reports the package version and rejects unknown commands", () 
   assert.throws(() =>
     execFileSync(process.execPath, [main, "nonsense"], { stdio: "pipe" }),
   );
+});
+
+test("doctor warns about Node 26 builds with the HTTP/2 idle crash", () => {
+  for (const version of ["26.0.0", "26.5.0", "26.13.0"])
+    assert.match(nodeHttp2Warning(version) ?? "", /26\.13\.1 fixes it/);
+  for (const version of ["22.20.5", "24.11.0", "26.13.1", "26.14.0", "27.0.0"])
+    assert.equal(nodeHttp2Warning(version), undefined);
 });

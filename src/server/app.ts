@@ -10,9 +10,9 @@ import {
 import { scrapflyScrape } from "../providers/scrapfly-scrape.js";
 import { serper } from "../providers/serper.js";
 import { ytDlp } from "../providers/yt-dlp.js";
-import { registerBrowser } from "../tools/browser.js";
+import { browserSessions } from "../tools/browser.js";
 import { OutputFiles } from "../tools/output-files.js";
-import { registerScrape } from "../tools/scrape.js";
+import { scrapeTools } from "../tools/scrape.js";
 import { registerSearch } from "../tools/search.js";
 import { youtubeTool } from "../tools/youtube.js";
 import { createMcpHttp } from "./http.js";
@@ -39,6 +39,22 @@ export function createApp(config: Config) {
   const files = new OutputFiles(config.outputDirectory, config);
   files.cleanup();
   const registerYouTube = youtubeTool([ytDlp(limits, config)], files, config);
+  // Browsers outlive the request that opened them, so they are kept here.
+  const browsers = browser
+    ? browserSessions(
+        config.browserProviders.map((name) => browser[name]),
+        files,
+        config,
+      )
+    : undefined;
+  const registerScrapes = scrape
+    ? scrapeTools(
+        config.scrapeProviders.map((name) => scrape[name]),
+        files,
+        config,
+        scrapeCache,
+      )
+    : undefined;
   const server = createMcpHttp(
     config.token,
     (mcp) => {
@@ -49,24 +65,16 @@ export function createApp(config: Config) {
         config,
         searchCache,
       );
-      if (scrape)
-        registerScrape(
-          mcp,
-          config.scrapeProviders.map((name) => scrape[name]),
-          files,
-          config,
-          scrapeCache,
-        );
-      if (browser)
-        return registerBrowser(
-          mcp,
-          config.browserProviders.map((name) => browser[name]),
-          files,
-          config,
-        );
+      registerScrapes?.(mcp);
+      browsers?.register(mcp);
     },
     config,
   );
+  server.once("close", () => {
+    void browsers
+      ?.close()
+      .catch(() => console.error("Browser session cleanup failed."));
+  });
   const cleanup = setInterval(
     () => {
       try {

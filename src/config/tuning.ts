@@ -166,12 +166,15 @@ export const tuningSchema = z.object({
     200,
     "Scrapfly requested cost budget in credits with allow_higher_cost enabled.",
   ),
+  scrapflyDailyCredits: integer(
+    0,
+    10_000_000,
+    0,
+    "Stop new Scrapfly scrapes once this many credits are recorded for the day (UTC). Zero means no cap.",
+  ),
   scrapflyDatacenterPool: pool
     .default("public_datacenter_pool")
     .describe("Proxy pool sent on the datacenter rung."),
-  scrapflyUnblockerPool: pool
-    .default("public_datacenter_pool")
-    .describe("Initial proxy pool sent on the Unblocker rung."),
   scrapflyRenderPool: pool
     .default("public_datacenter_pool")
     .describe("Initial proxy pool sent on the rendering rung."),
@@ -199,30 +202,23 @@ export const tuningSchema = z.object({
     150_000,
     "Close a browser after this many idle milliseconds.",
   ),
-  mcpSessionExpiryMs: integer(
-    1_000,
-    86_400_000,
-    7_200_000,
-    "Expire idle MCP sessions after this many milliseconds.",
-  ),
-  mcpSessionLimit: integer(1, 1_024, 128, "Maximum number of MCP sessions."),
-  mcpSessionInFlightLimit: integer(
-    1,
-    1_024,
-    8,
-    "Maximum simultaneous MCP requests per session.",
-  ),
-  mcpSessionBusyWaitMs: integer(
-    0,
-    60_000,
-    5_000,
-    "Wait up to this many milliseconds for a free per-session slot before rejecting a request.",
-  ),
   mcpConcurrentToolCalls: integer(
     1,
+    4_096,
+    256,
+    "Maximum simultaneous tool calls across all clients. Further calls wait for a free slot.",
+  ),
+  mcpBusyWaitMs: integer(
+    0,
+    550_000,
+    60_000,
+    "Wait up to this many milliseconds for a free tool-call slot before rejecting a call.",
+  ),
+  mcpMaxConnections: integer(
+    1,
+    65_536,
     1_024,
-    100,
-    "Maximum simultaneous tool calls across all MCP sessions.",
+    "Maximum simultaneous HTTP connections to the MCP server. Each call in flight uses one.",
   ),
   scrapeInlineChars: integer(
     0,
@@ -279,6 +275,12 @@ export const tuningSchema = z.object({
     3_600_000,
     300_000,
     "After a scrape fails with provider_down, fail the same URL fast for this many milliseconds unless fresh is set. Zero disables it.",
+  ),
+  failureMemoryMs: integer(
+    0,
+    3_600_000,
+    600_000,
+    "After a scrape finds a missing page or a sign-in wall, repeat that answer for the same URL for this many milliseconds unless fresh is set. Zero disables it.",
   ),
   siteMemorySize: integer(
     0,

@@ -2,14 +2,14 @@ import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { relayTimeoutMs } from "../config/deadline.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { loadProviderKeys, parseSettings } from "../config/index.js";
 import { createApp } from "./app.js";
 import { AppError, safeError } from "./error.js";
 
 async function smoke() {
-  const unblocker = process.argv.includes("--unblocker");
+  const protectedPage = process.argv.includes("--protected");
   const challenge = process.argv.includes("--challenge");
   const captchaForm = process.argv.includes("--captcha-form");
   const idle = process.argv.includes("--idle");
@@ -43,9 +43,12 @@ async function smoke() {
     );
     await client.connect(transport);
     const invoke = (name: string, args: Record<string, unknown>) =>
-      client.callTool({ name, arguments: args }, undefined, {
-        timeout: relayTimeoutMs(config),
-      });
+      client.callTool(
+        { name, arguments: args },
+        {
+          timeout: relayTimeoutMs(config),
+        },
+      );
     async function call(
       name: string,
       args: Record<string, unknown>,
@@ -121,25 +124,25 @@ async function smoke() {
           (item: { index: number; error?: object }, index: number) =>
             item.index !== index || item.error,
         ) ||
-        !items[2]?.result?.tried?.includes("unblocker")
+        !items[2]?.result?.tried?.length
       )
         throw new AppError(
           "smoke",
-          "Batch did not return three ordered successes with Unblocker on the protected item.",
+          "Batch did not return three ordered successes.",
         );
       console.log("scrape batch: OK");
       return;
     }
-    if (unblocker) {
-      const target = process.argv[process.argv.indexOf("--unblocker") + 1];
+    if (protectedPage) {
+      const target = process.argv[process.argv.indexOf("--protected") + 1];
       if (!target)
         throw new AppError(
           "smoke",
-          "Supply a protected URL after --unblocker.",
+          "Supply a protected URL after --protected.",
         );
       const result = await call(
         "scrape",
-        { url: target },
+        { url: target, start_rung: "datacenter" },
         /\\"code\\"\s*:\s*\\"ok\\"/i,
         "scrape protected page",
       );
@@ -148,29 +151,29 @@ async function smoke() {
       if (
         page?.check?.code !== "ok" ||
         page?.tried?.[0] !== "datacenter" ||
-        !page.tried.includes("unblocker")
+        !page.tried.includes("render")
       )
         throw new AppError(
           "smoke",
-          "Protected page did not return readable content after escalation to Unblocker.",
+          "Protected page did not return readable content after escalating to rendering.",
         );
       console.log("scrape protected page: OK");
       const second = await call(
         "scrape",
-        { url: target },
+        { url: target, start_rung: "datacenter" },
         undefined,
-        "remembered Unblocker",
+        "remembered rung",
       );
       const remembered = second.structuredContent as typeof page;
       if (
         remembered?.check?.code !== "ok" ||
-        remembered?.tried?.[0] !== "unblocker"
+        remembered?.tried?.[0] !== "render"
       )
         throw new AppError(
           "smoke",
-          "Repeat scrape did not start at the remembered Unblocker rung.",
+          "Repeat scrape did not start at the remembered rendering rung.",
         );
-      console.log("remembered Unblocker: OK");
+      console.log("remembered rung: OK");
       return;
     }
     if (!browserOnly) {

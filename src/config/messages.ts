@@ -21,6 +21,7 @@ export const messages = {
     savedFile: "Saved file:",
     retry: "Retry:",
     retryAt: "Retry at:",
+    browserSession: "Browser session (pass as session):",
   },
   note: {
     preview: "Showing a preview.",
@@ -58,6 +59,8 @@ export const messages = {
     closed: "The browser session is closed. Navigate to a URL to open one.",
     closedResult: "Browser closed.",
     busy: "Another browser action is running. Retry when it finishes.",
+    whichSession:
+      "Several browser sessions are open. Pass the session id from your navigate result.",
     pageSize: "The page is too large to read in the browser.",
     imageSize: "The screenshot exceeds the image size limit.",
     unverified: "Couldn’t verify that the browser page loaded. Navigate again.",
@@ -120,6 +123,7 @@ export const messages = {
     batchTimeout: "Timed out before this item finished.",
     browserSlots: "All browser sessions are in use. Close an idle session.",
     browserBudget: "Today’s browser time is used up.",
+    creditBudget: "Today’s scrape credit cap is used up.",
     credentials: (service: string) =>
       `The ${service} service rejected the MCP’s credentials.`,
     quota: (service: string) =>

@@ -36,7 +36,6 @@ export interface SearchProvider {
 
 export const scrapeRungs = [
   "datacenter",
-  "unblocker",
   "render",
   "residential_render",
 ] as const;

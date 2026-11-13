@@ -72,7 +72,6 @@ test("tunable settings validate and the config report emits only public settings
     scrapeBudgetMs: 39_000,
     scrapflyRungs: {
       datacenter: { requestTimeoutMs: 30_000, scrapflyTimeoutMs: 30_000 },
-      unblocker: { requestTimeoutMs: 30_000, scrapflyTimeoutMs: 30_000 },
       render: { requestTimeoutMs: 30_000, scrapflyTimeoutMs: 30_000 },
       residential_render: {
         requestTimeoutMs: 30_000,

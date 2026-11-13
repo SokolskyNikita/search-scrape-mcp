@@ -1,12 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  ErrorCode,
-  isJSONRPCResultResponse,
-  type CallToolRequest,
-  type JSONRPCMessage,
-  type RequestId,
-} from "@modelcontextprotocol/sdk/types.js";
+import type {
+  CallToolRequest,
+  CallToolResult,
+  McpServer,
+  RequestId,
+} from "@modelcontextprotocol/server";
 import { messages } from "../config/messages.js";
 import { AppError } from "./error.js";
 import {
@@ -19,6 +17,8 @@ export const toolCallContext = new AsyncLocalStorage<{
   presentation: ResultPresentation;
   /** Aborts when the client closes the response stream before the result is sent. */
   disconnected?: AbortSignal;
+  /** Which MCP revision family the client spoke: 2026-07-28 ("modern") or older. */
+  era?: "legacy" | "modern";
 }>();
 
 export function toolCallPresentation({
@@ -71,45 +71,24 @@ export function toolCallPresentation({
   return { operation: name };
 }
 
-export class ToolTransport extends StreamableHTTPServerTransport {
-  override send(
-    message: JSONRPCMessage,
-    options?: { relatedRequestId?: RequestId },
-  ) {
-    const call = toolCallContext.getStore();
-    // The SDK can reject arguments before our tool handlers run.
-    if (
-      call &&
-      isJSONRPCResultResponse(message) &&
-      message.id === call.id &&
-      message.result.isError === true &&
-      !message.result.structuredContent
-    ) {
-      const content = message.result.content;
-      const text =
-        Array.isArray(content) && typeof content[0]?.text === "string"
-          ? content[0].text
-          : "";
-      const prefix = `MCP error ${ErrorCode.InvalidParams}: `;
-      const detail = text.startsWith(prefix) ? text.slice(prefix.length) : "";
-      const issue =
-        /^(?:Input validation error: )?Invalid arguments for tool [^:]+:\s*([\s\S]*)$/.exec(
-          detail,
-        );
-      const failure = detail
-        ? new AppError(
-            "input",
-            issue?.[1] ||
-              (/^Tool .* not found$/.test(detail)
-                ? messages.input.unknownTool
-                : messages.input.invalid),
-          )
-        : new AppError("internal", messages.service.internal);
-      return super.send(
-        { ...message, result: presentedError(call.presentation, failure) },
-        options,
+/**
+ * The SDK rejects invalid arguments before a tool handler runs, as a plain-text
+ * error result. Present those the same way as the handlers' own errors.
+ */
+export function presentToolErrors(server: McpServer) {
+  (
+    server as unknown as { createToolError: (text: string) => CallToolResult }
+  ).createToolError = (text) => {
+    const issue =
+      /^(?:Input validation error: )?Invalid arguments for tool [^:]+:\s*([\s\S]*)$/.exec(
+        text,
       );
-    }
-    return super.send(message, options);
-  }
+    const failure = issue
+      ? new AppError("input", issue[1] || messages.input.invalid)
+      : new AppError("internal", messages.service.internal);
+    return presentedError(
+      toolCallContext.getStore()?.presentation ?? { operation: "tool" },
+      failure,
+    );
+  };
 }

@@ -15,6 +15,8 @@ export type ResultPresentation = {
   jsonBody?: true;
   batchSummary?: true;
   imageWarning?: () => string | undefined;
+  /** The open browser this call used, shown so later calls can name it. */
+  session?: () => string | undefined;
 };
 
 type ResultError = { code: string; message: string } & NonNullable<
@@ -101,6 +103,7 @@ const errorMessages: Readonly<Partial<Record<string, string>>> = {
   mcp_server_busy: messages.service.inFlight,
   local_browser_concurrency: messages.service.browserSlots,
   local_browser_daily_limit: messages.service.browserBudget,
+  local_credit_limit: messages.service.creditBudget,
   browser_busy: messages.browser.busy,
   browser_closed: messages.browser.closed,
   browser_connect: messages.service.browser,
@@ -129,6 +132,9 @@ const specificErrors = new Set([
   "page_size",
   "body_size",
 ]);
+
+const sessionLine = (session: string) =>
+  `${messages.label.browserSession} ${oneLine(session)}`;
 
 function retryLine(retry: ResultError["retry"]) {
   return `${messages.label.retry} ${JSON.stringify(retry)}`;
@@ -176,6 +182,7 @@ function resultFrame(
   cached = false,
   pageNumber?: number,
   duplicatesRemoved?: number,
+  session?: string,
 ) {
   const page: PageResult =
     typeof value === "string"
@@ -188,7 +195,7 @@ function resultFrame(
             }
           : { note: messages.note.noResults }
         : (value as PageResult);
-  const notices: string[] = [];
+  const notices: string[] = session ? [sessionLine(session)] : [];
   if (duplicatesRemoved)
     notices.push(
       notice("note", `Duplicate search hits removed: ${duplicatesRemoved}.`),
@@ -308,18 +315,19 @@ export function presentedResult(
     value.type === "image"
   ) {
     const warning = presentation.imageWarning?.();
+    const session = presentation.session?.();
     return {
       content: [
-        frame(
-          operation,
-          target?.(),
-          warning ? [notice("warning", warning)] : [],
-        ),
+        frame(operation, target?.(), [
+          ...(session ? [sessionLine(session)] : []),
+          ...(warning ? [notice("warning", warning)] : []),
+        ]),
         value as BrowserImage,
         textBlock(resultDivider),
       ],
     };
   }
+  const session = presentation.session?.();
   return {
     content: [
       resultFrame(
@@ -330,6 +338,8 @@ export function presentedResult(
           : value,
         Boolean(cachedAt),
         page,
+        undefined,
+        session,
       ),
     ],
     structuredContent: Array.isArray(value)
@@ -338,9 +348,13 @@ export function presentedResult(
           ...(page ? { page } : {}),
           ...(cachedAt ? { cached: true, cached_at: cachedAt } : {}),
         }
-      : typeof value === "string"
-        ? { text: value }
-        : (value as PageResult),
+      : {
+          ...(typeof value === "string"
+            ? { text: value }
+            : (value as PageResult)),
+          // Some clients show only the structured result, so name the browser here too.
+          ...(session ? { session } : {}),
+        },
   };
 }
 
@@ -352,19 +366,21 @@ export function presentedError(
     { code: failure.code, message: failure.message, ...failure.details },
     presentation.service ?? "fetch",
   );
+  const session = presentation.session?.();
   return {
     isError: true,
     content: [
       frame(
         presentation.operation,
         presentation.target?.(),
-        errorNotices(error),
+        [...(session ? [sessionLine(session)] : []), ...errorNotices(error)],
         undefined,
         presentation.page,
       ),
     ],
     structuredContent: {
       ...error,
+      ...(session ? { session } : {}),
       ...(presentation.page ? { page: presentation.page } : {}),
     },
   };

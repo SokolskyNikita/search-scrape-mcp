@@ -67,7 +67,7 @@ test("Scrapfly retrieves offloaded text without forwarding credentials to anothe
   assert.equal(downloads, 1);
 });
 
-test("Scrapfly treats retryable Unblocker timeouts as transient failures", async (t) => {
+test("Scrapfly treats retryable anti-bot timeouts as transient failures", async (t) => {
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (url: URL) => {
     assert.equal(url.searchParams.get("unblocker"), "true");
@@ -87,13 +87,10 @@ test("Scrapfly treats retryable Unblocker timeouts as transient failures", async
   });
   const tried: string[] = [];
   await assert.rejects(
-    staticFirstScrape("fake-key").scrape(target, undefined, {
-      start: "unblocker",
-      tried,
-    }),
+    staticFirstScrape("fake-key").scrape(target, undefined, { tried }),
     { code: "provider_down" },
   );
-  assert.deepEqual(tried, ["unblocker", "unblocker"]);
+  assert.deepEqual(tried, ["datacenter", "datacenter"]);
   assert.equal(calls, 2);
 });
 
@@ -107,11 +104,7 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
     );
     assert.equal(input.searchParams.get("url"), target);
     assert.equal(init.redirect, "error");
-    const rung = input.searchParams.has("render_js")
-      ? "render"
-      : input.searchParams.get("proxy_pool") === "public_residential_pool"
-        ? "unblocker"
-        : "datacenter";
+    const rung = input.searchParams.has("render_js") ? "render" : "datacenter";
     assert.equal(input.searchParams.get("cost_budget"), "100");
     assert.equal(input.searchParams.get("unblocker"), "true");
     assert.equal(input.searchParams.get("timeout"), "30000");
@@ -126,42 +119,36 @@ test("Scrapfly uses a budgeted ladder and remembers the rung that worked", async
       return Response.json(success("# Page not found", target, 404));
     return Response.json(success());
   });
-  const provider = staticFirstScrape("fake-key", {
-    ...defaults,
-    scrapflyUnblockerPool: "public_residential_pool",
-  });
+  const provider = staticFirstScrape("fake-key");
   await assert.rejects(provider.scrape("http://127.0.0.1/"), {
     code: "unsafe_url",
   });
   const first = options();
   const result = await provider.scrape(target + "#heading", undefined, first);
   assert.equal(result.markdown, "# An article\n\nPublic content.");
-  assert.deepEqual(first.tried, ["datacenter", "unblocker"]);
+  assert.deepEqual(first.tried, ["datacenter", "render"]);
+  // The host is remembered as needing rendering, so the blocked rung is skipped.
   mode = "shell";
-  await assert.rejects(provider.scrape(target), {
-    details: {
-      tried: ["unblocker"],
-      credits: 1,
-      hint: messages.page.retryRung("render"),
-      retryRung: "render",
-    },
-  });
+  const remembered = options();
+  await provider.scrape(target, undefined, remembered);
+  assert.deepEqual(remembered.tried, ["render"]);
   const next: ScrapeOptions = { start: "render", tried: [] };
   await provider.scrape(target, undefined, next);
   assert.deepEqual(next.tried, ["render"]);
+  // A failure on the remembered rung forgets it.
   mode = "missing";
   await assert.rejects(provider.scrape(target), {
     code: "not_found",
-    details: { tried: ["datacenter"], credits: 1, hint: undefined },
+    details: { tried: ["render"], credits: 1, hint: undefined },
   });
   mode = "ok";
   await provider.scrape(target);
   assert.deepEqual(observed, [
     "datacenter",
-    "unblocker",
-    "unblocker",
     "render",
-    "datacenter",
+    "render",
+    "render",
+    "render",
     "datacenter",
   ]);
 });
@@ -264,8 +251,9 @@ test("menu pages escalate while cookie notice text is returned", async (t) => {
   const result = await provider.scrape(target, undefined, first);
   assert.equal(result.check.code, "menus_only");
   assert.equal(result.check.warning, true);
-  assert.match(result.hint ?? "", /render/);
-  assert.deepEqual(first.tried, ["datacenter", "unblocker"]);
+  // Rendering is tried in the same call, and it is the last rung of this ladder.
+  assert.equal(result.hint, undefined);
+  assert.deepEqual(first.tried, ["datacenter", "render"]);
 
   content =
     "# Cookie preferences\nWe use cookies to improve your browsing experience.\nAccept all cookies";
@@ -290,14 +278,10 @@ test("a per-request budget rejection escalates but insufficient account credit s
     staticFirstScrape("fixture").scrape(target, undefined, budget),
     {
       code: "provider_cost_budget",
-      details: {
-        tried: ["datacenter", "unblocker"],
-        hint: messages.page.retryRung("render"),
-        retryRung: "render",
-      },
+      details: { tried: ["datacenter", "render"] },
     },
   );
-  assert.deepEqual(budget.tried, ["datacenter", "unblocker"]);
+  assert.deepEqual(budget.tried, ["datacenter", "render"]);
   assert.equal(
     JSON.parse(String(log.mock.calls[0]!.arguments[0])).datacenterBlocked,
     false,
@@ -343,8 +327,8 @@ test("escalation stops with the stronger rung hint if its minimum cannot fit", a
       details: {
         tried: ["datacenter"],
         credits: 1,
-        hint: messages.page.retryRung("unblocker"),
-        retryRung: "unblocker",
+        hint: messages.page.retryRung("render"),
+        retryRung: "render",
       },
     },
   );
@@ -370,8 +354,8 @@ test("deferred escalation returns a usable warning and the next rung", async (t)
   assert.equal(result.markdown, menu);
   assert.equal(result.check.code, "menus_only");
   assert.equal(result.check.warning, true);
-  assert.equal(result.hint, messages.page.retryRung("unblocker"));
-  assert.equal(result.retryRung, "unblocker");
+  assert.equal(result.hint, messages.page.retryRung("render"));
+  assert.equal(result.retryRung, "render");
   assert.equal(request.mock.callCount(), 1);
 });
 
@@ -533,7 +517,7 @@ test("datacenter HEAD gates files by headers before paying for a download", asyn
   });
   size = String(pdf.length);
   await assert.rejects(
-    provider.scrape(pdfUrl, undefined, { start: "unblocker", tried: [] }),
+    provider.scrape(pdfUrl, undefined, { start: "render", tried: [] }),
     {
       code: "file_refused",
       message: /application\/pdf, 16 bytes.*only on datacenter/,
@@ -966,7 +950,7 @@ test("a challenge in the original HTML cannot become a successful extraction", a
     tried,
   });
   assert.equal(result.check.code, "ok");
-  assert.deepEqual(tried, ["datacenter", "unblocker"]);
+  assert.deepEqual(tried, ["datacenter", "render"]);
   assert.deepEqual(formats, ["raw", "raw"]);
 });
 
@@ -1034,7 +1018,7 @@ test("transient target failures escalate at 100 credits and stop above 100", asy
     );
     const result = await provider.scrape(target, undefined, { tried });
     assert.equal(result.check.code, "ok");
-    assert.deepEqual(tried, ["datacenter", "unblocker"]);
+    assert.deepEqual(tried, ["datacenter", "datacenter"]);
   }
   const provider = staticFirstScrape(
     "fixture",
@@ -1103,6 +1087,89 @@ test("legacy cost notices preserve file hosts without counting as observations",
   assert.equal(readFileSync(state, "utf8"), recorded);
 });
 
+test("one charge far over budget is enough to require opt-in for the host", (t) => {
+  const hosts = new FileHosts([], fileState(t));
+  hosts.observeCost("8.8.8.8", 120);
+  assert.equal(hosts.read().costs.size, 0);
+  hosts.observeCost("9.9.9.9", 402);
+  assert.deepEqual(hosts.read().costs.get("9.9.9.9"), {
+    expectedCredits: 402,
+    observations: 1,
+  });
+  assert.equal(hosts.read().costs.has("8.8.8.8"), false);
+});
+
+test("a site's own start applies only when the caller does not choose one", async (t) => {
+  const { Resolver } = await import("node:dns/promises");
+  t.mock.method(Resolver.prototype, "resolve4", async () => ["8.8.8.8"]);
+  t.mock.method(Resolver.prototype, "resolve6", async () => []);
+  const log = t.mock.method(console, "log", () => {});
+  let blocked = false;
+  t.mock.method(globalThis, "fetch", async (endpoint: URL) => {
+    const url = endpoint.searchParams.get("url")!;
+    return blocked && !endpoint.searchParams.has("render_js")
+      ? Response.json(success("# Access denied", url, 403))
+      : htmlResponse(
+          "<html><body><main><p>The weather station recorded a steady increase in rainfall over the last five days.</p></main></body></html>",
+          url,
+        );
+  });
+  const provider = () =>
+    scrapflyScrape(
+      "fixture",
+      defaults,
+      undefined,
+      undefined,
+      new FileHosts([], fileState(t)),
+    );
+  for (const [url, start, expected] of [
+    ["https://www.linkedin.com/in/example/", undefined, ["datacenter"]],
+    ["https://www.linkedin.com/in/example/", "render", ["render"]],
+    ["https://www.example.org/", undefined, ["render"]],
+  ] as const) {
+    const tried: string[] = [];
+    await provider().scrape(url, undefined, { tried, start });
+    assert.deepEqual(tried, expected);
+  }
+  // A blocked static fetch moves on to rendering within the same call.
+  blocked = true;
+  const tried: string[] = [];
+  const result = await provider().scrape(
+    "https://www.linkedin.com/company/example/",
+    undefined,
+    { tried },
+  );
+  assert.equal(result.check.code, "ok");
+  assert.deepEqual(tried, ["datacenter", "render"]);
+  const sources = log.mock.calls
+    .map(({ arguments: [line] }) => JSON.parse(String(line)))
+    .filter((row) => row.event === "provider_attempt")
+    .map((row) => row.startSource);
+  assert.deepEqual(sources, ["site", "caller", "default", "site", "site"]);
+});
+
+test("a daily credit cap stops new scrapes once it is reached", async (t) => {
+  const file = fileState(t).replace("file-hosts.txt", "usage.json");
+  const settings = { ...defaults, scrapflyDailyCredits: 30 };
+  const usage = new Usage(settings, file);
+  const request = t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ ...success(), context: { cost: 30 } }),
+  );
+  const provider = scrapflyScrape(
+    "fixture",
+    settings,
+    undefined,
+    usage,
+    new FileHosts([], fileState(t)),
+  );
+  await provider.scrape(target);
+  await assert.rejects(provider.scrape(target), {
+    code: "local_credit_limit",
+    message: /credit cap \(30\)/,
+  });
+  assert.equal(request.mock.callCount(), 1);
+});
+
 test("Reddit page requests use residential and render by default", async (t) => {
   const { Resolver } = await import("node:dns/promises");
   t.mock.method(Resolver.prototype, "resolve4", async () => ["8.8.8.8"]);
@@ -1127,7 +1194,7 @@ test("Reddit page requests use residential and render by default", async (t) => 
   );
   for (const [url, start, expected] of [
     ["https://www.reddit.com/r/example/", undefined, "render"],
-    ["https://www.reddit.com/r/example/", "datacenter", "unblocker"],
+    ["https://www.reddit.com/r/example/", "datacenter", "datacenter"],
     ["https://redd.it/abc", "render", "render"],
   ] as const) {
     const tried: string[] = [];

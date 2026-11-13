@@ -1,10 +1,7 @@
 import { siteScrapeSettings } from "../config/site-scrape-settings.js";
 import { messages } from "../config/messages.js";
 import { FileHosts, normalizeFileHost } from "../config/file-hosts.js";
-import {
-  SCRAPFLY_COST_OBSERVATIONS_REQUIRED,
-  SCRAPFLY_STANDARD_COST,
-} from "../config/safety-limits.js";
+import { SCRAPFLY_STANDARD_COST } from "../config/safety-limits.js";
 import {
   datacenterFilePool,
   fileHeaders,
@@ -280,7 +277,6 @@ async function requestPage(
   const endpoint = new URL("https://api.scrapfly.io/scrape");
   const pool = {
     datacenter: settings.scrapflyDatacenterPool,
-    unblocker: settings.scrapflyUnblockerPool,
     render: settings.scrapflyRenderPool,
     residential_render: "public_residential_pool",
   }[rung];
@@ -642,7 +638,6 @@ async function requestPage(
     // Only a target response (as opposed to Scrapfly's own HTTP errors)
     // can trigger this limited retry path.
     const transientTarget =
-      rung !== "unblocker" &&
       !operation &&
       (result.status_code === 429 ||
         (result.status_code >= 500 && check.code === "target_http"));
@@ -786,7 +781,7 @@ export function scrapflyScrape(
       if (notice && !options.allowHigherCost)
         throw new AppError(
           "provider_cost_opt_in_required",
-          `Scrapfly charged up to ${notice.expectedCredits} credits for this host across at least ${SCRAPFLY_COST_OBSERVATIONS_REQUIRED} requests costing ${SCRAPFLY_STANDARD_COST} credits or more. Set allow_higher_cost: true to proceed.`,
+          `Scrapfly has charged up to ${notice.expectedCredits} credits for a page on this host, above the ${SCRAPFLY_STANDARD_COST}-credit standard budget. Set allow_higher_cost: true to proceed.`,
           { expectedCredits: notice.expectedCredits },
         );
       const knownFile = knownFiles.has(host);
@@ -810,6 +805,22 @@ export function scrapflyScrape(
             `Scrapfly reported ${overrunCredits} credits on a previous attempt.`,
           );
         checkBackoff();
+        const spent = settings.scrapflyDailyCredits
+          ? (usage?.scrapflyCreditsToday() ?? 0)
+          : 0;
+        if (
+          settings.scrapflyDailyCredits &&
+          spent >= settings.scrapflyDailyCredits
+        ) {
+          const retryAt = new Date(
+            (Math.floor(Date.now() / 86_400_000) + 1) * 86_400_000,
+          ).toISOString();
+          throw new AppError(
+            "local_credit_limit",
+            `Today's Scrapfly credit cap (${settings.scrapflyDailyCredits}) is used up. Retry at ${retryAt}.`,
+            { retryAt },
+          );
+        }
         const timeout = operation
           ? scrapflyFileTimeoutMs
           : scrapflyTimeoutMs[rung];
@@ -903,16 +914,14 @@ export function scrapflyScrape(
         }
       }
       const site = siteScrapeSettings(target.hostname);
-      const initialRung = options.start ?? "render";
-      const start = Math.max(
-        scrapeRungs.indexOf(initialRung),
-        site ? scrapeRungs.indexOf(site.startRung) : 0,
-      );
+      // The caller's choice wins, then the site's own start, then rendering.
+      const initialRung = options.start ?? site?.startRung ?? "render";
+      const start = scrapeRungs.indexOf(initialRung);
       const renderedStart =
         initialRung === "render" || initialRung === "residential_render";
       const canEscalateRender =
         renderedStart &&
-        !site &&
+        !site?.proxyPool &&
         settings.scrapflyRenderPool !== "public_residential_pool";
       const renderRung = scrapeRungs.indexOf("render");
       const lastRung =
@@ -933,12 +942,10 @@ export function scrapflyScrape(
         ? undefined
         : Math.min(previous, lastRung) > start
           ? "memory"
-          : site &&
-              scrapeRungs.indexOf(site.startRung) >
-                scrapeRungs.indexOf(initialRung)
-            ? "site"
-            : options.start
-              ? "caller"
+          : options.start
+            ? "caller"
+            : site
+              ? "site"
               : "default";
       for (
         let index = file ? 0 : Math.max(Math.min(previous, lastRung), start);
@@ -1035,16 +1042,7 @@ export function scrapflyScrape(
             (rung === "render" && (!canEscalateRender || residentialUsed))
           )
             return result;
-          // The default first two rungs use the same pool. Only try the
-          // alternate pool when it is configured to change the fetch.
-          const retryRung =
-            rung === "render"
-              ? "residential_render"
-              : rung === "datacenter" &&
-                  settings.scrapflyUnblockerPool !==
-                    settings.scrapflyDatacenterPool
-                ? "unblocker"
-                : "render";
+          const retryRung = rung === "render" ? "residential_render" : "render";
           const hint = messages.page.retryRung(retryRung);
           if (overrunCredits !== undefined) return result;
           if (
@@ -1104,8 +1102,9 @@ export function scrapflyScrape(
           );
         }
         if (transientTarget) {
-          const retryRung = rung === "datacenter" ? "unblocker" : rung;
-          if ((rung !== "datacenter" && retryUsed) || signal.aborted)
+          // The target itself answered 429 or 5xx: try the same rung once more.
+          const retryRung = rung;
+          if (retryUsed || signal.aborted)
             throw new AppError(check.code, check.reason, {
               tried: options.tried,
             });
@@ -1115,8 +1114,7 @@ export function scrapflyScrape(
               hint: messages.page.retryRung(retryRung),
               retryRung,
             });
-          if (rung === "datacenter") index++;
-          else retryUsed = true;
+          retryUsed = true;
           continue;
         }
         const next =
