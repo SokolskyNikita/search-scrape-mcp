@@ -1,6 +1,6 @@
 {
   "name": "search-scrape-mcp",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "license": "MIT",
   "bin": {
     "search-scrape-mcp": "dist/cli/main.js"
