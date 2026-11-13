@@ -8,4 +8,4 @@ The MCP server runs on your Mac. It gets Google results through Serper, fetches 
 - **Visible scrape costs.** Set a credit budget per scrape. Logs show which fetch strategy ran and what Scrapfly reported charging. Higher-cost retries can require explicit opt-in.
 - **Results agents can reuse.** Deduplicate links across search queries, cache repeat requests, and return timestamped YouTube captions with time-range excerpts.
 
-[Install and connect a client](USAGE.md#install-on-macos) · [MIT](LICENSE)
+[Install and connect a client](USAGE.md#setup) · [MIT](LICENSE)

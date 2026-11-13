@@ -1,10 +1,21 @@
-# Search Scrape MCP
+# Using Search Scrape MCP
 
-One Node process serves MCP clients over Streamable HTTP at `http://127.0.0.1:8765/mcp`. Each MCP session can open its own remote Scrapfly browser with one controlled tab.
+The server runs on your Mac as a background process at `http://127.0.0.1:8765/mcp` and is shared by all your MCP clients.
 
-## Install on macOS
+## Setup
 
-You need [Homebrew](https://brew.sh), a [Serper](https://serper.dev/) API key for search, and a [Scrapfly](https://scrapfly.io/) API key for scraping and the browser. Without the Scrapfly key, only search and YouTube work.
+You need a Mac with [Homebrew](https://brew.sh).
+
+### 1. Get your API keys
+
+| Provider | Used for | Where to get the key |
+| --- | --- | --- |
+| [Serper](https://serper.dev/) (required) | `search`, `search_batch` | [Sign up](https://serper.dev/signup), then copy the key from the [API keys page](https://serper.dev/api-keys). |
+| [Scrapfly](https://scrapfly.io/) (optional) | `scrape`, `scrape_batch`, `browser` | [Register](https://scrapfly.io/register), then copy the **Live** key shown at the top of your dashboard ([where to find it](https://scrapfly.io/docs/project)). Each project also has a Test key; don't use that one. |
+
+Both providers give free credits on signup without a credit card (2,500 searches from Serper and 1,000 credits from Scrapfly at the time of writing). The `youtube` tool needs no key.
+
+### 2. Install
 
 ```sh
 brew tap sokolskynikita/search-scrape https://github.com/SokolskyNikita/search-scrape-mcp
@@ -18,112 +29,115 @@ brew trust sokolskynikita/search-scrape
 brew install search-scrape-mcp
 ```
 
+Recent versions of Homebrew require `brew trust` for a tap outside Homebrew itself. Node and yt-dlp are installed as dependencies.
+
+### 3. Run setup
+
 ```sh
 search-scrape-mcp setup
 ```
 
-Recent versions of Homebrew require `brew trust` before installing from a tap outside Homebrew itself. Homebrew installs Node and yt-dlp for you.
+Setup asks for the two keys (typing is hidden; press Enter to skip Scrapfly), then:
 
-Setup is safe to run again. It:
-
-- asks for your provider keys (typing is hidden) and saves them in the private file `~/.config/search-scrape-mcp/env`, or reuses that file if it exists;
-- creates `~/.config/search-scrape-mcp/config.json` with a bearer token on first run;
+- saves the keys to the private file `~/.config/search-scrape-mcp/env`;
+- creates `~/.config/search-scrape-mcp/config.json` with a bearer token;
 - starts the server as the background agent `local.search-scrape-mcp`, which also starts at login;
 - connects Claude Code, the Claude desktop app and the Codex CLI, whichever are installed;
 - checks that everything works and says what to fix if something doesn't.
 
-Restart the Claude desktop app after the first setup so its chat picks up the connection. New Claude Code and Codex sessions pick it up on their own.
+It is safe to run again, and reuses the keys and token it finds.
 
-## Update, check and remove
+### 4. Try it
+
+Restart the Claude desktop app so its chat picks up the connection. New Claude Code and Codex sessions pick it up on their own. Then ask your agent to search the web for something.
+
+To add or change a key later, edit `~/.config/search-scrape-mcp/env` and run `search-scrape-mcp restart`:
+
+```dotenv
+SERPER_API_KEY=your-serper-key
+SCRAPFLY_API_KEY=your-scrapfly-key
+```
+
+## Commands
 
 | Command | What it does |
 | --- | --- |
 | `search-scrape-mcp update` | Installs the latest version, restarts the server and reapplies setup. |
 | `search-scrape-mcp doctor` | Checks keys, settings, the background agent, the running server and each client. |
-| `search-scrape-mcp restart` | Restarts the server. Run it after changing provider keys or settings. |
+| `search-scrape-mcp restart` | Restarts the server. Run it after changing keys or settings. |
 | `search-scrape-mcp logs` | Shows the end of the server's error log and tool log. |
 | `search-scrape-mcp uninstall` | Stops the background agent and disconnects the clients. Keys, settings and logs stay. |
 | `search-scrape-mcp --version` | Prints the installed version. |
 
-Updating or restarting ends open MCP sessions. Clients start a new session on their next call, and any open remote browser tab is closed.
+Updating or restarting ends open MCP sessions and closes any open remote browser tab. Clients start a new session on their next call.
 
-To remove the program after `search-scrape-mcp uninstall`, run `brew uninstall search-scrape-mcp`.
+To remove the program, run `search-scrape-mcp uninstall` and then `brew uninstall search-scrape-mcp`.
 
-## Install from a git checkout
+## Other MCP clients
 
-Use this to work on the server itself. It needs Node 22 or newer, and yt-dlp for the YouTube tool.
+Setup registers the server as `search-scrape` in each client it finds. To connect another client, use either of these:
 
-```sh
-./scripts/install.sh
-```
-
-The script builds the project and runs the same setup, with the background agent and the clients pointing at this checkout. `node dist/cli/main.js update` pulls, rebuilds and reapplies setup. The other commands work the same way, for example `node dist/cli/main.js doctor`.
-
-To release a version to Homebrew users, run `scripts/release.sh VERSION` from an up-to-date `main`. It runs the tests, tags the release and points `Formula/search-scrape-mcp.rb` at it.
-
-## How clients connect
-
-Setup registers each client under the name `search-scrape`. The entries call the installed command by its full path, so they work without your shell environment and keep working across updates.
-
-- **Claude Code** connects to `http://127.0.0.1:8765/mcp` and runs `search-scrape-mcp headers` for the bearer token on each connection. [Claude Code dynamic headers documentation](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication)
-- **Claude desktop app chat** and **Codex** start `search-scrape-mcp relay`, a stdio relay that forwards requests to the shared HTTP process. No token is stored in their configuration.
-
-For another MCP client, use the relay as a stdio server (`search-scrape-mcp relay`), or connect to the HTTP address with the header `Authorization: Bearer TOKEN`, where the token is the `token` value in `config.json`.
+- **stdio:** run `/opt/homebrew/bin/search-scrape-mcp relay`. It forwards to the running server, and no token goes in the client's configuration. Claude Desktop and Codex are connected this way.
+- **Streamable HTTP:** connect to `http://127.0.0.1:8765/mcp` with the header `Authorization: Bearer TOKEN`, using the `token` value from `config.json`. Claude Code is connected this way, and runs `search-scrape-mcp headers` to read the token on each connection.
 
 ## Tools
 
 | Tool | Example arguments | Result |
 | --- | --- | --- |
-| `search` | `{"q":"example"}` | Defaults to 10 results per page, with a maximum of 10. |
-| `search_batch` | `{"searches":[{"q":"example"}]}` | Up to five searches, each with the same per-page limit as `search`. |
+| `search` | `{"q":"example"}` | Up to 10 results per page. |
+| `search_batch` | `{"searches":[{"q":"example"}]}` | Up to five searches. |
 | `scrape` | `{"url":"https://example.com/"}` | Markdown or a saved binary download. |
 | `scrape_batch` | `{"urls":["https://example.com/"]}` | Up to three scrapes. |
-| `browser` | `{"command":{"action":"navigate","url":"https://example.com/"}}` | Open a remote browser tab and return page text. |
+| `browser` | `{"command":{"action":"navigate","url":"https://example.com/"}}` | A remote browser tab, one per MCP session, returning page text. |
 | `youtube` | `{"url":"https://youtu.be/0yIfx7JlkiM","transcript":true}` | Video metadata and optional timestamped captions. |
 
-Batches preserve input order and report errors per item. Search batches keep a duplicate link in its first query, with `also_found_in` listing later query indices and original ranks. Affected queries report `duplicates_removed`. Scrape batches start with a per-URL status summary. They run up to two items concurrently and serialize items for the same hostname. The tool deadline can interrupt a batch before all items finish.
+**Results.** Each result opens with the MCP name, the operation, and the URL or query. A notice (warning, error or note), retry instructions and saved-file paths come before the content. A row of `#` characters separates the header from the content and closes the output. Programmatic clients can read `structuredContent` for results and status fields. Tool argument errors use the same layout and name the fields to correct.
 
-Results open with the MCP name, operation, and URL or search query when available. When a result needs a notice, it shows the most relevant MCP-labeled warning, error, or note. Retry instructions and saved-file paths appear before the content. A row of `#` characters separates the header from the content and closes the output. Each batch item gets its own header and divider. Programmatic clients can read `structuredContent` for results and status fields. Tool argument errors use the same layout and identify the fields to correct.
+**Batches.** Batches preserve input order, give each item its own header, and report errors per item, including for items the tool deadline cut off. A search batch keeps a duplicate link in its first query, with `also_found_in` listing the later query indices and original ranks; affected queries report `duplicates_removed`. A scrape batch starts with a per-URL status summary, runs up to two items at once, and runs items for the same hostname one after another.
 
-Pass `fresh: true` to either scrape tool, a single search, or a search batch item to bypass the cache. Structured cache hits include `cached: true` and the insertion timestamp `cached_at`. A cached result is also labeled in the text.
-
-### YouTube
-
-The `youtube` tool accepts watch, Shorts, live, embed, and youtu.be video links. It returns metadata by default, including `duration` in seconds, `channel_id`, and `uploader_id` when available. Chapters have `start_seconds` and `title`. The tool prefers yt-dlp's chapters and falls back to an ordered timestamp list in the description. Each returned chapter title contains an ASCII letter. Set `transcript: true` to request one caption track. It prefers original-language captions, then English, and reports when no captions are available or YouTube rate-limits the request. The transcript's `text` field contains all caption text in order, with a timestamp at the start of each occupied 15-second block. Large transcripts return a bounded preview and a local plain-text file reference. Use `start_seconds` (inclusive) and `end_seconds` (exclusive) to select captions by their original start times before grouping them. Excerpts reuse the cached full transcript. Set `fresh: true` to bypass the MCP result cache. If captions are missing or unavailable, the result suggests trying a different video. Use `youtube` for YouTube video links. The scrape and browser tools reject `youtube.com` and `youtu.be` URLs, including subdomains.
-
-The server runs one yt-dlp job at a time in arrival order. Clients that request MCP progress get an estimated start and finish when the job joins the queue. Estimates use 8 seconds for metadata and 20 seconds for transcripts, plus the configured rest and any active cooldown.
-
-The Homebrew install includes yt-dlp. From a git checkout, install yt-dlp with Homebrew on Apple Silicon, or set `YT_DLP_PYTHON` in the server environment to an absolute path to a Python interpreter with the `yt_dlp` module installed. The server uses the Homebrew yt-dlp interpreter when present and falls back to `python3`.
+**Cache.** Pass `fresh: true` to `search`, either scrape tool, `youtube`, or a search batch item to bypass the result cache. Cached results are labeled in the text and carry `cached: true` and the insertion timestamp `cached_at`.
 
 ### Search
 
-Provide exactly one of `q` or `query` for the search text in each search. Double quotes request a phrase and uppercase `OR` requests alternatives, including between quoted phrases. These operators are passed through to the search provider, which applies them on a best-effort basis. Filter by `site`, `exclude_domains`, country (`gl`), language (`hl`), or time (`recency` or `tbs`). Use `page` for pagination and `autocorrect` to control spelling correction. The `location` and `gl` fields are best-effort hints. Include the place name in the query when it matters. Each search result header identifies the requested page number.
+Provide exactly one of `q` or `query` per search. Double quotes request a phrase and uppercase `OR` requests alternatives, including between quoted phrases; Serper applies these on a best-effort basis. Filter by `site`, `exclude_domains`, country (`gl`), language (`hl`), or time (`recency` or `tbs`). Use `page` for pagination and `autocorrect` to control spelling correction. `location` and `gl` are best-effort hints, so include the place name in the query when it matters.
 
 ### Scrape
 
-Scrape and browser tools reject URLs on these GitHub domains and their subdomains: `github.com`, `githubusercontent.com`, `githubassets.com`, `github.io`, `github.dev`, `githubapp.com`, `githubcopilot.com`, and `ghcr.io`. Use the GitHub CLI (`gh`) for GitHub repository and API access. Matching results from `search` and `search_batch` include an `accessHint` recommending `gh`. Reddit domains (`reddit.com` and `redd.it`, including subdomains) use `scrape` or `scrape_batch`. The browser rejects those destinations, and matching search hits include that guidance. Reddit page fetches render JavaScript with residential IPs by default.
+**Content mode.** The default `content_mode: "main"` has Defuddle extract the main text from Scrapfly's HTML, keeping the links in it. `content_mode: "full"` returns Scrapfly's whole-page Markdown without images, including replies, listings, and details the extractor may omit. The mode applies to a whole batch and is part of the cache key.
 
-Both scrape tools default to `content_mode: "main"`. Defuddle extracts the main text from Scrapfly HTML and retains links within that content. Set `content_mode: "full"` for Scrapfly’s whole-page Markdown without images, including replies, listings, and details the extractor may omit. The mode applies to the entire batch and is part of the cache key.
+**When extraction falls short.** If extraction yields an empty page or mostly navigation, the server retries locally with less aggressive filtering on the same HTML. If that still fails, the result has `check.code: "extraction_failed"`, any Markdown produced, an `extractionWarning`, an `htmlPath` to the saved original HTML, and `fallbackText` when the HTML has a meaningful title or excerpt. For sites without a custom rule, the server can try one stronger fetch within the deadline and credit limit; if a separate call is needed, the result includes retry arguments. Unresolved extractions are not cached.
 
-If extraction yields an empty page or mostly navigation, the server can retry locally with less aggressive filtering on the same HTML. If Defuddle still cannot reliably extract the main content, the result includes any Markdown it produced, an `extractionWarning`, and an `htmlPath` to the saved original HTML on the server. Empty or unusable extraction is reported as `check.code: "extraction_failed"`. When the HTML contains a meaningful title or excerpt, the result can also include `fallbackText` within the inline text limit. For sites without a custom rule, the server can try one stronger fetch within the deadline and current credit limit. If a separate call is needed, the result can include retry arguments. Unresolved extractions bypass caching. To enable Cloud Browser as a secondary scrape provider, set `"scrapeProviders": ["scrapfly", "scrapfly-browser"]`. It returns page text in main mode. Full mode requires the Scrapfly Scrape API.
+**Fetch ladder.** Results report a page check and the rungs tried. Page scrapes use Scrapfly Unblocker and render JavaScript by default, starting on the configured render pool and escalating to residential IPs if needed. Set `start_rung` to `datacenter` or `unblocker` for the static-first ladder, or to `residential_render` to start with residential rendering. Follow the returned hint when a stronger rung needs a fresh call. If an error includes a `retry` call, run it to allow a higher-cost fetch; in a batch it fetches only the affected URL.
 
-Results report a page check and the rungs tried. Page scrapes enable Scrapfly Unblocker and render JavaScript by default. The initial rendered fetch uses the configured render pool. If a rendered fetch needs escalation, the server can render with residential IPs. Set `start_rung` to `datacenter` or `unblocker` to use the static-first ladder, or use `residential_render` to start with residential rendering. Follow the returned hint when a stronger rung needs a fresh call.
+**Files.** File URLs and known file hosts get a HEAD check and are downloaded through the datacenter pool without Unblocker. Downloads need a reported length of at most 5 MB. Binary results include a private file path, MIME type, and byte count.
 
-File URLs and known file hosts get a datacenter HEAD check. File preflight and download requests use the datacenter pool without Unblocker. Downloads require a reported length of at most 5 MB. Binary results include a private file path, MIME type, and byte count. Long scrape and browser text results spill to the private `outputDirectory` with a preview and local path. The default inline thresholds are 16,000 characters for `scrape` and 20,000 characters per page for `scrape_batch`. Set `max_chars` on either tool to cap inline Markdown per page. When shortened by the effective limit, the result includes a preview, `truncated: true`, and the path to the full Markdown. The settings below list the retention limits.
+**Long output.** Text beyond the inline limit (16,000 characters for `scrape`, 20,000 per page for `scrape_batch`) is saved to the private `outputDirectory`, and the result has a preview, `truncated: true`, and the path to the full Markdown. Set `max_chars` to lower the limit per page.
 
-On rare occasions a page is unusually costly to scrape. If the error includes a `retry` call, run it to allow a higher-cost fetch. For a batch, the retry call fetches only the affected URL.
+**Sites with their own route.** Some sites are rejected by the scrape tools, the browser, or both. Matching search results carry a hint saying what to use:
+
+- GitHub (`github.com`, `githubusercontent.com`, `githubassets.com`, `github.io`, `github.dev`, `githubapp.com`, `githubcopilot.com`, `ghcr.io`, and subdomains): rejected by both. Use the GitHub CLI (`gh`).
+- YouTube (`youtube.com`, `youtu.be`, and subdomains): rejected by both. Use the `youtube` tool.
+- Reddit (`reddit.com`, `redd.it`, and subdomains): rejected by the browser only. Use `scrape` or `scrape_batch`, which render Reddit with residential IPs by default.
+
+To add Cloud Browser as a second scrape provider, set `"scrapeProviders": ["scrapfly", "scrapfly-browser"]`. It returns page text in main mode only.
 
 ### Browser
 
-Use `snapshot` to list viewport controls and headings. Use `scope: "page"` to include controls outside the viewport or `scope: "full"` for the JSON accessibility tree. Use `target` to inspect a subtree or `find` to locate matching elements. For `click`, `fill`, and `press`, pass a ref from the latest snapshot, such as `"e7"`, or use a CSS or Playwright `selector`.
+Use `snapshot` to list the viewport's controls and headings. `scope: "page"` includes controls outside the viewport and `scope: "full"` returns the JSON accessibility tree. Use `target` to inspect a subtree or `find` to locate matching elements. For `click`, `fill`, and `press`, pass a ref from the latest snapshot, such as `"e7"`, or a CSS or Playwright `selector`.
 
-`click`, `fill`, `press`, `scroll`, and `back` return a viewport snapshot. `scroll` takes signed `pixels`. `wait` takes up to 10,000 `ms` and an optional selector. `screenshot` returns a viewport JPEG. The server enables Scrapfly’s solver on detected challenges, which can incur charges. Use `close` to stop session charges or `navigate` again after a session expires.
+`click`, `fill`, `press`, `scroll`, and `back` return a viewport snapshot. `scroll` takes signed `pixels`. `wait` takes up to 10,000 `ms` and an optional selector. `screenshot` returns a viewport JPEG. Long text output is saved the same way as for scrapes. The server enables Scrapfly's solver on detected challenges, which can incur charges. Use `close` to stop session charges, or `navigate` again after a session expires.
 
-## Settings, costs, and logs
+### YouTube
 
-Settings live in `~/.config/search-scrape-mcp/config.json`. Set `MCP_CONFIG` and `MCP_KEYS_FILE` to override the paths with absolute filenames. Omitting `SCRAPFLY_API_KEY` leaves search enabled.
+The tool accepts watch, Shorts, live, embed, and youtu.be links. It returns metadata by default, including `duration` in seconds, and `channel_id` and `uploader_id` when available. Chapters have `start_seconds` and `title`; they come from yt-dlp, or from an ordered timestamp list in the description.
 
-Run `search-scrape-mcp restart` after changing settings or provider keys. From a git checkout, run `npm run config` for effective settings, derived deadlines, usage totals, and known file or higher-cost hosts. It omits the bearer token. Run `npm run config:docs` after changing setting definitions. The test suite checks the generated table.
+Set `transcript: true` for one caption track: original-language captions if available, then English. The `text` field holds all caption text in order, with a timestamp at the start of each occupied 15-second block. Use `start_seconds` (inclusive) and `end_seconds` (exclusive) to select captions by their start times; excerpts reuse the cached full transcript. Large transcripts return a preview and a local plain-text file. The result says when no captions are available or YouTube rate-limits the request.
+
+The server runs one yt-dlp job at a time, in arrival order. Clients that request MCP progress get an estimated start and finish when the job joins the queue (8 seconds for metadata and 20 for transcripts, plus the configured rest and any cooldown).
+
+## Settings
+
+Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-mcp restart` after changing them. To keep the settings or keys elsewhere, set `MCP_CONFIG` and `MCP_KEYS_FILE` to absolute filenames.
 
 <!-- settings:start -->
 
@@ -184,21 +198,33 @@ Run `search-scrape-mcp restart` after changing settings or provider keys. From a
 
 <!-- settings:end -->
 
-Provider limits and hostname pacing apply across sessions. The Scrape API and Serper have independent queues. Hedges, retries, and escalation each consume a request permit. The admission wait is shared across the attempts for one scrape or search, and each batch item has its own admission budget within the batch deadline. A Scrape API HTTP 429 pauses new Scrape API requests for the reported retry interval. Cloud Browser opens wait separately for a session lease. Commands on an open session use that existing lease.
+## Limits and costs
 
-A scrape batch returns completed results and individual errors, including for items that did not finish before the deadline. Clients with their own request timeout need to allow at least the configured tool deadline plus time to receive the result.
+Provider limits and hostname pacing apply across all sessions. Serper and the Scrape API have separate queues, and each hedge, retry, and escalation uses a request permit. The wait for a permit is shared across the attempts for one scrape or search; each batch item has its own within the batch deadline. A Scrape API HTTP 429 pauses new Scrape API requests for the reported retry interval. Opening a Cloud Browser session waits separately for a session lease.
 
-Each Scrapfly scrape API request has a 100-credit requested budget across all rungs. If the provider reports a charge above 100 credits, the server stops automatic retries for that scrape. Scrapfly can bill above the requested budget. After three reported charges of 100 credits or more for a hostname, subsequent scrapes of that host require `allow_higher_cost: true`. This flag also selects the configured higher request budget (200 credits by default). Browser sessions and binary bandwidth can also incur charges. [Scrapfly billing documentation](https://scrapfly.io/docs/scrape-api/billing)
+Clients with their own request timeout need to allow at least the configured tool deadline plus time to receive the result.
 
-The background agent writes `tools.jsonl` and separate stdout and stderr logs under `~/Library/Logs/search-scrape-mcp/`. Tool records report outcomes, including individual batch items. Provider records report requests, known charges, and Scrapfly proxy and cost details. Logs exclude arguments and fetched content.
+Each scrape has a requested budget of 100 Scrapfly credits across all rungs, and automatic retries stop if Scrapfly reports a higher charge. Scrapfly can bill above the requested budget. After three reported charges of 100 credits or more for a hostname, scrapes of that host require `allow_higher_cost: true`, which also selects the higher budget (`scrapflyExpensiveCost`). Browser sessions and binary bandwidth can also incur charges. [Scrapfly billing documentation](https://scrapfly.io/docs/scrape-api/billing)
+
+## Logs
+
+The background agent writes `tools.jsonl`, `stdout.log` and `stderr.log` under `~/Library/Logs/search-scrape-mcp/`. Tool records report outcomes, including individual batch items. Provider records report requests, known charges, and Scrapfly proxy and cost details. Logs exclude arguments and fetched content.
 
 ## Security and sessions
 
-The server requires a bearer token and accepts requests only on IPv4 loopback with the exact Host header and no Origin header. Keep the settings file and client token private. If an expired MCP session returns HTTP 404, reconnect from the client.
+The server requires the bearer token and accepts requests only on IPv4 loopback, with the exact Host header and no Origin header. Keep `config.json` private. If an expired MCP session returns HTTP 404, reconnect from the client.
 
-The server validates public HTTP(S) targets and checks reported scrape redirects and intercepted top-level browser navigations. Browser subresources and iframes use Scrapfly’s cloud egress. Queries go to Serper, and Scrapfly or the target site receives URLs and browser input. Treat fetched content as untrusted. [MCP transport security guidance](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+The server validates that targets are public HTTP(S) addresses, and checks reported scrape redirects and intercepted top-level browser navigations. Browser subresources and iframes use Scrapfly's cloud egress. Queries go to Serper, and URLs and browser input go to Scrapfly and the target site. Treat fetched content as untrusted. [MCP transport security guidance](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 
-## Tests
+## Development
+
+To run the server from a git checkout instead of Homebrew, you need Node 22 or newer, and yt-dlp for the `youtube` tool (from Homebrew, or set `YT_DLP_PYTHON` in the server environment to a Python interpreter that has the `yt_dlp` module).
+
+```sh
+./scripts/install.sh
+```
+
+The script builds the project and runs the same setup, pointing the background agent and the clients at the checkout. The commands above then run as `node dist/cli/main.js COMMAND`; `update` pulls and rebuilds.
 
 ```sh
 npm ci
@@ -206,18 +232,16 @@ npm test
 npm run lint
 npm run format:check
 npm run smoke
-npm run smoke -- --challenge
-npm run smoke -- --captcha-form
-npm run smoke -- --render
-npm run smoke -- --batch
-npm run smoke -- --idle
-npm run smoke -- --unblocker https://your-protected-test-url.example/
 ```
 
-Local Chrome tests are opt-in. Run them outside the macOS Codex sandbox:
+`npm test` is offline, using fixtures and loopback. Its local Chrome tests are opt-in, and need to run outside the macOS Codex sandbox:
 
 ```sh
 MCP_TEST_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npm test
 ```
 
-The offline suite uses fixtures and loopback. The default live smoke test runs a search, a scrape, and a browser session. The flags above select focused checks. See [AGENTS.md](AGENTS.md) for live provider budgets and [the extraction benchmark](benchmarks/extraction/RESULTS.md) for the Defuddle comparison.
+`npm run smoke` spends provider credits: it runs a live search, scrape, and browser session. Add `-- --challenge`, `-- --captcha-form`, `-- --render`, `-- --batch`, `-- --idle`, or `-- --unblocker URL` for a focused check. See [AGENTS.md](AGENTS.md) for the live testing budget and [the extraction benchmark](benchmarks/extraction/RESULTS.md) for the Defuddle comparison.
+
+`npm run config` prints the effective settings, derived deadlines, usage totals, and known file or higher-cost hosts, without the bearer token. After changing setting definitions, run `npm run config:docs` to regenerate the table above; the test suite checks it.
+
+To release a version to Homebrew users, run `scripts/release.sh VERSION` from an up-to-date `main`. It runs the tests, tags the release and points `Formula/search-scrape-mcp.rb` at it.
