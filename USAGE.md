@@ -151,9 +151,9 @@ Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-m
 | `port` | `8765` | Local MCP HTTP port. |
 | `scrapflyFileHosts` | `[]` | Seed hostnames that always get a Scrapfly HEAD check. |
 | `serperRequestsPerMinute` | `60` | Server-wide Serper request rate, including hedges. |
-| `scrapflyRequestsPerMinute` | `30` | Server-wide Scrapfly scrape request rate, including retries and escalation. |
+| `scrapflyRequestsPerMinute` | `60` | Server-wide Scrapfly scrape request rate, including retries and escalation. |
 | `serperBurstCapacity` | `20` | Maximum accumulated Serper request tokens. |
-| `scrapflyBurstCapacity` | `10` | Maximum accumulated Scrapfly scrape request tokens. |
+| `scrapflyBurstCapacity` | `20` | Maximum accumulated Scrapfly scrape request tokens. |
 | `youtubeJobGapMs` | `5000` | Rest after a yt-dlp job exits. At most one job runs at a time. |
 | `youtubeLimitWaitMs` | `240000` | Maximum wait for a yt-dlp job permit, within the tool deadline. |
 | `youtubeRequestGapMs` | `3000` | Delay between yt-dlp extraction requests and before the caption fetch. |

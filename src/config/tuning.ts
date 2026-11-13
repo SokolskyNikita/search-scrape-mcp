@@ -25,7 +25,7 @@ export const tuningSchema = z.object({
   scrapflyRequestsPerMinute: integer(
     1,
     6_000,
-    30,
+    60,
     "Server-wide Scrapfly scrape request rate, including retries and escalation.",
   ),
   serperBurstCapacity: integer(
@@ -37,7 +37,7 @@ export const tuningSchema = z.object({
   scrapflyBurstCapacity: integer(
     1,
     1_000,
-    10,
+    20,
     "Maximum accumulated Scrapfly scrape request tokens.",
   ),
   youtubeJobGapMs: integer(

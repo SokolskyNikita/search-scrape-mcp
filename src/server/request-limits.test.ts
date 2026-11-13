@@ -15,12 +15,13 @@ test("a sustained flood drains each provider bucket and returns a retry time", a
     ...Array.from({ length: 20 }, () =>
       limits.acquire(signal, Infinity, "serper"),
     ),
-    ...Array.from({ length: 10 }, () =>
+    ...Array.from({ length: 20 }, () =>
       limits.acquire(signal, Infinity, "scrapfly"),
     ),
   ]);
   for (let second = 1; second <= 5; second++) {
     now = 2_000 * second;
+    await limits.acquire(signal, Infinity, "scrapfly");
     await limits.acquire(signal, Infinity, "scrapfly");
     await limits.acquire(signal, Infinity, "serper");
     await limits.acquire(signal, Infinity, "serper");
