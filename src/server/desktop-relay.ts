@@ -8,12 +8,13 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { loadSettings } from "../config/index.js";
+import { version } from "../config/version.js";
 import { AppError } from "./error.js";
 
 try {
   const settings = loadSettings();
   const { port, token } = settings;
-  const identity = { name: "search-scrape-desktop", version: "1.0.0" };
+  const identity = { name: "search-scrape-desktop", version };
   const client = new Client(identity);
   const upstream = new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${port}/mcp`),

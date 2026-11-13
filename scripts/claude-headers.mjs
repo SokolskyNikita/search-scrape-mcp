@@ -1,3 +1,5 @@
+// Kept for Claude Code registrations made before `search-scrape-mcp setup` existed, which call this file.
+// Setup replaces them with `search-scrape-mcp headers`.
 import { loadSettings } from "../dist/config/index.js";
 import { safeError } from "../dist/server/error.js";
 

@@ -2,77 +2,73 @@
 
 One Node process serves MCP clients over Streamable HTTP at `http://127.0.0.1:8765/mcp`. Each MCP session can open its own remote Scrapfly browser with one controlled tab.
 
-## Install or upgrade on macOS
+## Install on macOS
 
-Use Node 22 or newer. Put your [Serper](https://serper.dev/) and [Scrapfly](https://scrapfly.io/) keys in the private dotenv file `~/.config/search-scrape-mcp/env`. The installer reuses this file if it exists.
+You need [Homebrew](https://brew.sh), a [Serper](https://serper.dev/) API key for search, and a [Scrapfly](https://scrapfly.io/) API key for scraping and the browser. Without the Scrapfly key, only search and YouTube work.
 
-```dotenv
-SERPER_API_KEY=your-serper-key
-SCRAPFLY_API_KEY=your-scrapfly-key
+```sh
+brew tap sokolskynikita/search-scrape https://github.com/SokolskyNikita/search-scrape-mcp
 ```
 
 ```sh
-chmod 600 ~/.config/search-scrape-mcp/env
-# From the repository directory
+brew trust sokolskynikita/search-scrape
+```
+
+```sh
+brew install search-scrape-mcp
+```
+
+```sh
+search-scrape-mcp setup
+```
+
+Recent versions of Homebrew require `brew trust` before installing from a tap outside Homebrew itself. Homebrew installs Node and yt-dlp for you.
+
+Setup is safe to run again. It:
+
+- asks for your provider keys (typing is hidden) and saves them in the private file `~/.config/search-scrape-mcp/env`, or reuses that file if it exists;
+- creates `~/.config/search-scrape-mcp/config.json` with a bearer token on first run;
+- starts the server as the background agent `local.search-scrape-mcp`, which also starts at login;
+- connects Claude Code, the Claude desktop app and the Codex CLI, whichever are installed;
+- checks that everything works and says what to fix if something doesn't.
+
+Restart the Claude desktop app after the first setup so its chat picks up the connection. New Claude Code and Codex sessions pick it up on their own.
+
+## Update, check and remove
+
+| Command | What it does |
+| --- | --- |
+| `search-scrape-mcp update` | Installs the latest version, restarts the server and reapplies setup. |
+| `search-scrape-mcp doctor` | Checks keys, settings, the background agent, the running server and each client. |
+| `search-scrape-mcp restart` | Restarts the server. Run it after changing provider keys or settings. |
+| `search-scrape-mcp logs` | Shows the end of the server's error log and tool log. |
+| `search-scrape-mcp uninstall` | Stops the background agent and disconnects the clients. Keys, settings and logs stay. |
+| `search-scrape-mcp --version` | Prints the installed version. |
+
+Updating or restarting ends open MCP sessions. Clients start a new session on their next call, and any open remote browser tab is closed.
+
+To remove the program after `search-scrape-mcp uninstall`, run `brew uninstall search-scrape-mcp`.
+
+## Install from a git checkout
+
+Use this to work on the server itself. It needs Node 22 or newer, and yt-dlp for the YouTube tool.
+
+```sh
 ./scripts/install.sh
 ```
 
-The installer builds the project, creates a private `config.json` with a bearer token on first run, and loads `local.search-scrape-mcp`. Restart the agent after changing provider keys or settings.
+The script builds the project and runs the same setup, with the background agent and the clients pointing at this checkout. `node dist/cli/main.js update` pulls, rebuilds and reapplies setup. The other commands work the same way, for example `node dist/cli/main.js doctor`.
 
-```sh
-launchctl print "gui/$(id -u)/local.search-scrape-mcp"
-tail -n 30 ~/Library/Logs/search-scrape-mcp/tools.jsonl
-launchctl kickstart -k "gui/$(id -u)/local.search-scrape-mcp"
-```
+To release a version to Homebrew users, run `scripts/release.sh VERSION` from an up-to-date `main`. It runs the tests, tags the release and points `Formula/search-scrape-mcp.rb` at it.
 
-To remove the agent, run:
+## How clients connect
 
-```sh
-launchctl bootout "gui/$(id -u)/local.search-scrape-mcp"
-rm ~/Library/LaunchAgents/local.search-scrape-mcp.plist
-```
+Setup registers each client under the name `search-scrape`. The entries call the installed command by its full path, so they work without your shell environment and keep working across updates.
 
-## Register clients
+- **Claude Code** connects to `http://127.0.0.1:8765/mcp` and runs `search-scrape-mcp headers` for the bearer token on each connection. [Claude Code dynamic headers documentation](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication)
+- **Claude desktop app chat** and **Codex** start `search-scrape-mcp relay`, a stdio relay that forwards requests to the shared HTTP process. No token is stored in their configuration.
 
-From the repository directory, register Claude Code with a `headersHelper`. The helper reads the token from the private settings file and uses an absolute Node path, so it works without your shell environment. If upgrading an existing registration, first run `claude mcp remove --scope user search-scrape`.
-
-```sh
-claude mcp add-json --scope user search-scrape "$(node -p '
-  const quote = (s) => "\"" + s.replace(/["\\$`]/g, "\\$&") + "\"";
-  JSON.stringify({
-    type: "http",
-    url: "http://127.0.0.1:8765/mcp",
-    headersHelper: [process.execPath, process.cwd() + "/scripts/claude-headers.mjs"].map(quote).join(" ")
-  })
-')"
-```
-
-[Claude Code dynamic headers documentation](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication)
-
-For the Codex CLI, load the bearer token in each shell that starts Codex:
-
-```sh
-export SEARCH_SCRAPE_TOKEN="$(node -p 'require(process.argv[1]).token' "$HOME/.config/search-scrape-mcp/config.json")"
-codex mcp add search-scrape --url http://127.0.0.1:8765/mcp \
-  --bearer-token-env-var SEARCH_SCRAPE_TOKEN
-```
-
-For GUI Codex without that environment variable, replace the `bearer_token_env_var` line in `[mcp_servers.search-scrape]` with `http_headers = { Authorization = "Bearer YOUR_LOCAL_TOKEN" }` in your private user config. [OpenAI documentation for Codex MCP](https://developers.openai.com/codex/mcp)
-
-For Claude Desktop's local stdio configuration, add this entry under `mcpServers` in `~/Library/Application Support/Claude/claude_desktop_config.json`. Use the absolute Node path from `command -v node` and restart Claude Desktop. The relay forwards requests to the shared HTTP process. [Claude Desktop local MCP documentation](https://support.anthropic.com/en/articles/10949351-getting-started-with-local-mcp-servers)
-
-```json
-{
-  "mcpServers": {
-    "search-scrape": {
-      "command": "/opt/homebrew/bin/node",
-      "args": [
-        "/Users/YOU/projects2/search-scrape-mcp/dist/server/desktop-relay.js"
-      ]
-    }
-  }
-}
-```
+For another MCP client, use the relay as a stdio server (`search-scrape-mcp relay`), or connect to the HTTP address with the header `Authorization: Bearer TOKEN`, where the token is the `token` value in `config.json`.
 
 ## Tools
 
@@ -97,7 +93,7 @@ The `youtube` tool accepts watch, Shorts, live, embed, and youtu.be video links.
 
 The server runs one yt-dlp job at a time in arrival order. Clients that request MCP progress get an estimated start and finish when the job joins the queue. Estimates use 8 seconds for metadata and 20 seconds for transcripts, plus the configured rest and any active cooldown.
 
-Install yt-dlp with Homebrew on Apple Silicon, or set `YT_DLP_PYTHON` in the server environment to an absolute path to a Python interpreter with the `yt_dlp` module installed. The server uses the Homebrew yt-dlp interpreter when present and falls back to `python3`.
+The Homebrew install includes yt-dlp. From a git checkout, install yt-dlp with Homebrew on Apple Silicon, or set `YT_DLP_PYTHON` in the server environment to an absolute path to a Python interpreter with the `yt_dlp` module installed. The server uses the Homebrew yt-dlp interpreter when present and falls back to `python3`.
 
 ### Search
 
@@ -127,7 +123,7 @@ Use `snapshot` to list viewport controls and headings. Use `scope: "page"` to in
 
 Settings live in `~/.config/search-scrape-mcp/config.json`. Set `MCP_CONFIG` and `MCP_KEYS_FILE` to override the paths with absolute filenames. Omitting `SCRAPFLY_API_KEY` leaves search enabled.
 
-Run `npm run config` for effective settings, derived deadlines, usage totals, and known file or higher-cost hosts. It omits the bearer token. Run `npm run config:docs` after changing setting definitions. The test suite checks the generated table.
+Run `search-scrape-mcp restart` after changing settings or provider keys. From a git checkout, run `npm run config` for effective settings, derived deadlines, usage totals, and known file or higher-cost hosts. It omits the bearer token. Run `npm run config:docs` after changing setting definitions. The test suite checks the generated table.
 
 <!-- settings:start -->
 
@@ -194,7 +190,7 @@ A scrape batch returns completed results and individual errors, including for it
 
 Each Scrapfly scrape API request has a 100-credit requested budget across all rungs. If the provider reports a charge above 100 credits, the server stops automatic retries for that scrape. Scrapfly can bill above the requested budget. After three reported charges of 100 credits or more for a hostname, subsequent scrapes of that host require `allow_higher_cost: true`. This flag also selects the configured higher request budget (200 credits by default). Browser sessions and binary bandwidth can also incur charges. [Scrapfly billing documentation](https://scrapfly.io/docs/scrape-api/billing)
 
-The LaunchAgent writes `tools.jsonl` and separate stdout and stderr logs under `~/Library/Logs/search-scrape-mcp/`. Tool records report outcomes, including individual batch items. Provider records report requests, known charges, and Scrapfly proxy and cost details. Logs exclude arguments and fetched content.
+The background agent writes `tools.jsonl` and separate stdout and stderr logs under `~/Library/Logs/search-scrape-mcp/`. Tool records report outcomes, including individual batch items. Provider records report requests, known charges, and Scrapfly proxy and cost details. Logs exclude arguments and fetched content.
 
 ## Security and sessions
 

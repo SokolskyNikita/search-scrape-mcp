@@ -2,6 +2,15 @@
   "name": "search-scrape-mcp",
   "version": "1.0.0",
   "license": "MIT",
+  "bin": {
+    "search-scrape-mcp": "dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.js",
+    "src/providers/yt-dlp.py",
+    "USAGE.md"
+  ],
   "scripts": {
     "test": "npm run build && node dist/config/report.js --check-docs && node --test \"dist/**/*.test.js\"",
     "build": "tsc",
