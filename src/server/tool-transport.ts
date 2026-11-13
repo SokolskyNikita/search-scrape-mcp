@@ -17,6 +17,8 @@ import {
 export const toolCallContext = new AsyncLocalStorage<{
   id: RequestId;
   presentation: ResultPresentation;
+  /** Aborts when the client closes the response stream before the result is sent. */
+  disconnected?: AbortSignal;
 }>();
 
 export function toolCallPresentation({

@@ -235,11 +235,21 @@ export function createMcpHttp(
           if (isToolCall) toolCalls++;
           session.active++;
           try {
-            if (request && presentation)
-              await toolCallContext.run({ id: request.id, presentation }, () =>
-                session.transport.handleRequest(req, res, body),
+            if (request && presentation) {
+              // The SDK doesn't stop a handler when its response stream closes early.
+              const disconnect = new AbortController();
+              res.once("close", () => {
+                if (!res.writableFinished) disconnect.abort();
+              });
+              await toolCallContext.run(
+                {
+                  id: request.id,
+                  presentation,
+                  disconnected: disconnect.signal,
+                },
+                () => session.transport.handleRequest(req, res, body),
               );
-            else await session.transport.handleRequest(req, res, body);
+            } else await session.transport.handleRequest(req, res, body);
           } finally {
             session.active--;
             if (isToolCall) toolCalls--;

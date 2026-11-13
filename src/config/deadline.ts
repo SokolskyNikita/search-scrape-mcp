@@ -5,6 +5,10 @@ export const toolTimeoutMs = (settings: Tuning) =>
 export const relayTimeoutMs = (settings: Tuning) =>
   toolTimeoutMs(settings) + 3_000;
 
+// What a client should allow per tool call: the deadline plus time to receive the result.
+export const clientTimeoutMs = (settings: Tuning) =>
+  toolTimeoutMs(settings) + 30_000;
+
 // Leave time for validation, serialization, or starting a fallback.
 export const scrapeReserveMs = 3_000;
 

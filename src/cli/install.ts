@@ -9,6 +9,9 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
+import { clientTimeoutMs } from "../config/deadline.js";
+import type { Tuning } from "../config/tuning.js";
 import {
   keysFile,
   loadProviderKeys,
@@ -116,17 +119,46 @@ function ensureSettings(say: Say) {
   const render = (settings: unknown) =>
     `${JSON.stringify(settings, null, 2)}\n`;
   if (!existsSync(file)) {
-    const settings = parseSettings({
-      token: randomBytes(32).toString("base64url"),
-    });
-    writePrivate(file, render(settings));
+    const chosen = { token: randomBytes(32).toString("base64url") };
+    writePrivate(file, render(chosen));
     say(` ${OK} Settings created: ${file}`);
-    return settings;
+    return parseSettings(chosen);
   }
   const { settings, legacyKeys } = readSettings(file);
-  if (legacyKeys) writePrivate(file, render(settings));
-  say(` ${OK} Settings: ${file}`);
+  const saved = Object.keys(
+    JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>,
+  ).filter((name) => name in settings);
+  const chosen = chosenSettings(settings, saved);
+  const dropped = saved.length - Object.keys(chosen).length;
+  if (legacyKeys || dropped) writePrivate(file, render(chosen));
+  say(
+    ` ${OK} Settings: ${file}` +
+      (dropped
+        ? ` (removed ${dropped} entries that only repeated the defaults)`
+        : ""),
+  );
   return settings;
+}
+
+/**
+ * The settings that differ from the defaults. Only these are saved, so that a later
+ * version's changed default takes effect instead of being pinned by an old copy.
+ */
+export function chosenSettings(
+  settings: Record<string, unknown>,
+  saved = Object.keys(settings),
+) {
+  const standard = parseSettings({ token: "x".repeat(32) }) as Record<
+    string,
+    unknown
+  >;
+  return Object.fromEntries(
+    Object.entries(settings).filter(
+      ([name, value]) =>
+        saved.includes(name) &&
+        (name === "token" || !isDeepStrictEqual(value, standard[name])),
+    ),
+  );
 }
 
 const xml = (value: string) =>
@@ -209,15 +241,22 @@ async function installAgent(say: Say) {
 const shellQuote = (value: string) => `"${value.replace(/["\\$`]/g, "\\$&")}"`;
 
 /** Claude Code talks to the HTTP server directly and asks this install for the bearer token on each connection. */
-export function claudeCodeEntry(port: number, command: string[]) {
+export function claudeCodeEntry(
+  port: number,
+  command: string[],
+  timeout: number,
+) {
   return {
     type: "http",
     url: `http://127.0.0.1:${port}/mcp`,
     headersHelper: [...command, "headers"].map(shellQuote).join(" "),
+    // Without this, Claude Code gives up on a call after 60 seconds and drops the
+    // connection, which also fails the session's other calls in flight.
+    timeout,
   };
 }
 
-function registerClaudeCode(port: number, say: Say) {
+function registerClaudeCode(settings: Tuning & { port: number }, say: Say) {
   if (run("claude", ["--version"]).missing)
     return say(
       ` - Claude Code isn't installed, so it is skipped (install it later and run \`${COMMAND} setup\` again).`,
@@ -229,7 +268,9 @@ function registerClaudeCode(port: number, say: Say) {
     "--scope",
     "user",
     SERVER,
-    JSON.stringify(claudeCodeEntry(port, selfCommand())),
+    JSON.stringify(
+      claudeCodeEntry(settings.port, selfCommand(), clientTimeoutMs(settings)),
+    ),
   ]);
   say(
     added.ok
@@ -322,7 +363,7 @@ export async function setup(say: Say = console.log) {
   } catch {
     // The checks below report it with the fix.
   }
-  registerClaudeCode(settings.port, say);
+  registerClaudeCode(settings, say);
   registerDesktop(selfCommand(), say);
   registerCodex(say);
   say("\nChecking everything:");

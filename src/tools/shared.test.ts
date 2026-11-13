@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaults } from "../config/tuning.js";
 import { AppError } from "../server/error.js";
+import { writeProviderAttempt } from "../server/stats.js";
 import { batch, toolResult } from "./shared.js";
 
 test("batch runs two items at once and keeps original ordering", async () => {
@@ -43,6 +44,39 @@ test("deadline aborts provider work and returns a tool error before 60 seconds",
   assert.equal(response.isError, true);
   assert(JSON.stringify(response.content).includes(messages.service.timeout));
   assert.equal(signal?.aborted, true);
+});
+
+test("a client that cancels stops the work and is logged with the credits spent", async (t) => {
+  const rows: Record<string, unknown>[] = [];
+  t.mock.method(console, "log", (line: string) => {
+    rows.push(JSON.parse(line) as Record<string, unknown>);
+  });
+  const client = new AbortController();
+  let work: AbortSignal | undefined;
+  const result = toolResult(
+    "fixture",
+    (_, signal) => {
+      work = signal;
+      writeProviderAttempt({
+        provider: "scrapfly",
+        rung: "render",
+        credits: 30,
+        durationMs: 1,
+        errorCode: null,
+      });
+      queueMicrotask(() => client.abort());
+      return new Promise(() => {});
+    },
+    defaults,
+    { signal: client.signal },
+  );
+  const response = await result;
+  assert.equal(response.isError, true);
+  assert(JSON.stringify(response.content).includes(messages.service.cancelled));
+  assert.equal(work?.aborted, true);
+  const row = rows.find(({ tool, event }) => tool === "fixture" && !event);
+  assert.equal(row?.errorCode, "client_cancelled");
+  assert.equal(row?.creditsSpent, 30);
 });
 
 test("same-host batch items wait while other hosts can proceed", async () => {

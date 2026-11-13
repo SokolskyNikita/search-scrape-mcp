@@ -3,7 +3,13 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { version } from "../config/version.js";
-import { claudeCodeEntry, mergeDesktopConfig, renderPlist } from "./install.js";
+import { parseSettings } from "../config/index.js";
+import {
+  chosenSettings,
+  claudeCodeEntry,
+  mergeDesktopConfig,
+  renderPlist,
+} from "./install.js";
 
 test("the LaunchAgent runs this install's serve command and escapes XML", () => {
   const plist = renderPlist(
@@ -49,12 +55,37 @@ test("the Claude Desktop entry is merged without touching other servers, and rem
   assert.throws(() => mergeDesktopConfig("[]", ["/bin/cmd"]), SyntaxError);
 });
 
-test("the Claude Code entry quotes the headers command for a shell", () => {
-  assert.deepEqual(claudeCodeEntry(8765, ["/My Apps/node", "/a$b/main.js"]), {
-    type: "http",
-    url: "http://127.0.0.1:8765/mcp",
-    headersHelper: '"/My Apps/node" "/a\\$b/main.js" "headers"',
+test("the Claude Code entry quotes the headers command and outlasts the tool deadline", () => {
+  assert.deepEqual(
+    claudeCodeEntry(8765, ["/My Apps/node", "/a$b/main.js"], 300_000),
+    {
+      type: "http",
+      url: "http://127.0.0.1:8765/mcp",
+      headersHelper: '"/My Apps/node" "/a\\$b/main.js" "headers"',
+      timeout: 300_000,
+    },
+  );
+});
+
+test("only settings that differ from the defaults are saved", () => {
+  const token = "t".repeat(40);
+  const settings = parseSettings({
+    token,
+    port: 9000,
+    statsLogMaxBytes: 2_097_152,
+    cacheTtlMs: 600_000,
   });
+  assert.deepEqual(
+    chosenSettings(settings, [
+      "token",
+      "port",
+      "statsLogMaxBytes",
+      "cacheTtlMs",
+    ]),
+    { token, port: 9000, statsLogMaxBytes: 2_097_152 },
+  );
+  // The saved result still loads to the same settings.
+  assert.deepEqual(parseSettings(chosenSettings(settings)), settings);
 });
 
 test("the command reports the package version and rejects unknown commands", () => {

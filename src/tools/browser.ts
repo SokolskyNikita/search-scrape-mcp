@@ -102,7 +102,7 @@ export function registerBrowser(
       inputSchema: toolInput({ command: schema }),
       annotations: { openWorldHint: true },
     },
-    ({ command }) => {
+    ({ command }, extra) => {
       const pageUrl = () => {
         const current = browser?.currentUrl?.();
         return current && /^https?:\/\//i.test(current) ? current : undefined;
@@ -229,6 +229,7 @@ export function registerBrowser(
         },
         settings,
         {
+          signal: extra.signal,
           presentation: {
             operation: messages.operation.browser(command.action),
             service: "browser",

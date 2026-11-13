@@ -205,7 +205,11 @@ Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-m
 
 Provider limits and hostname pacing apply across all sessions. Serper and the Scrape API have separate queues, and each hedge, retry, and escalation uses a request permit. The wait for a permit is shared across the attempts for one scrape or search; each batch item has its own within the batch deadline. A Scrape API HTTP 429 pauses new Scrape API requests for the reported retry interval. Opening a Cloud Browser session waits separately for a session lease.
 
-Clients with their own request timeout need to allow at least the configured tool deadline plus time to receive the result.
+Clients with their own request timeout need to allow at least the configured tool deadline plus time to receive the result. Setup gives Claude Code a per-server `timeout` of the tool deadline plus 30 seconds; without one, Claude Code stops waiting after 60 seconds. If you change `toolDeadlineSeconds`, run `search-scrape-mcp setup` again.
+
+When a client cancels a call or disconnects before the result is sent, the server stops the work. The stats log records the call as `client_cancelled` or `client_disconnected`, with the credits already spent in `creditsSpent`.
+
+`search-scrape-mcp setup` saves only the settings you changed in `config.json`, and removes entries that repeat a default, so a new version’s defaults take effect.
 
 Each scrape has a requested budget of 100 Scrapfly credits across all rungs, and automatic retries stop if Scrapfly reports a higher charge. Scrapfly can bill above the requested budget. After three reported charges of 100 credits or more for a hostname, scrapes of that host require `allow_higher_cost: true`, which also selects the higher budget (`scrapflyExpensiveCost`). Browser sessions and binary bandwidth can also incur charges. [Scrapfly billing documentation](https://scrapfly.io/docs/scrape-api/billing)
 

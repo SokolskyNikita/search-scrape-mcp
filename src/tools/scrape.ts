@@ -271,7 +271,7 @@ export function registerScrape(
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ url, ...options }) =>
+    ({ url, ...options }, extra) =>
       toolResult(
         "scrape",
         (attempt, signal, deadline) =>
@@ -285,6 +285,7 @@ export function registerScrape(
           ),
         settings,
         {
+          signal: extra.signal,
           presentation: {
             operation: messages.operation.scrape,
             target: () => url,
@@ -316,7 +317,7 @@ export function registerScrape(
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ urls, ...options }) =>
+    ({ urls, ...options }, extra) =>
       toolResult(
         "scrape_batch",
         (attempt, signal, deadline) =>
@@ -341,6 +342,7 @@ export function registerScrape(
         settings,
         {
           partialOnTimeout: true,
+          signal: extra.signal,
           presentation: {
             operation: messages.operation.scrape,
             targets: urls,

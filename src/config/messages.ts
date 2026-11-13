@@ -115,6 +115,8 @@ export const messages = {
     siteLimit: "Requests to this site are temporarily limited.",
     inFlight: "The MCP is busy. Retry after an in-flight call finishes.",
     timeout: "This request timed out.",
+    cancelled: "The client cancelled this request.",
+    disconnected: "The client disconnected before this request finished.",
     batchTimeout: "Timed out before this item finished.",
     browserSlots: "All browser sessions are in use. Close an idle session.",
     browserBudget: "Today’s browser time is used up.",

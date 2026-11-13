@@ -14,6 +14,7 @@ import {
   type RequestStats,
 } from "../server/stats.js";
 import { AppError, safeError } from "../server/error.js";
+import { toolCallContext } from "../server/tool-transport.js";
 
 export type Attempt = (provider?: string) => void;
 
@@ -100,7 +101,13 @@ export async function toolResult(
   {
     partialOnTimeout = false,
     presentation,
-  }: { partialOnTimeout?: boolean; presentation?: ResultPresentation } = {},
+    signal: cancelSignal,
+  }: {
+    partialOnTimeout?: boolean;
+    presentation?: ResultPresentation;
+    /** Aborts when the client cancels the request. */
+    signal?: AbortSignal;
+  } = {},
 ): Promise<CallToolResult> {
   const start = performance.now();
   const request: RequestStats = { httpAttempts: 0, requestId: newRequestId() };
@@ -110,14 +117,45 @@ export async function toolResult(
   const providers = new Set<string>();
   const controller = new AbortController();
   const timeoutError = new AppError("tool_timeout", messages.service.timeout);
+  // Stop provider work, and its cost, once nobody is waiting for the result.
+  const callers: [AbortSignal | undefined, AppError][] = [
+    [
+      cancelSignal,
+      new AppError("client_cancelled", messages.service.cancelled),
+    ],
+    [
+      toolCallContext.getStore()?.disconnected,
+      new AppError("client_disconnected", messages.service.disconnected),
+    ],
+  ];
+  const detach: (() => void)[] = [];
   let timer: NodeJS.Timeout | undefined;
   try {
     const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        controller.abort(timeoutError);
-        if (!partialOnTimeout) reject(timeoutError);
-      }, toolTimeoutMs(settings));
+      controller.signal.addEventListener(
+        "abort",
+        () => {
+          // A batch returns what it has at the deadline. A caller that left gets nothing.
+          if (controller.signal.reason !== timeoutError || !partialOnTimeout)
+            reject(controller.signal.reason);
+        },
+        { once: true },
+      );
     });
+    deadline.catch(() => {});
+    timer = setTimeout(
+      () => controller.abort(timeoutError),
+      toolTimeoutMs(settings),
+    );
+    for (const [caller, reason] of callers) {
+      if (!caller) continue;
+      const stop = () => controller.abort(reason);
+      if (caller.aborted) stop();
+      else {
+        caller.addEventListener("abort", stop, { once: true });
+        detach.push(() => caller.removeEventListener("abort", stop));
+      }
+    }
     const result = await Promise.race([
       statsContext.run({ tool: name, request }, () =>
         run(
@@ -153,6 +191,7 @@ export async function toolResult(
     return presented;
   } finally {
     clearTimeout(timer);
+    for (const remove of detach) remove();
     writeToolStats(
       {
         requestId: request.requestId,
@@ -168,6 +207,7 @@ export async function toolResult(
         outputChars,
         cached: request.cached,
         truncated: request.truncated,
+        creditsSpent: request.creditsSpent,
       },
       settings,
     );
@@ -264,6 +304,7 @@ export async function batch<I, O>(
                 outputChars: request.outputChars,
                 cached: request.cached,
                 truncated: request.truncated,
+                creditsSpent: request.creditsSpent,
               },
               stats.settings,
             );

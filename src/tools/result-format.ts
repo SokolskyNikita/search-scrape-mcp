@@ -90,6 +90,8 @@ const errorMessages: Readonly<Partial<Record<string, string>>> = {
   ...pageMessages,
   internal: messages.service.internal,
   tool_timeout: messages.service.timeout,
+  client_cancelled: messages.service.cancelled,
+  client_disconnected: messages.service.disconnected,
   provider_timeout: messages.service.timeout,
   browser_timeout: messages.service.timeout,
   provider_rate: messages.service.busy,

@@ -15,6 +15,8 @@ export type RequestStats = {
   outputChars?: number;
   cached?: boolean;
   truncated?: boolean;
+  /** Provider credits reported for this call so far. */
+  creditsSpent?: number;
 };
 
 /** Identifies this server process in the stats log. */
@@ -76,6 +78,7 @@ export function writeToolStats(
     outputChars?: number;
     cached?: boolean;
     truncated?: boolean;
+    creditsSpent?: number;
   },
   settings = defaults,
 ) {
@@ -129,6 +132,12 @@ export function writeProviderAttempt(
 ) {
   const request = statsContext.getStore()?.request;
   if (request && attempt.host && !request.host) request.host = attempt.host;
+  if (request && attempt.credits !== null) {
+    request.creditsSpent = (request.creditsSpent ?? 0) + attempt.credits;
+    if (request.parent)
+      request.parent.creditsSpent =
+        (request.parent.creditsSpent ?? 0) + attempt.credits;
+  }
   writeStats(
     {
       event: "provider_attempt",

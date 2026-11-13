@@ -186,12 +186,13 @@ export function registerSearch(
       inputSchema: input,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    (args) =>
+    (args, extra) =>
       toolResult(
         "search",
         (attempt, signal, deadline) => search(args, attempt, signal, deadline),
         settings,
         {
+          signal: extra.signal,
           presentation: {
             operation: messages.operation.search,
             service: "search",
@@ -210,7 +211,7 @@ export function registerSearch(
       }),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ searches }) =>
+    ({ searches }, extra) =>
       toolResult(
         "search_batch",
         async (attempt, signal, deadline) =>
@@ -227,6 +228,7 @@ export function registerSearch(
         settings,
         {
           partialOnTimeout: true,
+          signal: extra.signal,
           presentation: {
             operation: messages.operation.search,
             service: "search",

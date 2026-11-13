@@ -18,6 +18,7 @@ import { checkPage } from "../tools/page-check.js";
 import { registerScrape } from "../tools/scrape.js";
 import { ResultCache } from "../tools/result-cache.js";
 import { registerSearch } from "../tools/search.js";
+import { toolResult } from "../tools/shared.js";
 import { createMcpHttp } from "./http.js";
 
 test("authenticated MCP search uses a recorded Serper response", async (t) => {
@@ -641,4 +642,69 @@ test("MCP tools explain unknown fields and normalize search filters", async (t) 
       name,
     );
   }
+});
+
+test("a client that disconnects mid-call stops the tool's work", async (t) => {
+  const token = "a".repeat(40);
+  let started!: () => void;
+  const running = new Promise<void>((resolve) => (started = resolve));
+  let stopped!: (reason: unknown) => void;
+  const aborted = new Promise<unknown>((resolve) => (stopped = resolve));
+  const server = createMcpHttp(token, (mcp) => {
+    mcp.registerTool("scrape", { inputSchema: {} }, () =>
+      toolResult("scrape", (_, signal) => {
+        signal.addEventListener("abort", () => stopped(signal.reason));
+        started();
+        return new Promise(() => {});
+      }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  t.after(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const url = `http://127.0.0.1:${address.port}/mcp`;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+  };
+  const post = (body: object, extra = {}, signal?: AbortSignal) =>
+    fetch(url, {
+      method: "POST",
+      headers: { ...headers, ...extra },
+      body: JSON.stringify({ jsonrpc: "2.0", ...body }),
+      signal,
+    });
+  const initialized = await post({
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "test", version: "1.0.0" },
+    },
+  });
+  await initialized.text();
+  const session = {
+    "Mcp-Session-Id": initialized.headers.get("mcp-session-id")!,
+    "Mcp-Protocol-Version": "2025-06-18",
+  };
+  await post({ method: "notifications/initialized" }, session);
+
+  const client = new AbortController();
+  const call = post(
+    { id: 2, method: "tools/call", params: { name: "scrape", arguments: {} } },
+    session,
+    client.signal,
+  ).catch(() => undefined);
+  await running;
+  client.abort();
+  await call;
+  const reason = (await aborted) as { code?: string };
+  assert.equal(reason.code, "client_disconnected");
 });
