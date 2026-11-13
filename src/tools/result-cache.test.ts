@@ -57,6 +57,10 @@ test("cache log events carry a key hash and say why a lookup missed", (t) => {
   cache.get("https://example.com/b");
   cache.set("https://example.com/c", "third");
   cache.get("https://example.com/b", true);
+  // Evicted while fresh, but looked up after it would have expired.
+  cache.set("https://example.com/d", "fourth");
+  now = 400;
+  cache.get("https://example.com/c");
   const events = logger.mock.calls.map(({ arguments: [line] }) =>
     JSON.parse(String(line)),
   );
@@ -69,6 +73,7 @@ test("cache log events carry a key hash and say why a lookup missed", (t) => {
       { outcome: "hit", reason: undefined, ageMs: 50 },
       { outcome: "miss", reason: "expired", ageMs: undefined },
       { outcome: "bypass", reason: undefined, ageMs: undefined },
+      { outcome: "miss", reason: "expired", ageMs: undefined },
     ],
   );
   const [a, , , b] = events.map((event) => event.keyHash);

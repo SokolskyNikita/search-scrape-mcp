@@ -12,10 +12,13 @@ const historyLimit = 10_000;
 
 /**
  * Why a lookup missed: "new" (first lookup this run), "expired" (stored but older than cacheTtlMs),
- * "evicted" (stored but pushed out by cacheMaxEntries or cacheMaxBytes), "not_stored" (looked up
+ * "evicted" (pushed out by cacheMaxEntries or cacheMaxBytes before it would have expired), "not_stored" (looked up
  * before but the result was never stored, for example a failure or an oversized result).
  */
 type MissReason = "new" | "expired" | "evicted" | "not_stored";
+
+/** A key looked up before, or evicted while still fresh with the time it would have expired. */
+type Past = "looked_up" | { evictedUntil: number };
 
 export class ResultCache<T> {
   private readonly entries = new Map<
@@ -23,7 +26,7 @@ export class ResultCache<T> {
     { value: T; cached_at: string; expires: number; bytes: number }
   >();
   private bytes = 0;
-  private readonly history = new Map<string, "looked_up" | "evicted">();
+  private readonly history = new Map<string, Past>();
 
   constructor(private readonly settings: Tuning) {}
 
@@ -41,10 +44,13 @@ export class ResultCache<T> {
     const now = performance.now();
     if (!entry || entry.expires <= now) {
       const past = this.history.get(hash);
+      // An evicted entry that would have expired by now missed because of its age, not the eviction.
       const reason: MissReason = entry
         ? "expired"
-        : past === "evicted"
-          ? "evicted"
+        : typeof past === "object"
+          ? now < past.evictedUntil
+            ? "evicted"
+            : "expired"
           : past
             ? "not_stored"
             : "new";
@@ -81,9 +87,8 @@ export class ResultCache<T> {
       this.bytes + bytes > this.settings.cacheMaxBytes
     ) {
       const oldest = this.entries.keys().next().value!;
-      // An entry that had already expired would have missed anyway.
-      if (this.entries.get(oldest)!.expires > performance.now())
-        this.remember(keyHash(oldest), "evicted");
+      const { expires } = this.entries.get(oldest)!;
+      this.remember(keyHash(oldest), { evictedUntil: expires });
       this.remove(oldest);
     }
     this.entries.set(key, {
@@ -95,7 +100,7 @@ export class ResultCache<T> {
     this.bytes += bytes;
   }
 
-  private remember(hash: string, state: "looked_up" | "evicted") {
+  private remember(hash: string, state: Past) {
     this.history.delete(hash);
     this.history.set(hash, state);
     if (this.history.size > historyLimit)

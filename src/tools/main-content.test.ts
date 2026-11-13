@@ -131,3 +131,25 @@ test("main extraction omits navigation and complementary landmarks outside main 
   assert.match(markdown, /second contribution/);
   assert.doesNotMatch(markdown, /Global directory|Unrelated sidebar/);
 });
+
+test("broken JSON-LD is dropped quietly while valid schema data still reaches Defuddle", async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const url = new URL("https://example.com/article");
+  const { markdown, check } = await mainContent(
+    `<!doctype html><html><head><title>Fixture article</title>
+      <script type="application/ld+json">{"@type": "Article", "author": {"name": "Ada</script>
+      <script type="application/ld+json">{"@type": "Article", "headline": "Fixture article", "author": {"@type": "Person", "name": "Grace Hopper"}}</script>
+    </head><body><main><article><h1>Fixture article</h1>
+      <p>This article body has enough words to count as real content for the extractor to keep.</p>
+      <p>A second paragraph keeps the page from looking empty or like a navigation menu.</p>
+    </article></main></body></html>`,
+    url,
+    url,
+    200,
+    "text/html",
+    true,
+  );
+  assert.equal(check.code, "ok");
+  assert.match(markdown, /second paragraph/);
+  assert.equal(errors.mock.callCount(), 0);
+});

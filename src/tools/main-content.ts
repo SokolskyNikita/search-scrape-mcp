@@ -5,6 +5,27 @@ import { AppError } from "../server/error.js";
 import { checkPage } from "./page-check.js";
 import { cleanPage, markdownLink } from "./page-content.js";
 
+/**
+ * Removes JSON-LD blocks that Defuddle can't parse, cleaned the way Defuddle 0.19 cleans them.
+ * Defuddle would skip them anyway, but it logs a stack trace for each one to stderr.
+ */
+function dropBrokenJsonLd(document: Document) {
+  for (const script of document.querySelectorAll(
+    'script[type="application/ld+json"]',
+  )) {
+    const json = (script.textContent ?? "")
+      .replace(/\/\*[\s\S]*?\*\/|^\s*\/\/.*$/gm, "")
+      .replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, "$1")
+      .replace(/^\s*(\*\/|\/\*)\s*|\s*(\*\/|\/\*)\s*$/g, "")
+      .trim();
+    try {
+      JSON.parse(json);
+    } catch {
+      script.remove();
+    }
+  }
+}
+
 const words = (text: string) => text.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
@@ -193,6 +214,7 @@ export async function mainContent(
       for (const node of copy.querySelectorAll("script, style, template"))
         node.remove();
     }
+    dropBrokenJsonLd(copy);
     return Defuddle(copy, final.href, {
       markdown: true,
       removeImages: true,
