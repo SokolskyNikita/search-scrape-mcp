@@ -8,6 +8,7 @@ import {
   type ResultPresentation,
 } from "./result-format.js";
 import {
+  newRequestId,
   statsContext,
   writeToolStats,
   type RequestStats,
@@ -102,9 +103,10 @@ export async function toolResult(
   }: { partialOnTimeout?: boolean; presentation?: ResultPresentation } = {},
 ): Promise<CallToolResult> {
   const start = performance.now();
-  const request: RequestStats = { httpAttempts: 0 };
+  const request: RequestStats = { httpAttempts: 0, requestId: newRequestId() };
   let attempts = 0;
   let errorCode: string | null = null;
+  let outputChars: number | undefined;
   const providers = new Set<string>();
   const controller = new AbortController();
   const timeoutError = new AppError("tool_timeout", messages.service.timeout);
@@ -130,21 +132,30 @@ export async function toolResult(
       deadline,
     ]);
     const cached = isCachedSearch(result);
+    if (cached) request.cached = true;
     const value = cached ? result.value : result;
-    return presentedResult(
+    const presented = presentedResult(
       presentation ?? { operation: name },
       value,
       cached ? result.cached_at : undefined,
     );
+    outputChars = textLength(presented);
+    return presented;
   } catch (error) {
     const failure = safeError(error);
     errorCode = failure.code;
     if (failure.code === "internal") console.error("Unexpected tool error.");
-    return presentedError(presentation ?? { operation: name }, failure);
+    const presented = presentedError(
+      presentation ?? { operation: name },
+      failure,
+    );
+    outputChars = textLength(presented);
+    return presented;
   } finally {
     clearTimeout(timer);
     writeToolStats(
       {
+        requestId: request.requestId,
         tool: name,
         durationMs: Math.round(performance.now() - start),
         attempts,
@@ -153,10 +164,21 @@ export async function toolResult(
         batchItems: request.batchItems,
         provider: providers.size ? [...providers].join(",") : null,
         errorCode,
+        host: request.host,
+        outputChars,
+        cached: request.cached,
+        truncated: request.truncated,
       },
       settings,
     );
   }
+}
+
+function textLength(result: CallToolResult) {
+  return result.content.reduce(
+    (sum, part) => sum + (part.type === "text" ? part.text.length : 0),
+    0,
+  );
 }
 
 export async function batch<I, O>(
@@ -188,7 +210,11 @@ export async function batch<I, O>(
         const { input, index, key } = pending.splice(next, 1)[0]!;
         if (key) busy.add(key);
         const start = performance.now();
-        const request: RequestStats = { httpAttempts: 0, parent };
+        const request: RequestStats = {
+          httpAttempts: 0,
+          requestId: parent?.requestId,
+          parent,
+        };
         let attempts = 0;
         let errorCode: string | null = null;
         const providers = new Set<string>();
@@ -202,6 +228,7 @@ export async function batch<I, O>(
                 if (provider) providers.add(provider);
               }),
           );
+          if (isCachedSearch(result)) request.cached = true;
           results[index] = isCachedSearch(result)
             ? {
                 index,
@@ -224,6 +251,7 @@ export async function batch<I, O>(
           if (stats)
             writeToolStats(
               {
+                requestId: request.requestId,
                 tool: stats.tool,
                 itemIndex: index,
                 durationMs: Math.round(performance.now() - start),
@@ -232,6 +260,10 @@ export async function batch<I, O>(
                 warningCode: request.warningCode,
                 provider: providers.size ? [...providers].join(",") : null,
                 errorCode,
+                host: request.host,
+                outputChars: request.outputChars,
+                cached: request.cached,
+                truncated: request.truncated,
               },
               stats.settings,
             );

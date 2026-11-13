@@ -202,7 +202,7 @@ test(
           ],
           files,
         ),
-      { ...defaults, mcpConcurrentToolCalls: 16 },
+      { ...defaults, mcpConcurrentToolCalls: 16, mcpSessionBusyWaitMs: 200 },
     );
     const log = t.mock.method(console, "log", () => {});
     server.listen(0, "127.0.0.1");
@@ -287,6 +287,17 @@ test(
         ["scrape", 0, "mcp_session_busy"],
         ["scrape", 0, "mcp_session_busy"],
         ["scrape", 0, "mcp_server_busy"],
+      ],
+    );
+    // Session rejections come after a short wait and record how full the session was.
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === "local_limit")
+        .map((event) => [event.code, event.outcome, event.inFlight]),
+      [
+        ["mcp_session_busy", "rejected", 8],
+        ["mcp_session_busy", "rejected", 8],
+        ["mcp_server_busy", "rejected", 16],
       ],
     );
   },

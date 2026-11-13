@@ -212,6 +212,12 @@ export const tuningSchema = z.object({
     8,
     "Maximum simultaneous MCP requests per session.",
   ),
+  mcpSessionBusyWaitMs: integer(
+    0,
+    60_000,
+    5_000,
+    "Wait up to this many milliseconds for a free per-session slot before rejecting a request.",
+  ),
   mcpConcurrentToolCalls: integer(
     1,
     1_024,
@@ -268,6 +274,12 @@ export const tuningSchema = z.object({
     14_400_000,
     "How long a hostname's successful rung or protection is remembered in milliseconds.",
   ),
+  providerDownMemoryMs: integer(
+    0,
+    3_600_000,
+    300_000,
+    "After a scrape fails with provider_down, fail the same URL fast for this many milliseconds unless fresh is set. Zero disables it.",
+  ),
   siteMemorySize: integer(
     0,
     65_536,
@@ -277,8 +289,14 @@ export const tuningSchema = z.object({
   statsLogMaxBytes: integer(
     1_024,
     1_073_741_824,
-    2_097_152,
+    10_485_760,
     "Rotate the JSONL stats file at this size in bytes.",
+  ),
+  statsLogFiles: integer(
+    1,
+    100,
+    5,
+    "Rotated JSONL stats files to keep, including the current one.",
   ),
 });
 

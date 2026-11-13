@@ -1,5 +1,5 @@
 import { messages } from "../config/messages.js";
-import { statsContext } from "../server/stats.js";
+import { statsContext, writeLimitEvent } from "../server/stats.js";
 import { toolInput } from "./input.js";
 import type { ResultCache } from "./result-cache.js";
 import { defaults } from "../config/tuning.js";
@@ -59,6 +59,26 @@ export function registerScrape(
   settings = defaults,
   cache?: ResultCache<ScrapeResult & { tried: string[] }>,
 ) {
+  // URLs whose last scrape failed with provider_down, so repeats fail fast.
+  const recentlyDown = new Map<string, number>();
+  function checkRecentlyDown(href: string, fresh: boolean | undefined) {
+    const until = recentlyDown.get(href);
+    if (until === undefined) return;
+    if (fresh || until <= Date.now()) {
+      recentlyDown.delete(href);
+      return;
+    }
+    writeLimitEvent({ code: "provider_down_memory", outcome: "hit" }, settings);
+    throw new AppError("recently_down", messages.page.recentlyDown, {
+      retryAt: new Date(until).toISOString(),
+    });
+  }
+  function rememberDown(href: string) {
+    if (!settings.providerDownMemoryMs) return;
+    if (recentlyDown.size >= 1_024)
+      recentlyDown.delete(recentlyDown.keys().next().value!);
+    recentlyDown.set(href, Date.now() + settings.providerDownMemoryMs);
+  }
   async function scrape(
     url: string,
     limit: number,
@@ -75,13 +95,20 @@ export function registerScrape(
       max_chars: maxChars,
     } = options;
     const tried: string[] = [];
+    let href: string | undefined;
     const retry = (overrides: Partial<ScrapeOptions>) => ({
       name: "scrape",
       arguments: { url, ...options, ...overrides },
     });
     try {
       signal.throwIfAborted();
+      const stats = statsContext.getStore()?.request;
+      // Record the host before validation so refused URLs are attributed too.
+      if (stats && URL.canParse(url)) stats.host = new URL(url).hostname;
       const target = await validatePublicUrl(url);
+      href = target.href;
+      if (stats) stats.host = target.hostname;
+      checkRecentlyDown(target.href, fresh);
       const key = JSON.stringify([
         target.href,
         start ?? "default",
@@ -189,15 +216,21 @@ export function registerScrape(
           : {}),
       };
       const request = statsContext.getStore()?.request;
-      if (request)
+      if (request) {
         request.warningCode =
           result.extractionWarning?.code ??
           (check.warning ? check.code : undefined);
+        if (hit) request.cached = true;
+        if ("truncated" in result) request.truncated = true;
+        request.outputChars = JSON.stringify(result).length;
+      }
       return result;
     } catch (error) {
       const failure = signal.aborted
         ? safeError(signal.reason)
         : safeError(error);
+      if (href && failure.code === "provider_down" && !signal.aborted)
+        rememberDown(href);
       if (
         ["provider_cost_opt_in_required", "provider_cost_budget"].includes(
           failure.code,

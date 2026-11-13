@@ -83,6 +83,7 @@ const pageMessages: Readonly<Partial<Record<string, string>>> = {
   sign_in: messages.page.sign_in,
   not_found: messages.page.not_found,
   content_moved: messages.page.content_moved,
+  recently_down: messages.page.recentlyDown,
 };
 
 const errorMessages: Readonly<Partial<Record<string, string>>> = {

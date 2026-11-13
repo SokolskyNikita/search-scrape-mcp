@@ -1,13 +1,25 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { defaults } from "../config/tuning.js";
-import { appendFileSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { version } from "../config/version.js";
 
 export type RequestStats = {
   httpAttempts: number;
+  /** Shared by a tool call and its batch items, so their events can be joined. */
+  requestId?: string;
   parent?: RequestStats;
   warningCode?: string;
   batchItems?: { succeeded: number; failed: number };
+  host?: string;
+  outputChars?: number;
+  cached?: boolean;
+  truncated?: boolean;
 };
+
+/** Identifies this server process in the stats log. */
+export const runId = randomUUID();
+export const newRequestId = () => randomUUID();
 
 export const statsContext = new AsyncLocalStorage<{
   tool: string;
@@ -30,6 +42,9 @@ export function writeLimitEvent(
     provider?: string;
     retryAt?: string;
     seconds?: number;
+    waitedMs?: number;
+    inFlight?: number;
+    session?: string;
   },
   settings = defaults,
 ) {
@@ -41,11 +56,13 @@ export function writeLimitEvent(
       ...event,
     },
     settings.statsLogMaxBytes,
+    settings.statsLogFiles,
   );
 }
 
 export function writeToolStats(
   stats: {
+    requestId?: string;
     tool: string;
     itemIndex?: number;
     durationMs: number;
@@ -55,6 +72,10 @@ export function writeToolStats(
     batchItems?: RequestStats["batchItems"];
     provider: string | null;
     errorCode: string | null;
+    host?: string;
+    outputChars?: number;
+    cached?: boolean;
+    truncated?: boolean;
   },
   settings = defaults,
 ) {
@@ -65,6 +86,7 @@ export function writeToolStats(
       providerInvocations: stats.attempts,
     },
     settings.statsLogMaxBytes,
+    settings.statsLogFiles,
   );
 }
 
@@ -85,6 +107,7 @@ export function writeProviderAttempt(
     url?: string;
     datacenterBlocked?: boolean;
     hedgeTrigger?: "delay" | "failure";
+    startSource?: "caller" | "site" | "memory" | "default";
     credits: number | null;
     remainingCredits?: number | null;
     requestedProxyPool?: string | null;
@@ -104,6 +127,8 @@ export function writeProviderAttempt(
   },
   settings = defaults,
 ) {
+  const request = statsContext.getStore()?.request;
+  if (request && attempt.host && !request.host) request.host = attempt.host;
   writeStats(
     {
       event: "provider_attempt",
@@ -113,12 +138,48 @@ export function writeProviderAttempt(
       ...attempt,
     },
     settings.statsLogMaxBytes,
+    settings.statsLogFiles,
   );
 }
 
-function writeStats(fields: object, maxBytes: number) {
+/** Record a crash before the process exits. Only the error's name and code are kept. */
+export function writeCrash(kind: string, error: unknown, settings = defaults) {
+  const failure = error as { name?: unknown; code?: unknown } | undefined;
+  writeStats(
+    {
+      event: "crash",
+      kind,
+      name: typeof failure?.name === "string" ? failure.name : typeof error,
+      code: typeof failure?.code === "string" ? failure.code : undefined,
+    },
+    settings.statsLogMaxBytes,
+    settings.statsLogFiles,
+  );
+}
+
+function rotate(file: string, keep: number) {
+  if (keep <= 1) {
+    rmSync(file, { force: true });
+    return;
+  }
+  rmSync(`${file}.${keep - 1}`, { force: true });
+  for (let n = keep - 2; n >= 1; n--)
+    if (statSync(`${file}.${n}`, { throwIfNoEntry: false }))
+      renameSync(`${file}.${n}`, `${file}.${n + 1}`);
+  renameSync(file, `${file}.1`);
+}
+
+function writeStats(
+  fields: object,
+  maxBytes: number,
+  keep: number = defaults.statsLogFiles,
+) {
+  const requestId = statsContext.getStore()?.request?.requestId;
   const line = JSON.stringify({
     timestamp: new Date().toISOString(),
+    version,
+    runId,
+    ...(requestId ? { requestId } : {}),
     ...fields,
   });
   const file = process.env.MCP_STATS_LOG;
@@ -128,8 +189,8 @@ function writeStats(fields: object, maxBytes: number) {
   }
   try {
     const size = statSync(file, { throwIfNoEntry: false })?.size ?? 0;
-    if (size + Buffer.byteLength(line) + 1 > maxBytes)
-      renameSync(file, file + ".1");
+    if (size && size + Buffer.byteLength(line) + 1 > maxBytes)
+      rotate(file, keep);
     appendFileSync(file, line + "\n", { mode: 0o600 });
   } catch {
     console.error("Could not write the tool stats log.");

@@ -271,6 +271,7 @@ async function requestPage(
   dispatch: DispatchScrape,
   recordAttempt: () => void,
   budget: number,
+  startSource?: "caller" | "site" | "memory" | "default",
 ): Promise<
   | (ScrapeResult & { transientTarget?: boolean; residentialUsed?: boolean })
   | { head: FileHeaders }
@@ -726,6 +727,7 @@ async function requestPage(
           proxyPool,
           costBreakdown: breakdown,
           costBudget: budget,
+          ...(startSource && operation !== "head" ? { startSource } : {}),
           providerStatus,
           providerCode,
           durationMs: Math.round(performance.now() - start),
@@ -794,6 +796,10 @@ export function scrapflyScrape(
         ? settings.scrapflyExpensiveCost
         : SCRAPFLY_STANDARD_COST;
       let overrunCredits: number | undefined;
+      // Set once the ladder's start is chosen; HEAD checks run before that.
+      const ladder: {
+        startSource?: "caller" | "site" | "memory" | "default";
+      } = {};
       async function attempt(
         rung: ScrapeRung,
         operation?: "head" | FileHeaders,
@@ -841,6 +847,7 @@ export function scrapflyScrape(
           () =>
             options.tried.push(operation === "head" ? "datacenter_head" : rung),
           budget,
+          ladder.startSource,
         );
       }
       const filePath = looksLikeFile(target);
@@ -922,6 +929,17 @@ export function scrapflyScrape(
       let lastThin: string | undefined;
       let warning: ScrapeResult | undefined;
       let protectedSite = false;
+      ladder.startSource = file
+        ? undefined
+        : Math.min(previous, lastRung) > start
+          ? "memory"
+          : site &&
+              scrapeRungs.indexOf(site.startRung) >
+                scrapeRungs.indexOf(initialRung)
+            ? "site"
+            : options.start
+              ? "caller"
+              : "default";
       for (
         let index = file ? 0 : Math.max(Math.min(previous, lastRung), start);
         index <= lastRung;

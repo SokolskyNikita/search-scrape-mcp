@@ -24,6 +24,18 @@ test("target URL policy rejects GitHub domains and subdomains before DNS", async
   }
 });
 
+test("target URL policy rejects Business Wire, whose shield blocks every rung", async () => {
+  for (const host of ["businesswire.com", "www.businesswire.com"])
+    await assert.rejects(
+      validatePublicUrl(`https://${host}/news/home/1/en`),
+      {
+        code: "unsupported_in_scrape",
+        message: hostRule(host)!.accessError,
+      },
+      host,
+    );
+});
+
 test("target URL policy rejects local, special-use, credentialed and unsafe destinations before DNS", async () => {
   const bad = [
     "file:///etc/passwd",

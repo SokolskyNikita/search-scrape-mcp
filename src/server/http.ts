@@ -4,6 +4,7 @@ import { defaults } from "../config/tuning.js";
 import { version } from "../config/version.js";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
@@ -21,6 +22,8 @@ import {
 } from "./tool-transport.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest();
+/** A short, non-reversible label for a session ID in the stats log. */
+const sessionLabel = (id: string) => digest(id).toString("hex").slice(0, 12);
 
 function reject(res: ServerResponse, status: number, message: string) {
   res.writeHead(status, {
@@ -137,12 +140,21 @@ export function createMcpHttp(
         const id = req.headers["mcp-session-id"];
         if (id !== undefined) {
           const session = typeof id === "string" ? sessions.get(id) : undefined;
-          if (typeof id !== "string" || !session || expireSession(id, session))
+          if (
+            typeof id !== "string" ||
+            !session ||
+            expireSession(id, session)
+          ) {
+            writeLimitEvent(
+              { code: "mcp_session_unknown", outcome: "rejected" },
+              settings,
+            );
             return reject(
               res,
               404,
               "MCP session expired or unknown. Initialize a new session.",
             );
+          }
           if (req.method === "GET") {
             res.setHeader("Allow", "POST, DELETE");
             return reject(res, 405, "Standalone event streams are disabled.");
@@ -156,6 +168,32 @@ export function createMcpHttp(
           const presentation = call?.success
             ? toolCallPresentation(call.data.params)
             : undefined;
+          if (
+            request &&
+            session.active >= settings.mcpSessionInFlightLimit &&
+            settings.mcpSessionBusyWaitMs > 0
+          ) {
+            // Parallel subagents share one session; give a slot a moment to free up.
+            const waitStart = performance.now();
+            const waitUntil = waitStart + settings.mcpSessionBusyWaitMs;
+            while (
+              session.active >= settings.mcpSessionInFlightLimit &&
+              performance.now() < waitUntil &&
+              !req.socket.destroyed
+            )
+              await delay(50);
+            if (session.active < settings.mcpSessionInFlightLimit)
+              writeLimitEvent(
+                {
+                  code: "mcp_session_busy",
+                  outcome: "wait",
+                  waitedMs: Math.round(performance.now() - waitStart),
+                  inFlight: session.active,
+                  session: sessionLabel(id),
+                },
+                settings,
+              );
+          }
           const sessionBusy =
             session.active >= settings.mcpSessionInFlightLimit;
           const serverBusy =
@@ -163,8 +201,15 @@ export function createMcpHttp(
           if (request && (sessionBusy || serverBusy)) {
             const code = sessionBusy ? "mcp_session_busy" : "mcp_server_busy";
             const message = messages.service.inFlight;
-            if (!call?.success)
-              writeLimitEvent({ code, outcome: "rejected" }, settings);
+            writeLimitEvent(
+              {
+                code,
+                outcome: "rejected",
+                inFlight: sessionBusy ? session.active : toolCalls,
+                session: sessionLabel(id),
+              },
+              settings,
+            );
             const payload = call?.success
               ? {
                   result: await toolResult(

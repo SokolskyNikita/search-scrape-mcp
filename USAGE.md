@@ -181,6 +181,7 @@ Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-m
 | `mcpSessionExpiryMs` | `7200000` | Expire idle MCP sessions after this many milliseconds. |
 | `mcpSessionLimit` | `128` | Maximum number of MCP sessions. |
 | `mcpSessionInFlightLimit` | `8` | Maximum simultaneous MCP requests per session. |
+| `mcpSessionBusyWaitMs` | `5000` | Wait up to this many milliseconds for a free per-session slot before rejecting a request. |
 | `mcpConcurrentToolCalls` | `100` | Maximum simultaneous tool calls across all MCP sessions. |
 | `scrapeInlineChars` | `16000` | Inline character limit for a single scrape. |
 | `scrapeBatchInlineChars` | `20000` | Inline character limit per batch scrape. |
@@ -190,8 +191,10 @@ Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-m
 | `outputMaxAgeMs` | `14400000` | Saved output retention in milliseconds. |
 | `outputMaxBytes` | `67108864` | Total saved output size cap in bytes. |
 | `siteMemoryMs` | `14400000` | How long a hostname's successful rung or protection is remembered in milliseconds. |
+| `providerDownMemoryMs` | `300000` | After a scrape fails with provider_down, fail the same URL fast for this many milliseconds unless fresh is set. Zero disables it. |
 | `siteMemorySize` | `256` | Maximum remembered hostnames. Zero disables memory. |
-| `statsLogMaxBytes` | `2097152` | Rotate the JSONL stats file at this size in bytes. |
+| `statsLogMaxBytes` | `10485760` | Rotate the JSONL stats file at this size in bytes. |
+| `statsLogFiles` | `5` | Rotated JSONL stats files to keep, including the current one. |
 | `searchProviders` | `["serper"]` | Search provider order. |
 | `scrapeProviders` | `["scrapfly"]` | Scrape provider order. |
 | `browserProviders` | `["scrapfly"]` | Interactive browser provider order. |
@@ -208,7 +211,12 @@ Each scrape has a requested budget of 100 Scrapfly credits across all rungs, and
 
 ## Logs
 
-The background agent writes `tools.jsonl`, `stdout.log` and `stderr.log` under `~/Library/Logs/search-scrape-mcp/`. Tool records report outcomes, including individual batch items. Provider records report requests, known charges, and Scrapfly proxy and cost details. Logs exclude arguments and fetched content.
+The background agent writes `tools.jsonl`, `stdout.log` and `stderr.log` under `~/Library/Logs/search-scrape-mcp/`. Tool records report outcomes, including individual batch items. Provider records report requests, known charges, and Scrapfly proxy and cost details. Every record carries the server version, a per-process `runId` and, for tool calls, a `requestId` shared by the call, its batch items and its provider attempts. Crashes are recorded as `crash` events. Logs exclude arguments and fetched content.
+
+From a checkout, two scripts summarize usage:
+
+- `node scripts/stats.mjs [--since 36h] [--json]` summarizes the stats log: tools, durations, credits by rung, attempts over budget, failing hosts, repeated failures, limits and crashes. `--export DIR` copies the logs; `--archive` copies them to `archive/` in the log folder and empties them.
+- `python3 -I scripts/session-stats.py [--hours 36]` reads Claude Code transcripts and reports the errors clients saw from search-scrape, matched with server calls that finished after the client gave up.
 
 ## Security and sessions
 

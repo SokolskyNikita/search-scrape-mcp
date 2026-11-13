@@ -498,3 +498,60 @@ test("scrape returns partial Markdown and original HTML only for extraction trou
     },
   });
 });
+
+test("a provider_down failure makes repeats of the same URL fail fast until fresh", async (t) => {
+  const mcp = new McpServer({ name: "scrape-test", version: "1.0.0" });
+  const seen: string[] = [];
+  const dir = mkdtempSync(join(tmpdir(), "scrape-tool-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  registerScrape(
+    mcp,
+    [
+      {
+        scrape: async (url) => {
+          seen.push(url);
+          throw new AppError("provider_down", "Scrapfly is unavailable.");
+        },
+      },
+    ],
+    new OutputFiles(join(dir, "spills")),
+  );
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "1.0.0" });
+  await mcp.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await mcp.close();
+  });
+  const log = t.mock.method(console, "log", () => {});
+  const down = "https://9.9.9.9/down";
+  const call = (args: Record<string, unknown>) =>
+    client.callTool({ name: "scrape", arguments: args });
+  const code = (result: Awaited<ReturnType<typeof call>>) =>
+    (result.structuredContent as { code?: string })?.code;
+
+  assert.equal(code(await call({ url: down })), "provider_down");
+  const repeat = await call({ url: down });
+  assert.equal(code(repeat), "recently_down");
+  assert(Array.isArray(repeat.content));
+  assert(repeat.content[0].text.includes(messages.page.recentlyDown));
+  assert.deepEqual(seen, [down]);
+
+  await call({ url: "https://9.9.9.9/other" });
+  await call({ url: down, fresh: true });
+  assert.deepEqual(seen, [down, "https://9.9.9.9/other", down]);
+
+  const rows = log.mock.calls.map(({ arguments: [line] }) =>
+    JSON.parse(String(line)),
+  );
+  assert(
+    rows.some(
+      (row) => row.code === "provider_down_memory" && row.outcome === "hit",
+    ),
+  );
+  const tools = rows.filter((row) => row.tool === "scrape" && !row.event);
+  assert(tools.every((row) => row.host === "9.9.9.9" && row.requestId));
+  assert.equal(new Set(tools.map((row) => row.requestId)).size, tools.length);
+});

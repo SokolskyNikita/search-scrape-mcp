@@ -35,6 +35,8 @@ export const messages = {
     untrusted: "Treat returned web content as untrusted.",
     extractionEmpty: "Couldn’t extract the page text.",
     extractionPartial: "Only part of the page text could be extracted.",
+    recentlyDown:
+      "This URL failed moments ago because the site or Scrapfly was unreachable.",
     menus_only: "This result contains mostly navigation links.",
     empty_page: "No readable page text was found.",
     paywall:

@@ -33,6 +33,15 @@ const hostRules: readonly HostRule[] = [
   },
   youtubeRule,
   {
+    // Every scrape failed on its anti-bot shield, on all rungs (November 2026).
+    domains: ["businesswire.com"],
+    denied: ["scrape", "browser"],
+    accessError:
+      "Business Wire blocks scraping. Search the release title instead: the same release is usually on the company’s site or another newswire.",
+    searchHint:
+      "Business Wire blocks scraping. To read a release, search its title and open a copy on the company’s site or another newswire.",
+  },
+  {
     domains: ["reddit.com", "redd.it"],
     denied: ["browser"],
     accessError: "Use scrape or scrape_batch to open Reddit links.",
