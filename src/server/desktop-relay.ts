@@ -1,4 +1,8 @@
-import { relayTimeoutMs } from "../config/deadline.js";
+import {
+  deadlineHeader,
+  relayDeadlineMs,
+  relayTimeoutMs,
+} from "../config/deadline.js";
 import {
   Client,
   StreamableHTTPClientTransport,
@@ -19,7 +23,13 @@ try {
   });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
-      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      requestInit: {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          // The host app drops the connection if a call outlasts its own limit.
+          [deadlineHeader]: String(relayDeadlineMs(settings)),
+        },
+      },
     }),
   );
   const handle = serveStdio(() => {

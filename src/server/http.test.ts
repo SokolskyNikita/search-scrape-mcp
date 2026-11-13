@@ -20,6 +20,7 @@ import { registerScrape } from "../tools/scrape.js";
 import { ResultCache } from "../tools/result-cache.js";
 import { registerSearch } from "../tools/search.js";
 import { toolResult } from "../tools/shared.js";
+import { deadlineHeader } from "../config/deadline.js";
 import { createMcpHttp } from "./http.js";
 
 test("authenticated MCP search uses a recorded Serper response", async (t) => {
@@ -703,4 +704,70 @@ test("a client that disconnects mid-call stops the tool's work", async (t) => {
   await call;
   const reason = (await aborted) as { code?: string };
   assert.equal(reason.code, "client_disconnected");
+});
+
+test("a client can ask for a shorter deadline, and a batch then returns what it has", async (t) => {
+  const token = "c".repeat(40);
+  const dir = mkdtempSync(join(tmpdir(), "scrape-deadline-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const markdown = "This is a readable fixture page. ".repeat(30);
+  const register = (mcp: Parameters<typeof registerScrape>[0]) =>
+    registerScrape(
+      mcp,
+      [
+        {
+          async scrape(url, signal) {
+            if (url.endsWith("/slow"))
+              await new Promise((_, reject) =>
+                signal?.addEventListener("abort", () => reject(signal.reason)),
+              );
+            return {
+              markdown,
+              check: checkPage(markdown, new URL(url), new URL(url), 200),
+            };
+          },
+        },
+      ],
+      new OutputFiles(join(dir, "spills")),
+    );
+  const server = createMcpHttp(token, register);
+  t.mock.method(console, "log", () => {});
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const client = new Client({ name: "deadline-test", version: "1.0.0" });
+  t.after(async () => {
+    await client.close();
+    server.close();
+    server.closeAllConnections();
+  });
+  await client.connect(
+    new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${address.port}/mcp`),
+      {
+        requestInit: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            [deadlineHeader]: "1000",
+          },
+        },
+      },
+    ),
+  );
+  const started = performance.now();
+  const batch = await client.callTool({
+    name: "scrape_batch",
+    arguments: { urls: ["https://1.1.1.1/fast", "https://8.8.8.8/slow"] },
+  });
+  const elapsed = performance.now() - started;
+  assert(elapsed >= 900 && elapsed < 5_000, String(elapsed));
+  assert.equal(batch.isError, undefined);
+  const items = (
+    batch.structuredContent as {
+      items: { result?: object; error?: { code: string } }[];
+    }
+  ).items;
+  assert(items[0]!.result);
+  assert.equal(items[1]!.error?.code, "tool_timeout");
 });

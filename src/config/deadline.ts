@@ -2,8 +2,13 @@ import type { Tuning } from "./tuning.js";
 
 export const toolTimeoutMs = (settings: Tuning) =>
   settings.toolDeadlineSeconds * 1_000;
+// The relay's host app has its own, shorter limit, so its calls get a shorter deadline.
+export const relayDeadlineMs = (settings: Tuning) =>
+  Math.min(settings.relayDeadlineSeconds * 1_000, toolTimeoutMs(settings));
 export const relayTimeoutMs = (settings: Tuning) =>
-  toolTimeoutMs(settings) + 3_000;
+  relayDeadlineMs(settings) + 3_000;
+/** Header a client sends to ask for an answer within this many milliseconds. */
+export const deadlineHeader = "x-search-scrape-deadline-ms";
 
 // What a client should allow per tool call: the deadline plus time to receive the result.
 export const clientTimeoutMs = (settings: Tuning) =>

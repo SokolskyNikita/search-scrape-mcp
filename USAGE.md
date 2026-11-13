@@ -166,7 +166,8 @@ Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-m
 | `cacheTtlMs` | `600000` | Successful tool result cache lifetime in milliseconds. Zero disables caching. |
 | `cacheMaxEntries` | `128` | Maximum entries in each result cache. |
 | `cacheMaxBytes` | `16000000` | Maximum serialized bytes in each result cache. |
-| `toolDeadlineSeconds` | `270` | Overall tool deadline in seconds (35–600). The relay allows three additional seconds. |
+| `toolDeadlineSeconds` | `270` | Overall tool deadline in seconds (35–600). Calls through the stdio relay use relayDeadlineSeconds instead. |
+| `relayDeadlineSeconds` | `55` | Deadline in seconds for calls that arrive through the stdio relay. The Claude desktop app stops waiting after 60 seconds and then drops every call in flight, so the relay must answer first. |
 | `serperBackupDelayMs` | `4500` | Delay before hedging a slow Serper request. Transient failures can trigger an earlier backup. |
 | `serperTimeoutMs` | `12000` | Shared Serper primary and backup budget in milliseconds, within the tool deadline. |
 | `searchGl` | `"us"` | Default Serper country code. |
@@ -206,7 +207,7 @@ Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-m
 
 The server takes calls from any number of agents at once: up to `mcpConcurrentToolCalls` run together and further calls wait up to `mcpBusyWaitMs` for a free slot. Identical scrapes that arrive while one is in flight share its result. Provider limits and hostname pacing apply across all clients. Serper and the Scrape API have separate queues, and each hedge, retry, and escalation uses a request permit. The wait for a permit is shared across the attempts for one scrape or search; each batch item has its own within the batch deadline. A Scrape API HTTP 429 pauses new Scrape API requests for the reported retry interval. Opening a Cloud Browser session waits separately for a session lease.
 
-Clients with their own request timeout need to allow at least the configured tool deadline plus time to receive the result. Setup gives Claude Code a per-server `timeout` of the tool deadline plus 30 seconds; without one, Claude Code stops waiting after 60 seconds. If you change `toolDeadlineSeconds`, run `search-scrape-mcp setup` again.
+Clients with their own request timeout need to allow at least the configured tool deadline plus time to receive the result. The Claude desktop app cannot be given a longer limit: it stops waiting for a stdio server after 60 seconds and then reconnects it, which fails every other call in flight with “Connection closed”. Calls through the relay therefore use `relayDeadlineSeconds` (55 by default): a scrape that cannot finish in time returns a timeout or a retry hint, and a batch returns the items it has. Setup gives Claude Code a per-server `timeout` of the tool deadline plus 30 seconds; without one, Claude Code stops waiting after 60 seconds. If you change `toolDeadlineSeconds`, run `search-scrape-mcp setup` again.
 
 When a client cancels a call or disconnects before the result is sent, the server stops the work. The stats log records the call as `client_cancelled` or `client_disconnected`, with the credits already spent in `creditsSpent`.
 

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { relayTimeoutMs } from "../config/deadline.js";
+import { clientTimeoutMs } from "../config/deadline.js";
 import { Client } from "@modelcontextprotocol/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { loadProviderKeys, parseSettings } from "../config/index.js";
@@ -46,7 +46,7 @@ async function smoke() {
       client.callTool(
         { name, arguments: args },
         {
-          timeout: relayTimeoutMs(config),
+          timeout: clientTimeoutMs(config),
         },
       );
     async function call(

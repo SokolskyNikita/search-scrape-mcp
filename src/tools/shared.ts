@@ -111,6 +111,10 @@ export async function toolResult(
   } = {},
 ): Promise<CallToolResult> {
   const start = performance.now();
+  const timeoutMs = Math.min(
+    toolTimeoutMs(settings),
+    toolCallContext.getStore()?.deadlineMs ?? Infinity,
+  );
   const request: RequestStats = { httpAttempts: 0, requestId: newRequestId() };
   let attempts = 0;
   let errorCode: string | null = null;
@@ -144,10 +148,7 @@ export async function toolResult(
       );
     });
     deadline.catch(() => {});
-    timer = setTimeout(
-      () => controller.abort(timeoutError),
-      toolTimeoutMs(settings),
-    );
+    timer = setTimeout(() => controller.abort(timeoutError), timeoutMs);
     for (const [caller, reason] of callers) {
       if (!caller) continue;
       const stop = () => controller.abort(reason);
@@ -165,7 +166,7 @@ export async function toolResult(
             if (provider) providers.add(provider);
           },
           controller.signal,
-          start + toolTimeoutMs(settings),
+          start + timeoutMs,
         ),
       ),
       deadline,

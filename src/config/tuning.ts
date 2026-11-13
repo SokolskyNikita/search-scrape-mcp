@@ -129,7 +129,13 @@ export const tuningSchema = z.object({
     35,
     600,
     270,
-    "Overall tool deadline in seconds (35–600). The relay allows three additional seconds.",
+    "Overall tool deadline in seconds (35–600). Calls through the stdio relay use relayDeadlineSeconds instead.",
+  ),
+  relayDeadlineSeconds: integer(
+    20,
+    600,
+    55,
+    "Deadline in seconds for calls that arrive through the stdio relay. The Claude desktop app stops waiting after 60 seconds and then drops every call in flight, so the relay must answer first.",
   ),
   serperBackupDelayMs: integer(
     1_000,

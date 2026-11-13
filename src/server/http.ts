@@ -1,5 +1,6 @@
 import { messages } from "../config/messages.js";
 import { MAX_REQUEST_BODY_BYTES } from "../config/safety-limits.js";
+import { deadlineHeader } from "../config/deadline.js";
 import { defaults } from "../config/tuning.js";
 import { version } from "../config/version.js";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -44,6 +45,12 @@ async function readBody(req: AsyncIterable<Buffer>): Promise<unknown> {
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+}
+
+/** A client may ask for a shorter deadline than the server's own, never a longer one. */
+function requestedDeadline(value: string | string[] | undefined) {
+  const ms = typeof value === "string" ? Number(value) : NaN;
+  return Number.isInteger(ms) && ms >= 1_000 ? ms : undefined;
 }
 
 type ToolCall = {
@@ -212,6 +219,7 @@ export function createMcpHttp(
                     id: call.id,
                     presentation,
                     disconnected: disconnect.signal,
+                    deadlineMs: requestedDeadline(req.headers[deadlineHeader]),
                   },
                   respond,
                 )

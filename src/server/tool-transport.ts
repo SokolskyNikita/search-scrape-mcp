@@ -19,6 +19,8 @@ export const toolCallContext = new AsyncLocalStorage<{
   disconnected?: AbortSignal;
   /** Which MCP revision family the client spoke: 2026-07-28 ("modern") or older. */
   era?: "legacy" | "modern";
+  /** A shorter deadline the client asked for, in milliseconds. */
+  deadlineMs?: number;
 }>();
 
 export function toolCallPresentation({
