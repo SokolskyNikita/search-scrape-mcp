@@ -135,7 +135,7 @@ export const tuningSchema = z.object({
     20,
     600,
     55,
-    "Deadline in seconds for calls that arrive through the stdio relay. The Claude desktop app stops waiting after 60 seconds and then drops every call in flight, so the relay must answer first.",
+    "Deadline in seconds for calls that arrive through the stdio relay. Apps that launch it, such as the Claude desktop app, stop waiting after 60 seconds and then drop every call in flight, so the relay must answer first.",
   ),
   serperBackupDelayMs: integer(
     1_000,

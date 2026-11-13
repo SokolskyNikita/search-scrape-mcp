@@ -9,8 +9,8 @@ const HELP = `${COMMAND} ${version}: web search, scraping and a remote browser f
 
 Usage: ${COMMAND} <command>
 
-  setup       after installing: save your keys, start the server, connect Claude Code,
-              Claude Desktop and Codex, and check everything (safe to run again)
+  setup       after installing: save your keys, start the server, connect Claude Code
+              and Codex, and check everything (safe to run again)
   update      install the latest version, then apply its setup
   doctor      check that everything works
   restart     restart the server, for example after changing keys or settings

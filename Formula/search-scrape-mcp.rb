@@ -35,7 +35,7 @@ class SearchScrapeMcp < Formula
   def caveats
     <<~EOS
       Finish setting up (saves your Serper and Scrapfly keys, starts the server, connects
-      Claude Code, Claude Desktop and Codex, and checks everything):
+      Claude Code and Codex, and checks everything):
         search-scrape-mcp setup
 
       Later, get new versions with:

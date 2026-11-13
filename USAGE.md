@@ -42,14 +42,14 @@ Setup asks for the two keys (typing is hidden; press Enter to skip Scrapfly), th
 - saves the keys to the private file `~/.config/search-scrape-mcp/env`;
 - creates `~/.config/search-scrape-mcp/config.json` with a bearer token;
 - starts the server as the background agent `local.search-scrape-mcp`, which also starts at login;
-- connects Claude Code, the Claude desktop app and the Codex CLI, whichever are installed;
+- connects Claude Code and the Codex CLI, whichever are installed (the Claude desktop app's Code tab uses the Claude Code connection);
 - checks that everything works and says what to fix if something doesn't.
 
 It is safe to run again, and reuses the keys and token it finds.
 
 ### 4. Try it
 
-Restart the Claude desktop app so its chat picks up the connection. New Claude Code and Codex sessions pick it up on their own. Then ask your agent to search the web for something.
+New Claude Code and Codex sessions pick the connection up on their own, including new sessions in the Claude desktop app's Code tab. Then ask your agent to search the web for something.
 
 To add or change a key later, edit `~/.config/search-scrape-mcp/env` and run `search-scrape-mcp restart`:
 
@@ -77,8 +77,10 @@ To remove the program, run `search-scrape-mcp uninstall` and then `brew uninstal
 
 Setup registers the server as `search-scrape` in each client it finds. To connect another client, use either of these:
 
-- **stdio:** run `/opt/homebrew/bin/search-scrape-mcp relay`. It forwards to the running server, and no token goes in the client's configuration. Claude Desktop is connected this way, and so is Codex before version 0.167.0.
+- **stdio:** run `/opt/homebrew/bin/search-scrape-mcp relay`. It forwards to the running server, and no token goes in the client's configuration. Codex before version 0.167.0 is connected this way.
 - **Streamable HTTP:** connect to `http://127.0.0.1:8765/mcp` with the header `Authorization: Bearer TOKEN`, using the `token` value from `config.json`. Claude Code and Codex (0.167.0 or later) are connected this way, and run `search-scrape-mcp headers` to read the token on each connection, so it is not stored in their configuration.
+
+Setup does not register the Claude desktop app’s chat. The app can only launch a command, and it then uses that command for its Code tab as well, where it stops waiting after 60 seconds. Without an entry, the Code tab uses the Claude Code connection and gets the full tool deadline. Setup removes the relay entry that earlier versions added. To use the tools in the app’s chat anyway, add `{"command": "/opt/homebrew/bin/search-scrape-mcp", "args": ["relay"]}` to `mcpServers` in `claude_desktop_config.json` yourself, under a name other than `search-scrape`. Setup only removes the entry with that name. The Code tab will then show both servers.
 
 ## Tools
 
@@ -167,7 +169,7 @@ Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-m
 | `cacheMaxEntries` | `128` | Maximum entries in each result cache. |
 | `cacheMaxBytes` | `16000000` | Maximum serialized bytes in each result cache. |
 | `toolDeadlineSeconds` | `270` | Overall tool deadline in seconds (35–600). Calls through the stdio relay use relayDeadlineSeconds instead. |
-| `relayDeadlineSeconds` | `55` | Deadline in seconds for calls that arrive through the stdio relay. The Claude desktop app stops waiting after 60 seconds and then drops every call in flight, so the relay must answer first. |
+| `relayDeadlineSeconds` | `55` | Deadline in seconds for calls that arrive through the stdio relay. Apps that launch it, such as the Claude desktop app, stop waiting after 60 seconds and then drop every call in flight, so the relay must answer first. |
 | `serperBackupDelayMs` | `4500` | Delay before hedging a slow Serper request. Transient failures can trigger an earlier backup. |
 | `serperTimeoutMs` | `12000` | Shared Serper primary and backup budget in milliseconds, within the tool deadline. |
 | `searchGl` | `"us"` | Default Serper country code. |
@@ -207,7 +209,7 @@ Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-m
 
 The server takes calls from any number of agents at once: up to `mcpConcurrentToolCalls` run together and further calls wait up to `mcpBusyWaitMs` for a free slot. Identical scrapes that arrive while one is in flight share its result. Provider limits and hostname pacing apply across all clients. Serper and the Scrape API have separate queues, and each hedge, retry, and escalation uses a request permit. The wait for a permit is shared across the attempts for one scrape or search; each batch item has its own within the batch deadline. A Scrape API HTTP 429 pauses new Scrape API requests for the reported retry interval. Opening a Cloud Browser session waits separately for a session lease.
 
-Clients with their own request timeout need to allow at least the configured tool deadline plus time to receive the result. The Claude desktop app cannot be given a longer limit: it stops waiting for a stdio server after 60 seconds and then reconnects it, which fails every other call in flight with “Connection closed”. Calls through the relay therefore use `relayDeadlineSeconds` (55 by default): a scrape that cannot finish in time returns a timeout or a retry hint, and a batch returns the items it has. Setup gives Claude Code a per-server `timeout` of the tool deadline plus 30 seconds; without one, Claude Code stops waiting after 60 seconds. If you change `toolDeadlineSeconds`, run `search-scrape-mcp setup` again.
+Clients with their own request timeout need to allow at least the configured tool deadline plus time to receive the result. An app that launches the relay, such as the Claude desktop app, cannot be given a longer limit: it stops waiting for a stdio server after 60 seconds and then reconnects it, which fails every other call in flight with “Connection closed”. Calls through the relay therefore use `relayDeadlineSeconds` (55 by default): a scrape that cannot finish in time returns a timeout or a retry hint, and a batch returns the items it has. Setup gives Claude Code a per-server `timeout` of the tool deadline plus 30 seconds; without one, Claude Code stops waiting after 60 seconds. If you change `toolDeadlineSeconds`, run `search-scrape-mcp setup` again.
 
 When a client cancels a call or disconnects before the result is sent, the server stops the work. The stats log records the call as `client_cancelled` or `client_disconnected`, with the credits already spent in `creditsSpent`.
 

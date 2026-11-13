@@ -172,18 +172,14 @@ export async function checks(): Promise<Check[]> {
         : [WARN, "Claude Code: not connected", setup],
   );
 
-  if (existsSync(desktopConfigFile())) {
-    const entry = desktopEntry();
-    found.push(
-      entry?.command && existsSync(entry.command)
-        ? [OK, "Claude Desktop chat: connected"]
-        : [
-            WARN,
-            "Claude Desktop chat: not connected",
-            `${setup} Then restart the Claude app.`,
-          ],
-    );
-  }
+  // Setup no longer registers the Claude desktop app; an entry left by an earlier
+  // version keeps its Code tab on the relay and its 60-second limit.
+  if (desktopEntry())
+    found.push([
+      WARN,
+      "Claude desktop app: an old relay entry keeps its Code tab on a 60-second limit",
+      `${setup} Then restart the Claude app.`,
+    ]);
 
   const codex = run("codex", ["mcp", "get", SERVER]);
   if (!codex.missing)

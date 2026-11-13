@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install or upgrade from a git checkout (Homebrew users: `brew install search-scrape-mcp`, see USAGE.md).
 # Builds the project, then runs `search-scrape-mcp setup`, which saves your keys, starts the background
-# agent and connects Claude Code, Claude Desktop and Codex.
+# agent and connects Claude Code and Codex.
 set -euo pipefail
 umask 077
 

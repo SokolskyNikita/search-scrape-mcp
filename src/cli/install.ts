@@ -302,31 +302,27 @@ export function mergeDesktopConfig(
   return `${JSON.stringify(root, null, 2)}\n`;
 }
 
-/** Claude Desktop's chat only starts stdio servers, so it gets the relay to the shared HTTP server. */
-function registerDesktop(command: string[] | undefined, say: Say) {
+/**
+ * Earlier versions registered the stdio relay with the Claude desktop app. The app then
+ * used the relay for its Code tab too, which cut every call at 60 seconds. Setup now
+ * leaves the app alone and removes that entry, so the Code tab uses the Claude Code
+ * registration and connects directly.
+ */
+function removeDesktopRelay(say: Say) {
   const file = desktopConfigFile();
-  if (!existsSync(dirname(file))) {
-    if (command)
-      say(" - Claude Desktop isn't installed, so its chat is skipped.");
-    return;
-  }
+  if (!existsSync(file)) return;
   try {
-    const updated = mergeDesktopConfig(
-      existsSync(file) ? readFileSync(file, "utf8") : "",
-      command,
+    const updated = mergeDesktopConfig(readFileSync(file, "utf8"), undefined);
+    if (updated === undefined) return;
+    const temp = `${file}.${process.pid}.tmp`;
+    writeFileSync(temp, updated, { mode: statSync(file).mode & 0o777 });
+    renameSync(temp, file);
+    say(
+      ` ${OK} Removed the old Claude desktop relay entry (restart the Claude app; its Code tab then connects directly)`,
     );
-    if (updated !== undefined) {
-      const temp = `${file}.${process.pid}.tmp`;
-      writeFileSync(temp, updated);
-      renameSync(temp, file);
-    }
-    if (command)
-      say(
-        ` ${OK} Claude Desktop chat connected${updated === undefined ? "" : " (restart the Claude app to pick it up)"}`,
-      );
   } catch {
     say(
-      ` ${FAIL} Could not read ${file}; left it unchanged. Fix or remove it, then run \`${COMMAND} setup\` again.`,
+      ` ${FAIL} Could not read ${file}; left it unchanged. Remove its "${SERVER}" entry by hand, then restart the Claude app.`,
     );
   }
 }
@@ -451,7 +447,7 @@ export async function setup(say: Say = console.log) {
     // The checks below report it with the fix.
   }
   registerClaudeCode(settings, say);
-  registerDesktop(selfCommand(), say);
+  removeDesktopRelay(say);
   registerCodex(settings, say);
   say("\nChecking everything:");
   if (!printChecks(await checks(), say)) {
@@ -521,7 +517,7 @@ export function uninstall(say: Say = console.log) {
   );
   if (run("claude", ["mcp", "remove", "--scope", "user", SERVER]).ok)
     say(` ${OK} Claude Code disconnected`);
-  registerDesktop(undefined, say);
+  removeDesktopRelay(say);
   if (run("codex", ["mcp", "remove", SERVER]).ok)
     say(` ${OK} Codex disconnected`);
   say(
