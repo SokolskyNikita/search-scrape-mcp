@@ -8,6 +8,8 @@ import { nodeHttp2Warning } from "./doctor.js";
 import {
   chosenSettings,
   claudeCodeEntry,
+  codexDirectEntry,
+  codexRunsHeaderHelpers,
   mergeDesktopConfig,
   renderPlist,
 } from "./install.js";
@@ -105,4 +107,58 @@ test("doctor warns about Node 26 builds with the HTTP/2 idle crash", () => {
     assert.match(nodeHttp2Warning(version) ?? "", /26\.13\.1 fixes it/);
   for (const version of ["22.20.5", "24.11.0", "26.13.1", "26.14.0", "27.0.0"])
     assert.equal(nodeHttp2Warning(version), undefined);
+});
+
+test("the Codex entry gains the token helper and timeout without touching other tables", () => {
+  const before = [
+    'model = "example"',
+    "",
+    "[mcp_servers.other]",
+    'command = "x"',
+    "",
+    "[mcp_servers.search-scrape]",
+    'url = "http://127.0.0.1:8765/mcp"',
+    "tool_timeout_sec = 60",
+    "",
+    '[projects."/tmp/a"]',
+    'trust_level = "trusted"',
+    "",
+  ].join("\n");
+  const helper = '"/My Apps/search-scrape-mcp" "headers"';
+  const after = codexDirectEntry(before, "search-scrape", helper, 300)!;
+  assert.equal(
+    after,
+    [
+      'model = "example"',
+      "",
+      "[mcp_servers.other]",
+      'command = "x"',
+      "",
+      "[mcp_servers.search-scrape]",
+      'url = "http://127.0.0.1:8765/mcp"',
+      'http_headers_helper = "\\"/My Apps/search-scrape-mcp\\" \\"headers\\""',
+      "tool_timeout_sec = 300",
+      "",
+      '[projects."/tmp/a"]',
+      'trust_level = "trusted"',
+      "",
+    ].join("\n"),
+  );
+  // Applying it again changes nothing.
+  assert.equal(codexDirectEntry(after, "search-scrape", helper, 300), after);
+  // A relay entry, or no entry, is left for the caller to handle.
+  assert.equal(
+    codexDirectEntry(
+      '[mcp_servers.search-scrape]\ncommand = "x"\n',
+      "search-scrape",
+      helper,
+      300,
+    ),
+    undefined,
+  );
+  assert.equal(codexDirectEntry("", "search-scrape", helper, 300), undefined);
+  assert.equal(codexRunsHeaderHelpers("codex-cli 0.167.0"), true);
+  assert.equal(codexRunsHeaderHelpers("codex-cli 0.166.9"), false);
+  assert.equal(codexRunsHeaderHelpers("codex-cli 1.0.0"), true);
+  assert.equal(codexRunsHeaderHelpers("unknown"), false);
 });

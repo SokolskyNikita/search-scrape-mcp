@@ -5,9 +5,11 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { clientTimeoutMs } from "../config/deadline.js";
@@ -329,10 +331,95 @@ function registerDesktop(command: string[] | undefined, say: Say) {
   }
 }
 
-/** Codex gets the stdio relay too, so no bearer token has to live in its config or the shell environment. */
-function registerCodex(say: Say) {
-  if (run("codex", ["--version"]).missing) return;
+/**
+ * Adds the token helper and tool timeout to the server's table in Codex's config.toml,
+ * which `codex mcp add` cannot set. Returns undefined when the table isn't an HTTP entry.
+ */
+export function codexDirectEntry(
+  toml: string,
+  name: string,
+  helper: string,
+  timeoutSeconds: number,
+) {
+  const lines = toml.split("\n");
+  const start = lines.findIndex(
+    (line) => line.trim() === `[mcp_servers.${name}]`,
+  );
+  if (start < 0) return undefined;
+  const next = lines.findIndex(
+    (line, index) => index > start && /^\s*\[/.test(line),
+  );
+  const end = next < 0 ? lines.length : next;
+  const body = lines
+    .slice(start + 1, end)
+    .filter(
+      (line) =>
+        line.trim() &&
+        !/^\s*(?:http_headers_helper|tool_timeout_sec)\s*=/.test(line),
+    );
+  if (!body.some((line) => /^\s*url\s*=/.test(line))) return undefined;
+  return [
+    ...lines.slice(0, start + 1),
+    ...body,
+    // A JSON string is also a valid TOML basic string.
+    `http_headers_helper = ${JSON.stringify(helper)}`,
+    `tool_timeout_sec = ${timeoutSeconds}`,
+    ...(next < 0 ? [""] : ["", ...lines.slice(end)]),
+  ].join("\n");
+}
+
+/** Codex versions from 0.167.0 can fetch the bearer header from a command on each connection. */
+export function codexRunsHeaderHelpers(versionOutput: string) {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(versionOutput);
+  if (!match) return false;
+  const [major, minor] = match.slice(1).map(Number) as [number, number];
+  return major > 0 || minor >= 167;
+}
+
+/**
+ * Codex talks to the server directly and asks this install for the bearer token on each
+ * connection, like Claude Code. Older Codex versions get the stdio relay instead, so the
+ * token never has to live in Codex's config or the shell environment.
+ */
+function registerCodex(settings: Tuning & { port: number }, say: Say) {
+  const version = run("codex", ["--version"]);
+  if (version.missing) return;
   run("codex", ["mcp", "remove", SERVER]);
+  if (codexRunsHeaderHelpers(version.output)) {
+    const added = run("codex", [
+      "mcp",
+      "add",
+      SERVER,
+      "--url",
+      `http://127.0.0.1:${settings.port}/mcp`,
+    ]);
+    const file = join(
+      process.env.CODEX_HOME ?? join(homedir(), ".codex"),
+      "config.toml",
+    );
+    try {
+      const entry = added.ok
+        ? codexDirectEntry(
+            readFileSync(file, "utf8"),
+            SERVER,
+            [...selfCommand(), "headers"].map(shellQuote).join(" "),
+            Math.ceil(clientTimeoutMs(settings) / 1_000),
+          )
+        : undefined;
+      if (entry) {
+        const temp = `${file}.${process.pid}.tmp`;
+        writeFileSync(temp, entry, {
+          flag: "wx",
+          mode: statSync(file).mode & 0o777,
+        });
+        renameSync(temp, file);
+        return say(` ${OK} Codex connected (new sessions pick it up)`);
+      }
+    } catch {
+      // Fall back to the relay below.
+    }
+    run("codex", ["mcp", "remove", SERVER]);
+  }
   const added = run("codex", [
     "mcp",
     "add",
@@ -343,7 +430,7 @@ function registerCodex(say: Say) {
   ]);
   say(
     added.ok
-      ? ` ${OK} Codex connected`
+      ? ` ${OK} Codex connected through the relay`
       : ` ${FAIL} Could not connect Codex: ${added.output.slice(-300)}`,
   );
 }
@@ -365,7 +452,7 @@ export async function setup(say: Say = console.log) {
   }
   registerClaudeCode(settings, say);
   registerDesktop(selfCommand(), say);
-  registerCodex(say);
+  registerCodex(settings, say);
   say("\nChecking everything:");
   if (!printChecks(await checks(), say)) {
     say(`\nFix the items marked ${FAIL}, then run \`${COMMAND} setup\` again.`);

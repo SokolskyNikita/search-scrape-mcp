@@ -77,8 +77,8 @@ To remove the program, run `search-scrape-mcp uninstall` and then `brew uninstal
 
 Setup registers the server as `search-scrape` in each client it finds. To connect another client, use either of these:
 
-- **stdio:** run `/opt/homebrew/bin/search-scrape-mcp relay`. It forwards to the running server, and no token goes in the client's configuration. Claude Desktop and Codex are connected this way.
-- **Streamable HTTP:** connect to `http://127.0.0.1:8765/mcp` with the header `Authorization: Bearer TOKEN`, using the `token` value from `config.json`. Claude Code is connected this way, and runs `search-scrape-mcp headers` to read the token on each connection.
+- **stdio:** run `/opt/homebrew/bin/search-scrape-mcp relay`. It forwards to the running server, and no token goes in the client's configuration. Claude Desktop is connected this way, and so is Codex before version 0.167.0.
+- **Streamable HTTP:** connect to `http://127.0.0.1:8765/mcp` with the header `Authorization: Bearer TOKEN`, using the `token` value from `config.json`. Claude Code and Codex (0.167.0 or later) are connected this way, and run `search-scrape-mcp headers` to read the token on each connection, so it is not stored in their configuration.
 
 ## Tools
 
