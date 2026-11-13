@@ -1,3 +1,4 @@
+import { defaults } from "../config/tuning.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -76,7 +77,7 @@ test("only settings that differ from the defaults are saved", () => {
     token,
     port: 9000,
     statsLogMaxBytes: 2_097_152,
-    cacheTtlMs: 600_000,
+    cacheTtlMs: defaults.cacheTtlMs,
   });
   assert.deepEqual(
     chosenSettings(settings, [

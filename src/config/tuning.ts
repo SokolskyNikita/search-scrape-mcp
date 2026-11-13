@@ -109,19 +109,19 @@ export const tuningSchema = z.object({
   cacheTtlMs: integer(
     0,
     3_600_000,
-    600_000,
+    900_000,
     "Successful tool result cache lifetime in milliseconds. Zero disables caching.",
   ),
   cacheMaxEntries: integer(
     1,
     10_000,
-    128,
+    256,
     "Maximum entries in each result cache.",
   ),
   cacheMaxBytes: integer(
     1,
     100_000_000,
-    16_000_000,
+    32_000_000,
     "Maximum serialized bytes in each result cache.",
   ),
 

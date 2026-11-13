@@ -47,6 +47,12 @@ export function writeLimitEvent(
     waitedMs?: number;
     inFlight?: number;
     session?: string;
+    /** Per-run keyed hash of a result cache key. */
+    keyHash?: string;
+    /** Why a result cache lookup missed. */
+    reason?: string;
+    /** Age of a result cache entry on a hit. */
+    ageMs?: number;
   },
   settings = defaults,
 ) {

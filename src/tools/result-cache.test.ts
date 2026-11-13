@@ -37,6 +37,48 @@ test("cache expires, evicts the oldest entry, and skips oversized entries", (t) 
   assert.equal(bounded.get("b")?.value, "second");
 });
 
+test("cache log events carry a key hash and say why a lookup missed", (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const logger = t.mock.method(console, "log", () => {});
+  const cache = new ResultCache<string>({
+    ...defaults,
+    cacheMaxEntries: 1,
+    cacheTtlMs: 100,
+  });
+  cache.get("https://example.com/a");
+  cache.set("https://example.com/a", "first");
+  cache.set("https://example.com/b", "second");
+  cache.get("https://example.com/a");
+  cache.get("https://example.com/a");
+  now = 50;
+  cache.get("https://example.com/b");
+  now = 200;
+  cache.get("https://example.com/b");
+  cache.set("https://example.com/c", "third");
+  cache.get("https://example.com/b", true);
+  const events = logger.mock.calls.map(({ arguments: [line] }) =>
+    JSON.parse(String(line)),
+  );
+  assert.deepEqual(
+    events.map(({ outcome, reason, ageMs }) => ({ outcome, reason, ageMs })),
+    [
+      { outcome: "miss", reason: "new", ageMs: undefined },
+      { outcome: "miss", reason: "evicted", ageMs: undefined },
+      { outcome: "miss", reason: "not_stored", ageMs: undefined },
+      { outcome: "hit", reason: undefined, ageMs: 50 },
+      { outcome: "miss", reason: "expired", ageMs: undefined },
+      { outcome: "bypass", reason: undefined, ageMs: undefined },
+    ],
+  );
+  const [a, , , b] = events.map((event) => event.keyHash);
+  assert.match(a, /^[0-9a-f]{16}$/);
+  assert.equal(events[1].keyHash, a);
+  assert.notEqual(b, a);
+  assert.equal(events[4].keyHash, b);
+  assert(!JSON.stringify(events).includes("example.com"));
+});
+
 test("search and scrape cache hits cross sessions and batches, with fresh bypass and failure exclusion", async (t) => {
   const logger = t.mock.method(console, "log", () => {});
   const searchCache = new ResultCache<SearchHit[]>(defaults);

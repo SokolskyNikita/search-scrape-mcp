@@ -165,9 +165,9 @@ Settings live in `~/.config/search-scrape-mcp/config.json`. Run `search-scrape-m
 | `siteGapMs` | `1000` | Minimum time between request starts for the same target hostname. |
 | `browserConcurrency` | `5` | Maximum simultaneous Cloud Browser sessions, including scrape fallback. |
 | `browserDailyMinutes` | `120` | Daily Cloud Browser session-minutes across all sessions. Resets at midnight UTC. |
-| `cacheTtlMs` | `600000` | Successful tool result cache lifetime in milliseconds. Zero disables caching. |
-| `cacheMaxEntries` | `128` | Maximum entries in each result cache. |
-| `cacheMaxBytes` | `16000000` | Maximum serialized bytes in each result cache. |
+| `cacheTtlMs` | `900000` | Successful tool result cache lifetime in milliseconds. Zero disables caching. |
+| `cacheMaxEntries` | `256` | Maximum entries in each result cache. |
+| `cacheMaxBytes` | `32000000` | Maximum serialized bytes in each result cache. |
 | `toolDeadlineSeconds` | `270` | Overall tool deadline in seconds (35–600). Calls through the stdio relay use relayDeadlineSeconds instead. |
 | `relayDeadlineSeconds` | `55` | Deadline in seconds for calls that arrive through the stdio relay. Apps that launch it, such as the Claude desktop app, stop waiting after 60 seconds and then drop every call in flight, so the relay must answer first. |
 | `serperBackupDelayMs` | `4500` | Delay before hedging a slow Serper request. Transient failures can trigger an earlier backup. |
@@ -219,7 +219,7 @@ Each scrape has a requested budget of 100 Scrapfly credits across all rungs, and
 
 ## Logs
 
-The background agent writes `tools.jsonl`, `stdout.log` and `stderr.log` under `~/Library/Logs/search-scrape-mcp/`. Tool records report outcomes, including individual batch items. Provider records report requests, known charges, and Scrapfly proxy and cost details. Every record carries the server version, a per-process `runId` and, for tool calls, a `requestId` shared by the call, its batch items and its provider attempts. Crashes are recorded as `crash` events. Logs exclude arguments and fetched content.
+The background agent writes `tools.jsonl`, `stdout.log` and `stderr.log` under `~/Library/Logs/search-scrape-mcp/`. Tool records report outcomes, including individual batch items. Provider records report requests, known charges, and Scrapfly proxy and cost details. Every record carries the server version, a per-process `runId` and, for tool calls, a `requestId` shared by the call, its batch items and its provider attempts. Crashes are recorded as `crash` events. Result cache lookups record `hit`, `miss` or `bypass` with a `keyHash` that matches across lookups within one `runId` but does not reveal the URL or query. A miss gives a `reason`: `new` for the first lookup, `expired`, `evicted` when `cacheMaxEntries` or `cacheMaxBytes` pushed the entry out, or `not_stored` when an earlier result was not cached. A hit gives the entry's age in `ageMs`. Logs exclude arguments and fetched content.
 
 From a checkout, two scripts summarize usage:
 
