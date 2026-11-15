@@ -172,6 +172,8 @@ function errorNotices(error: ResultError) {
       : error.retryAt
         ? [`${messages.label.retryAt} ${oneLine(error.retryAt)}`]
         : []),
+    // A retry call already carries the next step; otherwise show the hint itself.
+    ...(error.hint && !error.retry ? [notice("note", error.hint)] : []),
   ];
 }
 

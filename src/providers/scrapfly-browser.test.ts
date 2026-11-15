@@ -13,12 +13,13 @@ import {
   goBack,
 } from "./browser-navigation.js";
 import { defaults } from "../config/tuning.js";
+import { AppError } from "../server/error.js";
 import { RequestLimits } from "../server/request-limits.js";
 import { browserInputs } from "./browser-input.js";
 import { browserSnapshots } from "./browser-snapshot.js";
 import { browserActionError } from "./browser-action-error.js";
 import { watchCaptcha } from "./browser-captcha.js";
-import { browserScraper } from "./scrapfly-browser.js";
+import { browserScraper, rereadAfterUrlChange } from "./scrapfly-browser.js";
 
 test("browser guard checks top-level redirects and leaves iframe requests to cloud egress", async () => {
   const commands: { method: string; params: unknown }[] = [];
@@ -494,4 +495,52 @@ test("browser diagnostics use safe action details without quoting page data", ()
     ).message,
     messages.browser.elementState("visible"),
   );
+});
+
+test("a URL rewrite during a page read is read once more", async () => {
+  const changed = () =>
+    new AppError(
+      "browser_navigation",
+      "The browser page changed while reading its content.",
+    );
+  let loads = 0;
+  const page = {
+    waitForLoadState: async () => {
+      loads++;
+    },
+  };
+  let reads = 0;
+  const text = await rereadAfterUrlChange(
+    page,
+    async () => {
+      if (++reads === 1) throw changed();
+      return "page=1";
+    },
+    1_000,
+  );
+  assert.equal(text, "page=1");
+  assert.equal(reads, 2);
+  assert.equal(loads, 1);
+
+  await assert.rejects(
+    rereadAfterUrlChange(
+      page,
+      async () => {
+        throw changed();
+      },
+      1_000,
+    ),
+    { code: "browser_navigation" },
+  );
+  await assert.rejects(
+    rereadAfterUrlChange(
+      page,
+      async () => {
+        throw new AppError("page_size", messages.browser.pageSize);
+      },
+      1_000,
+    ),
+    { code: "page_size" },
+  );
+  assert.equal(loads, 2);
 });

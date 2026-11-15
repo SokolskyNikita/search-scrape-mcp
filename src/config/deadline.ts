@@ -23,6 +23,12 @@ export const scrapeBudgetMs = (settings: Tuning) =>
 // The provider requires 30 seconds for Unblocker and 15 seconds for
 // the datacenter-only file preflight and download path.
 export const scrapflyFileTimeoutMs = 15_000;
+// With retry=false, Scrapfly's timeout covers only its own work. Its docs ask
+// clients to wait 5 s longer so the response can arrive.
+export const scrapflyResponseMarginMs = 5_000;
+/** How long one Scrapfly attempt with this Scrapfly timeout may take locally. */
+export const scrapflyRequestMs = (timeout: number) =>
+  timeout + scrapflyResponseMarginMs;
 export const scrapflyTimeoutMs = {
   datacenter: 30_000,
   render: 30_000,

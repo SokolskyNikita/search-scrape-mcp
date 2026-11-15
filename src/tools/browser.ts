@@ -11,7 +11,8 @@ import type { BrowserProvider, BrowserSession } from "../providers/types.js";
 import { AppError } from "../server/error.js";
 import { validateBrowserUrl } from "../server/target.js";
 import type { OutputFiles } from "./output-files.js";
-import { fallback, toolResult } from "./shared.js";
+import { fallback, toolResult, type Attempt } from "./shared.js";
+import { statsContext } from "../server/stats.js";
 
 const selector = z
   .string()
@@ -148,139 +149,17 @@ export function browserSessions(
         return toolResult(
           "browser",
           async (attempt, signal) => {
-            if (closed)
-              throw new AppError("browser_closed", messages.browser.closed);
-            entry = find(session, command.action);
-            responseUrl ??= pageUrl();
-            if (entry?.active)
-              throw new AppError("browser_busy", messages.browser.busy);
-            const run = async () => {
-              if (command.action === "close") {
-                if (entry) {
-                  attempt(entry.provider);
-                  await close(entry);
-                }
-                return messages.browser.closedResult;
-              }
-              if (!entry && command.action !== "navigate") {
-                throw new AppError("browser_closed", messages.browser.closed);
-              }
-              if (entry) attempt(entry.provider);
-              else {
-                if (command.action !== "navigate")
-                  throw new AppError("browser_closed", messages.browser.closed);
-                const target = await validateBrowserUrl(command.url);
-                let provider: string | undefined;
-                const browser = await fallback(
-                  providers,
-                  async (candidate) => {
-                    const opened = await candidate.open(signal, target);
-                    provider = candidate.name;
-                    return opened;
-                  },
-                  attempt,
-                  signal,
-                );
-                entry = {
-                  id: `b${randomBytes(4).toString("hex")}`,
-                  browser,
-                  provider,
-                };
-                if (closed) {
-                  await browser.close();
-                  throw new AppError("browser_closed", messages.browser.closed);
-                }
-                open.set(entry.id, entry);
-              }
-              const current = entry;
-              try {
-                const result = await current.browser.run(command, signal);
-                signal.throwIfAborted();
-                responseUrl = pageUrl() ?? responseUrl;
-                if (typeof result !== "string" && "type" in result) {
-                  imageWarning = currentWarning();
-                  return result;
-                }
-                let markdown: string;
-                let note: string | undefined;
-                if (typeof result === "string") {
-                  markdown = result;
-                } else if ("url" in result) {
-                  const { text, status, title, url } = result;
-                  responseUrl = url.href;
-                  const heading = title ? `# ${title}\n\n` : "";
-                  const check = checkPage(
-                    heading + text,
-                    (requested && URL.parse(requested)) || url,
-                    url,
-                    status,
-                  );
-                  if (check.code === "sign_in")
-                    throw new AppError(check.code, check.reason);
-                  const readable = pageContent(text, { status, title });
-                  current.accessWarning = undefined;
-                  markdown = heading + readable;
-                } else {
-                  markdown = result.text;
-                  note = result.note;
-                }
-                const warning = currentWarning();
-                const output = files.spill(
-                  markdown,
-                  settings.browserInlineChars,
-                ) ?? { markdown };
-                return {
-                  ...output,
-                  ...(responseUrl ? { url: responseUrl } : {}),
-                  ...(warning ? { warning } : {}),
-                  ...(note ? { note } : {}),
-                };
-              } catch (error) {
-                responseUrl = pageUrl() ?? responseUrl;
-                const url = documentUrl(responseUrl);
-                if (
-                  url &&
-                  error instanceof AppError &&
-                  Object.hasOwn(messages.browser.accessPage, error.code)
-                )
-                  current.accessWarning = {
-                    url,
-                    message:
-                      messages.browser.accessPage[
-                        error.code as keyof typeof messages.browser.accessPage
-                      ],
-                  };
-                if (
-                  signal.aborted ||
-                  (error instanceof AppError && error.code === "browser_closed")
-                )
-                  await close(current);
-                throw error;
-              }
-            };
-            if (entry) clearTimeout(entry.idle);
-            const started = entry;
-            const work = run();
-            if (started) started.active = work;
+            const stats = statsContext.getStore()?.request;
+            if (stats) stats.action = command.action;
             try {
-              return await work;
+              return await runCommand(attempt, signal);
+            } catch (error) {
+              if (stats && error instanceof AppError)
+                stats.errorReason = error.message.slice(0, 200);
+              throw error;
             } finally {
-              const used = entry;
-              if (used) {
-                used.active = undefined;
-                if (!closed && open.get(used.id) === used) {
-                  clearTimeout(used.idle);
-                  used.idle = setTimeout(() => {
-                    used.active = close(used)
-                      .catch(() =>
-                        console.error("Idle browser cleanup failed."),
-                      )
-                      .finally(() => {
-                        used.active = undefined;
-                      });
-                  }, settings.browserIdleMs).unref();
-                }
-              }
+              const host = URL.parse(responseUrl ?? "")?.hostname;
+              if (stats && host) stats.host = host;
             }
           },
           settings,
@@ -296,6 +175,141 @@ export function browserSessions(
             },
           },
         );
+
+        async function runCommand(attempt: Attempt, signal: AbortSignal) {
+          if (closed)
+            throw new AppError("browser_closed", messages.browser.closed);
+          entry = find(session, command.action);
+          responseUrl ??= pageUrl();
+          if (entry?.active)
+            throw new AppError("browser_busy", messages.browser.busy);
+          const run = async () => {
+            if (command.action === "close") {
+              if (entry) {
+                attempt(entry.provider);
+                await close(entry);
+              }
+              return messages.browser.closedResult;
+            }
+            if (!entry && command.action !== "navigate") {
+              throw new AppError("browser_closed", messages.browser.closed);
+            }
+            if (entry) attempt(entry.provider);
+            else {
+              if (command.action !== "navigate")
+                throw new AppError("browser_closed", messages.browser.closed);
+              const target = await validateBrowserUrl(command.url);
+              let provider: string | undefined;
+              const browser = await fallback(
+                providers,
+                async (candidate) => {
+                  const opened = await candidate.open(signal, target);
+                  provider = candidate.name;
+                  return opened;
+                },
+                attempt,
+                signal,
+              );
+              entry = {
+                id: `b${randomBytes(4).toString("hex")}`,
+                browser,
+                provider,
+              };
+              if (closed) {
+                await browser.close();
+                throw new AppError("browser_closed", messages.browser.closed);
+              }
+              open.set(entry.id, entry);
+            }
+            const current = entry;
+            try {
+              const result = await current.browser.run(command, signal);
+              signal.throwIfAborted();
+              responseUrl = pageUrl() ?? responseUrl;
+              if (typeof result !== "string" && "type" in result) {
+                imageWarning = currentWarning();
+                return result;
+              }
+              let markdown: string;
+              let note: string | undefined;
+              if (typeof result === "string") {
+                markdown = result;
+              } else if ("url" in result) {
+                const { text, status, title, url } = result;
+                responseUrl = url.href;
+                const heading = title ? `# ${title}\n\n` : "";
+                const check = checkPage(
+                  heading + text,
+                  (requested && URL.parse(requested)) || url,
+                  url,
+                  status,
+                );
+                if (check.code === "sign_in")
+                  throw new AppError(check.code, check.reason);
+                const readable = pageContent(text, { status, title });
+                current.accessWarning = undefined;
+                markdown = heading + readable;
+              } else {
+                markdown = result.text;
+                note = result.note;
+              }
+              const warning = currentWarning();
+              const output = files.spill(
+                markdown,
+                settings.browserInlineChars,
+              ) ?? { markdown };
+              return {
+                ...output,
+                ...(responseUrl ? { url: responseUrl } : {}),
+                ...(warning ? { warning } : {}),
+                ...(note ? { note } : {}),
+              };
+            } catch (error) {
+              responseUrl = pageUrl() ?? responseUrl;
+              const url = documentUrl(responseUrl);
+              if (
+                url &&
+                error instanceof AppError &&
+                Object.hasOwn(messages.browser.accessPage, error.code)
+              )
+                current.accessWarning = {
+                  url,
+                  message:
+                    messages.browser.accessPage[
+                      error.code as keyof typeof messages.browser.accessPage
+                    ],
+                };
+              if (
+                signal.aborted ||
+                (error instanceof AppError && error.code === "browser_closed")
+              )
+                await close(current);
+              throw error;
+            }
+          };
+          if (entry) clearTimeout(entry.idle);
+          const started = entry;
+          const work = run();
+          if (started) started.active = work;
+          try {
+            return await work;
+          } finally {
+            const used = entry;
+            if (used) {
+              used.active = undefined;
+              if (!closed && open.get(used.id) === used) {
+                clearTimeout(used.idle);
+                used.idle = setTimeout(() => {
+                  used.active = close(used)
+                    .catch(() => console.error("Idle browser cleanup failed."))
+                    .finally(() => {
+                      used.active = undefined;
+                    });
+                }, settings.browserIdleMs).unref();
+              }
+            }
+          }
+        }
       },
     );
   }

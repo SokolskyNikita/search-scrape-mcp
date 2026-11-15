@@ -216,6 +216,19 @@ const repeatedFailures = count(
   .slice(0, 15)
   .map(([key, n]) => ({ failure: key, times: n }));
 
+const browserFailures = count(
+  toolRows.filter((row) => row.tool === "browser" && !row.ok),
+  (row) =>
+    [row.action ?? "-", row.host ?? "-", row.errorReason ?? row.errorCode].join(
+      "\t",
+    ),
+)
+  .slice(0, 15)
+  .map(([key, n]) => {
+    const [action, host, reason] = key.split("\t");
+    return { times: n, action, host, reason };
+  });
+
 const waits = limits.filter((row) => row.outcome === "wait" && row.retryAt);
 const waitSeconds = waits.map(
   (row) => (Date.parse(row.retryAt) - Date.parse(row.timestamp)) / 1000,
@@ -245,11 +258,16 @@ const summary = {
       (row) => row.credits,
     ),
     scrapflyOverBudget: sum(overBudget, (row) => row.credits),
+    scrapflyUnconfirmed: sum(
+      scrapfly.filter((row) => row.creditsUnconfirmed),
+      (row) => row.credits,
+    ),
   },
   rungs,
   overBudget,
   hosts,
   repeatedFailures,
+  browserFailures,
   limits: Object.fromEntries(
     count(limits, (row) => `${row.code}:${row.outcome}`),
   ),
@@ -306,7 +324,7 @@ out("Tools");
 table(tools, ["tool", "calls", "failed", "p50Ms", "p90Ms", "maxMs", "errors"]);
 out();
 out(
-  `Credits: ${summary.credits.serperSearches} Serper searches; ${summary.credits.scrapfly} Scrapfly credits, ${summary.credits.scrapflyOnFailures} on failed attempts, ${summary.credits.scrapflyOverBudget} on attempts over budget`,
+  `Credits: ${summary.credits.serperSearches} Serper searches; ${summary.credits.scrapfly} Scrapfly credits, ${summary.credits.scrapflyOnFailures} on failed attempts, ${summary.credits.scrapflyOverBudget} on attempts over budget, ${summary.credits.scrapflyUnconfirmed} unconfirmed (no response body)`,
 );
 out();
 out("Scrapfly rungs");
@@ -343,6 +361,9 @@ table(hosts, [
 out();
 out("Repeated failures on the same URL");
 table(repeatedFailures, ["times", "failure"]);
+out();
+out("Browser failures");
+table(browserFailures, ["times", "action", "host", "reason"]);
 out();
 out(`Local limits and cache: ${JSON.stringify(summary.limits)}`);
 out(

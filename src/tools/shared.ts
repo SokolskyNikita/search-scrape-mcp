@@ -210,6 +210,8 @@ export async function toolResult(
         cached: request.cached,
         truncated: request.truncated,
         creditsSpent: request.creditsSpent,
+        action: request.action,
+        errorReason: request.errorReason,
         era: toolCallContext.getStore()?.era,
       },
       settings,

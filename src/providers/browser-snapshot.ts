@@ -1,8 +1,9 @@
 import { messages } from "../config/messages.js";
-import type { Page } from "playwright-core";
+import type { Frame, Page } from "playwright-core";
 import { AppError } from "../server/error.js";
 
 type Scope = "viewport" | "page" | "full";
+type ReadOptions = { scope?: Scope; target?: string; query?: string };
 type Box = { x: number; y: number; width: number; height: number };
 type Node = {
   role: string;
@@ -73,12 +74,14 @@ function intersection(a: Box, b: Box): Box {
 export function browserSnapshots(page: Page) {
   const refs = new Set<string>();
   let epoch = 0;
-  const invalidate = () => {
+  // Only the main document invalidates refs: ad and tracking iframes navigate
+  // constantly, and a stale ref inside a changed iframe fails on use anyway.
+  const invalidate = (frame: Frame) => {
+    if (frame !== page.mainFrame()) return;
     epoch++;
     refs.clear();
   };
   page.on("framenavigated", invalidate);
-  page.on("framedetached", invalidate);
 
   function locator(ref?: string) {
     if (!ref || !refs.has(ref))
@@ -86,10 +89,23 @@ export function browserSnapshots(page: Page) {
     return page.getByRef(ref);
   }
 
-  async function read(
-    options: { scope?: Scope; target?: string; query?: string } = {},
-  ) {
+  async function read(options: ReadOptions = {}) {
+    try {
+      return await readOnce(options);
+    } catch (error) {
+      if (!(error instanceof AppError) || error.code !== "browser_navigation")
+        throw error;
+      // The page navigated mid-read: let the new document load, then read once more.
+      await page
+        .waitForLoadState("domcontentloaded", { timeout: 5_000 })
+        .catch(() => {});
+      return await readOnce(options);
+    }
+  }
+
+  async function readOnce(options: ReadOptions) {
     const version = epoch;
+    const seen = new Set<string>();
     const snapshotOptions = { mode: "ai", boxes: true } as const;
     const tree = (await (options.target
       ? locator(options.target).ariaSnapshotJSON(snapshotOptions)
@@ -144,7 +160,7 @@ export function browserSnapshots(page: Page) {
             outside++;
         }
         if (include && node.ref) {
-          refs.add(node.ref);
+          seen.add(node.ref);
           if (!full) {
             const detail = describe(node, matchedText);
             lines.push(
@@ -191,10 +207,14 @@ export function browserSnapshots(page: Page) {
       }
     }
     visit(tree, clip);
-    if (full) return { text: JSON.stringify(tree, null, 2) };
+    if (full) {
+      for (const ref of seen) refs.add(ref);
+      return { text: JSON.stringify(tree, null, 2) };
+    }
     const rendered = await Promise.all(lines);
     if (version !== epoch)
       throw new AppError("browser_navigation", messages.browser.changed);
+    for (const ref of seen) refs.add(ref);
     const text = rendered.join("\n").trimStart();
     const note =
       viewportOnly && outside

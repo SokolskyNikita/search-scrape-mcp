@@ -17,6 +17,10 @@ export type RequestStats = {
   truncated?: boolean;
   /** Provider credits reported for this call so far. */
   creditsSpent?: number;
+  /** The browser command, such as navigate or snapshot. */
+  action?: string;
+  /** The internal reason for a browser failure. Browser messages are server-written. */
+  errorReason?: string;
 };
 
 /** Identifies this server process in the stats log. */
@@ -85,6 +89,8 @@ export function writeToolStats(
     cached?: boolean;
     truncated?: boolean;
     creditsSpent?: number;
+    action?: string;
+    errorReason?: string;
     era?: "legacy" | "modern";
   },
   settings = defaults,
@@ -119,6 +125,10 @@ export function writeProviderAttempt(
     hedgeTrigger?: "delay" | "failure";
     startSource?: "caller" | "site" | "memory" | "default";
     credits: number | null;
+    /** The cost header arrived but the response body did not, so the charge may have been refunded. */
+    creditsUnconfirmed?: boolean;
+    /** Milliseconds until the response headers arrived; durationMs includes the body. */
+    headersMs?: number;
     remainingCredits?: number | null;
     requestedProxyPool?: string | null;
     proxyPool?: string | null;

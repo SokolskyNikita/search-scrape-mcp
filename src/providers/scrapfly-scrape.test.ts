@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileHosts } from "../config/file-hosts.js";
 import { defaults } from "../config/tuning.js";
+import { AppError } from "../server/error.js";
 import { RequestLimits } from "../server/request-limits.js";
 import { todayUsage, Usage } from "../server/usage.js";
 import { scrapflyScrape } from "./scrapfly-scrape.js";
@@ -298,7 +299,7 @@ test("the real tool deadline prevents an unfunded retry", async (t) => {
     assert.equal(url.searchParams.get("timeout"), "30000");
     return Response.json({}, { status: 503, headers: { "Retry-After": "6" } });
   });
-  const deadline = performance.now() + 38_000;
+  const deadline = performance.now() + 41_000;
   await assert.rejects(
     staticFirstScrape("fixture").scrape(target, undefined, {
       deadline,
@@ -316,7 +317,7 @@ test("escalation stops with the stronger rung hint if its minimum cannot fit", a
     now += 3_000;
     return Response.json(success("# Access denied", target, 403));
   });
-  const deadline = performance.now() + 35_000;
+  const deadline = performance.now() + 40_000;
   await assert.rejects(
     staticFirstScrape("fixture").scrape(target, undefined, {
       deadline,
@@ -349,7 +350,7 @@ test("deferred escalation returns a usable warning and the next rung", async (t)
   });
   const result = await staticFirstScrape("fixture").scrape(target, undefined, {
     tried: [],
-    deadline: performance.now() + 35_000,
+    deadline: performance.now() + 40_000,
   });
   assert.equal(result.markdown, menu);
   assert.equal(result.check.code, "menus_only");
@@ -1331,4 +1332,103 @@ test("default rendering skips residential escalation when Scrapfly already used 
     assert.deepEqual(opts.tried, ["render"]);
   }
   assert.equal(request.mock.callCount(), 2);
+});
+
+test("a challenge that outlasts the strongest rung points to the browser", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    htmlResponse(
+      article.replace(
+        "<title>Weather station report</title>",
+        "<title>Just a moment...</title>",
+      ),
+    ),
+  );
+  const provider = scrapflyScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], fileState(t)),
+  );
+  const opts = options();
+  await assert.rejects(provider.scrape(target, undefined, opts), (error) => {
+    assert(error instanceof AppError);
+    assert.equal(error.code, "challenge");
+    assert.equal(error.details?.hint, messages.page.useBrowser);
+    assert.equal(error.details?.retryRung, undefined);
+    return true;
+  });
+  assert.deepEqual(opts.tried, ["render", "residential_render"]);
+});
+
+test("a charge reported without a response body is logged as unconfirmed", async (t) => {
+  const state = fileState(t);
+  const log = state + ".jsonl";
+  const previousLog = process.env.MCP_STATS_LOG;
+  process.env.MCP_STATS_LOG = log;
+  t.after(() => {
+    if (previousLog === undefined) delete process.env.MCP_STATS_LOG;
+    else process.env.MCP_STATS_LOG = previousLog;
+  });
+  let stalled = true;
+  t.mock.method(globalThis, "fetch", async () =>
+    stalled
+      ? new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.error(new Error("body stalled"));
+            },
+          }),
+          {
+            headers: {
+              "Content-Type": "application/json",
+              "X-Scrapfly-Api-Cost": "80",
+              "X-Scrapfly-Remaining-Api-Credit": "1000",
+            },
+          },
+        )
+      : htmlResponse(article),
+  );
+  const provider = staticFirstScrape(
+    "fixture",
+    defaults,
+    undefined,
+    undefined,
+    new FileHosts([], state),
+  );
+  await assert.rejects(provider.scrape(target));
+  stalled = false;
+  assert.equal((await provider.scrape(redirected)).check.code, "ok");
+  const rows = readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert(rows.length >= 2, JSON.stringify(rows));
+  const failed = rows.filter((row) => row.credits === 80);
+  assert(failed.length >= 1);
+  for (const row of failed) {
+    assert.equal(row.creditsUnconfirmed, true);
+    assert.equal(typeof row.headersMs, "number");
+  }
+  assert.equal(rows.at(-1).creditsUnconfirmed, undefined);
+});
+
+test("the local request deadline leaves Scrapfly's response margin", async (t) => {
+  const timeouts: number[] = [];
+  const original = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, "timeout", (ms: number) => {
+    timeouts.push(ms);
+    return original(ms);
+  });
+  const sent: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: URL) => {
+    sent.push(url.searchParams.get("timeout")!);
+    return htmlResponse(article);
+  });
+  await staticFirstScrape("fixture").scrape(target, undefined, {
+    tried: [],
+    deadline: performance.now() + 60_000,
+  });
+  assert.deepEqual(sent, ["30000"]);
+  assert(timeouts.includes(35_000), JSON.stringify(timeouts));
 });

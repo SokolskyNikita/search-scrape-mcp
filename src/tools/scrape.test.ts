@@ -691,3 +691,52 @@ test("identical scrapes in flight share one fetch, and a missing page is remembe
     "failure_memory",
   ]);
 });
+
+test("an error hint without a retry call is shown as a note", async (t) => {
+  const mcp = new McpServer({ name: "scrape-test", version: "1.0.0" });
+  const dir = mkdtempSync(join(tmpdir(), "scrape-hint-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  registerScrape(
+    mcp,
+    [
+      {
+        scrape: async () => {
+          throw new AppError("challenge", messages.page.challenge, {
+            hint: messages.page.useBrowser,
+          });
+        },
+      },
+    ],
+    new OutputFiles(join(dir, "spills")),
+  );
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "1.0.0" });
+  await mcp.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await mcp.close();
+  });
+  const note = `${noticeLabel.note} ${messages.page.useBrowser}`;
+  const single = await client.callTool({
+    name: "scrape",
+    arguments: { url: "https://8.8.8.8/challenged" },
+  });
+  assert.equal(single.isError, true);
+  assert(
+    firstText(single).includes(
+      `${noticeLabel.error} ${messages.page.challenge}\n${note}`,
+    ),
+  );
+  const batched = await client.callTool({
+    name: "scrape_batch",
+    arguments: { urls: ["https://8.8.8.8/challenged", "https://1.1.1.1/also"] },
+  });
+  assert(Array.isArray(batched.content));
+  assert(
+    (batched.content as { text: string }[]).some((part) =>
+      part.text.includes(note),
+    ),
+  );
+});

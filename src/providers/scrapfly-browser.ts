@@ -8,7 +8,7 @@ import {
   MAX_BROWSER_IMAGE_BYTES,
 } from "../config/safety-limits.js";
 import { setTimeout as delay } from "node:timers/promises";
-import { chromium, type Browser } from "playwright-core";
+import { chromium, type Browser, type Page } from "playwright-core";
 import { AppError } from "../server/error.js";
 import { validateBrowserUrl } from "../server/target.js";
 import { checkPage } from "../tools/page-check.js";
@@ -31,6 +31,28 @@ import type {
 } from "./types.js";
 
 const actionTimeout = 15_000;
+const urlChanged = "The browser page changed while reading its content.";
+
+/**
+ * Pages often rewrite their own URL while loading, such as adding ?page=1.
+ * Read once more so the new URL is validated and the text matches it.
+ */
+export async function rereadAfterUrlChange<T>(
+  page: Pick<Page, "waitForLoadState">,
+  read: () => Promise<T>,
+  timeout: number,
+): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (!(error instanceof AppError) || error.message !== urlChanged)
+      throw error;
+    await page
+      .waitForLoadState("domcontentloaded", { timeout })
+      .catch(() => {});
+    return await read();
+  }
+}
 
 function within<T>(operation: Promise<T>, ms: number): Promise<T> {
   const controller = new AbortController();
@@ -190,7 +212,10 @@ export function scrapflyBrowser(
                 : snapshots.locator(target.ref);
             }
 
-            async function content() {
+            const content = () =>
+              rereadAfterUrlChange(page, readContent, actionTimeout);
+
+            async function readContent() {
               const location = page.url();
               const url = await validateBrowserUrl(location);
               const title = await page.title();
@@ -205,10 +230,7 @@ export function scrapflyBrowser(
               if (body.length > MAX_BROWSER_PAGE_CHARS)
                 throw new AppError("page_size", messages.browser.pageSize);
               if (page.url() !== location)
-                throw new AppError(
-                  "browser_navigation",
-                  "The browser page changed while reading its content.",
-                );
+                throw new AppError("browser_navigation", urlChanged);
               if (documentResponse.status === undefined)
                 throw new AppError(
                   "browser_navigation",

@@ -54,6 +54,8 @@ export const messages = {
     costRetry: "This page needs a higher-cost fetch.",
     costStopped: "The fetch cost was too high, so the scrape stopped.",
     retryRung: (rung: string) => `Retry with start_rung: "${rung}".`,
+    useBrowser:
+      "Open the page with the browser tool, which can pass the verification. CAPTCHA solving can incur charges.",
   },
   browser: {
     closed: "The browser session is closed. Navigate to a URL to open one.",

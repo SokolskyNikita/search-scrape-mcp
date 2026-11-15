@@ -71,10 +71,10 @@ test("tunable settings validate and the config report emits only public settings
     scrapeReserveMs: 3_000,
     scrapeBudgetMs: 39_000,
     scrapflyRungs: {
-      datacenter: { requestTimeoutMs: 30_000, scrapflyTimeoutMs: 30_000 },
-      render: { requestTimeoutMs: 30_000, scrapflyTimeoutMs: 30_000 },
+      datacenter: { requestTimeoutMs: 35_000, scrapflyTimeoutMs: 30_000 },
+      render: { requestTimeoutMs: 35_000, scrapflyTimeoutMs: 30_000 },
       residential_render: {
-        requestTimeoutMs: 30_000,
+        requestTimeoutMs: 35_000,
         scrapflyTimeoutMs: 30_000,
       },
     },

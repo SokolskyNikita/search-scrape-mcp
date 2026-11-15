@@ -5,6 +5,7 @@ import {
   scrapeBudgetMs,
   scrapeReserveMs,
   scrapflyTimeoutMs,
+  scrapflyRequestMs,
   toolTimeoutMs,
 } from "./deadline.js";
 import { lstatSync, readFileSync, writeFileSync } from "node:fs";
@@ -69,7 +70,10 @@ try {
             scrapflyRungs: Object.fromEntries(
               Object.entries(scrapflyTimeoutMs).map(([rung, ms]) => [
                 rung,
-                { requestTimeoutMs: ms, scrapflyTimeoutMs: ms },
+                {
+                  requestTimeoutMs: scrapflyRequestMs(ms),
+                  scrapflyTimeoutMs: ms,
+                },
               ]),
             ),
           },

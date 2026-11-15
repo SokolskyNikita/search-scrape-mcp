@@ -18,6 +18,7 @@ import type { Usage } from "../server/usage.js";
 import {
   scrapeReserveMs,
   scrapflyTimeoutMs,
+  scrapflyRequestMs,
   scrapflyFileTimeoutMs,
   toolTimeoutMs,
 } from "../config/deadline.js";
@@ -314,6 +315,8 @@ async function requestPage(
   let providerStatus: number | undefined;
   let providerCode: string | undefined;
   let contentCredits: number | null = null;
+  let bodyReceived = false;
+  let headersMs: number | undefined;
   const costWarning = () => {
     const highestCharge = Math.max(credits ?? 0, contentCredits ?? 0);
     return highestCharge > SCRAPFLY_STANDARD_COST
@@ -331,7 +334,7 @@ async function requestPage(
       recordAttempt();
       startedAt = Date.now();
       start = performance.now();
-      localTimeout = AbortSignal.timeout(timeout);
+      localTimeout = AbortSignal.timeout(scrapflyRequestMs(timeout));
       requestSignal = AbortSignal.any([signal, localTimeout]);
       return providerResponse(
         "Scrapfly",
@@ -342,6 +345,7 @@ async function requestPage(
           signal: requestSignal,
         },
         (headers) => {
+          headersMs = Math.round(performance.now() - start);
           providerStatus = headers.status;
           const rejectCode =
             headers.headers.get("X-Scrapfly-Reject-Code") ?? "";
@@ -365,6 +369,7 @@ async function requestPage(
         },
       );
     });
+    bodyReceived = true;
     const parsed = envelope.safeParse(body);
     const data = parsed.success ? parsed.data : undefined;
     const context = billing.safeParse(body).data?.context;
@@ -717,6 +722,9 @@ async function requestPage(
           rung: operation === "head" ? "datacenter_head" : rung,
           format: formatRequested,
           credits,
+          // Scrapfly can refund an attempt whose body never arrived. Keep counting it
+          // toward usage limits, but let the log tell it apart from a confirmed charge.
+          ...(credits && !bodyReceived ? { creditsUnconfirmed: true } : {}),
           remainingCredits,
           requestedProxyPool,
           proxyPool,
@@ -726,6 +734,7 @@ async function requestPage(
           providerStatus,
           providerCode,
           durationMs: Math.round(performance.now() - start),
+          ...(headersMs !== undefined ? { headersMs } : {}),
           errorCode,
           ...(rung === "datacenter" && operation !== "head"
             ? {
@@ -833,7 +842,7 @@ export function scrapflyScrape(
           return limits.run(
             "scrapfly",
             requestSignal ?? signal,
-            requestSignal ? deadline : deadline - timeout,
+            requestSignal ? deadline : deadline - scrapflyRequestMs(timeout),
             admission,
             task,
             host,
@@ -867,7 +876,7 @@ export function scrapflyScrape(
       }
       const filePath = looksLikeFile(target);
       if (filePath || knownFile) {
-        if (remaining() < scrapflyFileTimeoutMs)
+        if (remaining() < scrapflyRequestMs(scrapflyFileTimeoutMs))
           throw refuseFile(
             { type: "unknown" },
             "too little time remains for the HEAD check.",
@@ -958,7 +967,11 @@ export function scrapflyScrape(
         const rung = scrapeRungs[index]!;
         const timeout = file ? scrapflyFileTimeoutMs : scrapflyTimeoutMs[rung];
         const defer = advancedRung !== undefined && advancedRung !== rung;
-        if (signal.aborted || remaining() < timeout || defer) {
+        if (
+          signal.aborted ||
+          remaining() < scrapflyRequestMs(timeout) ||
+          defer
+        ) {
           if (protectedSite && !hosts.has(memoryKey)) remember(memoryKey, 1);
           if (file)
             throw refuseFile(
@@ -991,7 +1004,7 @@ export function scrapflyScrape(
             !file &&
             !retryUsed &&
             result.retryMs !== undefined &&
-            remaining() >= result.retryMs + timeout &&
+            remaining() >= result.retryMs + scrapflyRequestMs(timeout) &&
             !signal.aborted
           ) {
             retryUsed = true;
@@ -1051,7 +1064,7 @@ export function scrapflyScrape(
           if (overrunCredits !== undefined) return result;
           if (
             site?.extractionRetry === "manual" ||
-            remaining() < scrapflyTimeoutMs[retryRung]
+            remaining() < scrapflyRequestMs(scrapflyTimeoutMs[retryRung])
           )
             return { ...result, hint, retryRung };
           try {
@@ -1112,7 +1125,7 @@ export function scrapflyScrape(
             throw new AppError(check.code, check.reason, {
               tried: options.tried,
             });
-          if (remaining() < scrapflyTimeoutMs[retryRung])
+          if (remaining() < scrapflyRequestMs(scrapflyTimeoutMs[retryRung]))
             throw new AppError(check.code, check.reason, {
               tried: options.tried,
               hint: messages.page.retryRung(retryRung),
@@ -1156,7 +1169,13 @@ export function scrapflyScrape(
           if (protectedSite && !hosts.has(memoryKey)) remember(memoryKey, 1);
           throw new AppError(check.code, check.reason, {
             tried: options.tried,
-            hint: check.next ? hint : undefined,
+            // No stronger rung can pass a challenge, but the browser's solver can.
+            hint:
+              check.code === "challenge" && !stronger
+                ? messages.page.useBrowser
+                : check.next
+                  ? hint
+                  : undefined,
             ...(check.next && stronger ? { retryRung: stronger } : {}),
           });
         }

@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { McpServer } from "@modelcontextprotocol/server";
 import type { BrowserAction, BrowserProvider } from "../providers/types.js";
+import { AppError } from "../server/error.js";
 import { OutputFiles } from "./output-files.js";
 import { registerBrowser } from "./browser.js";
 
@@ -282,4 +283,82 @@ test("browser marks access pages until a readable navigation", async (t) => {
     ),
   );
   assert(!recovered.text.includes(noticeLabel.warning));
+});
+
+test("browser records log the action, page host and failure reason", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "browser-stats-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const log = join(dir, "tools.jsonl");
+  const previousLog = process.env.MCP_STATS_LOG;
+  process.env.MCP_STATS_LOG = log;
+  t.after(() => {
+    if (previousLog === undefined) delete process.env.MCP_STATS_LOG;
+    else process.env.MCP_STATS_LOG = previousLog;
+  });
+  const provider: BrowserProvider = {
+    async open() {
+      return {
+        currentUrl: () => "https://1.1.1.1/page",
+        async run(action) {
+          if (action.action === "snapshot")
+            throw new AppError(
+              "browser_navigation",
+              "The browser page changed while reading its content.",
+            );
+          return "Opened";
+        },
+        async close() {},
+      };
+    },
+  };
+  const [upstream, downstream] = InMemoryTransport.createLinkedPair();
+  const mcp = new McpServer({ name: "fixture", version: "1.0.0" });
+  const cleanup = registerBrowser(
+    mcp,
+    [provider],
+    new OutputFiles(join(dir, "spills")),
+  );
+  const client = new Client({ name: "fixture-client", version: "1.0.0" });
+  await mcp.connect(upstream);
+  await client.connect(downstream);
+  t.after(async () => {
+    await client.close();
+    await cleanup();
+  });
+  await client.callTool({
+    name: "browser",
+    arguments: { command: { action: "navigate", url: "https://1.1.1.1/" } },
+  });
+  const failed = await client.callTool({
+    name: "browser",
+    arguments: { command: { action: "snapshot" } },
+  });
+  assert.equal(failed.isError, true);
+  const rows = readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .filter((row) => row.tool === "browser");
+  assert.deepEqual(
+    rows.map(({ action, host, errorCode, errorReason }) => ({
+      action,
+      host,
+      errorCode,
+      errorReason,
+    })),
+    [
+      {
+        action: "navigate",
+        host: "1.1.1.1",
+        errorCode: null,
+        errorReason: undefined,
+      },
+      {
+        action: "snapshot",
+        host: "1.1.1.1",
+        errorCode: "browser_navigation",
+        errorReason: "The browser page changed while reading its content.",
+      },
+    ],
+  );
 });
